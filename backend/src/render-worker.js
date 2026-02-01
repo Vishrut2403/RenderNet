@@ -1,67 +1,240 @@
-import { execFile } from 'child_process';
-import { findBlenderExecutable } from './utils/blender-check.js';
+const { spawn } = require('child_process');
+const path = require('path');
+const fs = require('fs');
+const FormData = require('form-data');
+const fetch = require('node-fetch');
 
-/**
- * Render a Blender job
- * @param {Object} config 
- * @param {string} config.filePath 
- * @param {string} config.outputPath 
- * @param {number} config.frameStart 
- * @param {number} config.frameEnd 
- * @param {Function} callback 
- */
-export function renderJob(config, callback, proccessCallback) {  
-  const blenderPath = findBlenderExecutable();
-  
-  if (!blenderPath) {
-    return callback(new Error('Blender executable not found'));
+const BLENDER_PATH = process.env.BLENDER_PATH || 'blender';
+const API_URL = process.env.API_URL || 'http://localhost:5500';
+
+class RenderWorker {
+  constructor(workerId = 'local-worker') {
+    this.workerId = workerId;
+    this.currentJob = null;
   }
 
-  const args = [
-    '-b', config.filePath,
-    '-o', config.outputPath,
-    '-s', config.frameStart.toString(),
-    '-e', config.frameEnd.toString(),
-  ];
-
-  if(config.renderEngine){
-    args.push('-E', config.renderEngine);
+  /**
+   * Render frames for a job with incremental uploads
+   */
+  async renderJob(job) {
+    const { id, blendPath, outputDir, frameStart, frameEnd, renderEngine, username } = job;
+    
+    console.log(`\n🎬 Worker ${this.workerId}: Starting job ${id}`);
+    console.log(`📁 Blend file: ${blendPath}`);
+    console.log(`🎞️  Frames: ${frameStart} - ${frameEnd}`);
+    console.log(`⚙️  Engine: ${renderEngine}`);
+    
+    this.currentJob = job;
+    
+    // Ensure output directory exists
+    fs.mkdirSync(outputDir, { recursive: true });
+    
+    let successfulFrames = 0;
+    let failedFrames = 0;
+    
+    // Render frames one by one
+    for (let frame = frameStart; frame <= frameEnd; frame++) {
+      try {
+        console.log(`\n🎬 Rendering frame ${frame}/${frameEnd} (${Math.round(((frame - frameStart) / (frameEnd - frameStart + 1)) * 100)}%)`);
+        
+        // Render single frame
+        const framePath = await this.renderSingleFrame(
+          blendPath,
+          frame,
+          outputDir,
+          renderEngine
+        );
+        
+        console.log(`✅ Frame ${frame} rendered: ${framePath}`);
+        
+        // Upload frame immediately
+        const uploaded = await this.uploadFrame(id, frame, framePath, username);
+        
+        if (uploaded) {
+          console.log(`📤 Frame ${frame} uploaded successfully`);
+          successfulFrames++;
+          
+          // Delete local frame to save space (optional)
+          // fs.unlinkSync(framePath);
+        } else {
+          console.warn(`⚠️  Frame ${frame} upload failed, keeping local copy`);
+          successfulFrames++; // Still count as successful render
+        }
+        
+        // Report progress
+        await this.reportProgress(id, frame, frameEnd, username);
+        
+      } catch (error) {
+        console.error(`❌ Frame ${frame} failed:`, error.message);
+        failedFrames++;
+        
+        // Report failure
+        await this.reportFrameFailure(id, frame, error.message, username);
+      }
+    }
+    
+    console.log(`\n🎉 Job ${id} completed!`);
+    console.log(`✅ Successful: ${successfulFrames} frames`);
+    console.log(`❌ Failed: ${failedFrames} frames`);
+    
+    // Report job completion
+    await this.reportJobComplete(id, username, successfulFrames, failedFrames);
+    
+    this.currentJob = null;
+    
+    return {
+      success: failedFrames === 0,
+      successfulFrames,
+      failedFrames
+    };
   }
 
-  args.push('-a');
+  /**
+   * Render a single frame
+   */
+  renderSingleFrame(blendPath, frame, outputDir, renderEngine) {
+    return new Promise((resolve, reject) => {
+      // Output path for this specific frame
+      const frameFilename = `frame_${frame.toString().padStart(4, '0')}`;
+      const outputPath = path.join(outputDir, frameFilename);
+      
+      // Blender command
+      const args = [
+        '-b', blendPath,              // Background mode
+        '-E', renderEngine,            // Render engine
+        '-f', frame.toString(),        // Single frame
+        '-o', outputPath + '#',        // Output with frame number placeholder
+        '--', '--cycles-device', 'CPU' // Force CPU rendering (change to GPU if available)
+      ];
+      
+      console.log(`   Running: ${BLENDER_PATH} ${args.join(' ')}`);
+      
+      const blender = spawn(BLENDER_PATH, args);
+      
+      let stderr = '';
+      
+      blender.stdout.on('data', (data) => {
+        // Optionally log Blender output
+        // process.stdout.write(data.toString());
+      });
+      
+      blender.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+      
+      blender.on('close', (code) => {
+        if (code !== 0) {
+          reject(new Error(`Blender exited with code ${code}: ${stderr}`));
+          return;
+        }
+        
+        // Find the rendered file (Blender adds frame number)
+        const expectedFile = `${outputPath}${frame.toString().padStart(4, '0')}.png`;
+        
+        if (fs.existsSync(expectedFile)) {
+          resolve(expectedFile);
+        } else {
+          reject(new Error(`Rendered frame not found: ${expectedFile}`));
+        }
+      });
+      
+      blender.on('error', (err) => {
+        reject(new Error(`Failed to start Blender: ${err.message}`));
+      });
+    });
+  }
 
-  console.log('Starting Blender render');
-  console.log('Blender:', blenderPath);
-  console.log('File:', config.filePath);
-  console.log('Output:', config.outputPath);
-  console.log('Frames:', `${config.frameStart}-${config.frameEnd}`);
-  console.log('Engine:', config.renderEngine || 'Default');
-
-  const startTime = Date.now();
-
-  const process = execFile(blenderPath, args, (err, stdout, stderr) => {
-    const duration = ((Date.now() - startTime) / 1000).toFixed(2);
-    
-    if (err) {
-      console.error(`Render failed after ${duration}s:`, err.message);
-      return callback(err);
+  /**
+   * Upload frame to server
+   */
+  async uploadFrame(jobId, frameNumber, framePath, username) {
+    try {
+      const formData = new FormData();
+      formData.append('frame', fs.createReadStream(framePath));
+      formData.append('frameNumber', frameNumber.toString());
+      formData.append('username', username);
+      
+      const response = await fetch(`${API_URL}/jobs/${jobId}/upload-frame`, {
+        method: 'POST',
+        body: formData,
+        headers: formData.getHeaders()
+      });
+      
+      if (!response.ok) {
+        const error = await response.text();
+        console.error(`Upload failed: ${error}`);
+        return false;
+      }
+      
+      return true;
+      
+    } catch (error) {
+      console.error(`Upload error: ${error.message}`);
+      return false;
     }
-    
-    console.log(`Render completed in ${duration}s`);
-    
-    if (stdout) console.log('Blender stdout:', stdout);
-    if (stderr) console.warn('Blender stderr:', stderr);
-    
-    callback(null, { duration, stdout, stderr });
-  });
+  }
 
-  process.on('exit', (code) => {
-    if (code !== 0) {
-      console.warn(`Blender exited with code ${code}`);
+  /**
+   * Report progress to server
+   */
+  async reportProgress(jobId, currentFrame, totalFrames, username) {
+    try {
+      const progress = Math.round(((currentFrame - this.currentJob.frameStart + 1) / 
+                                   (totalFrames - this.currentJob.frameStart + 1)) * 100);
+      
+      await fetch(`${API_URL}/jobs/${jobId}/progress`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          currentFrame,
+          totalFrames,
+          progress,
+          username
+        })
+      });
+    } catch (error) {
+      // Non-critical, just log
+      console.error(`Failed to report progress: ${error.message}`);
     }
-  });
+  }
 
-  if (proccessCallback){
-    proccessCallback(process);
+  /**
+   * Report frame failure
+   */
+  async reportFrameFailure(jobId, frameNumber, error, username) {
+    try {
+      await fetch(`${API_URL}/jobs/${jobId}/frame-failed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          frameNumber,
+          error,
+          username
+        })
+      });
+    } catch (err) {
+      console.error(`Failed to report frame failure: ${err.message}`);
+    }
+  }
+
+  /**
+   * Report job completion
+   */
+  async reportJobComplete(jobId, username, successfulFrames, failedFrames) {
+    try {
+      await fetch(`${API_URL}/jobs/${jobId}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          successfulFrames,
+          failedFrames,
+          username
+        })
+      });
+    } catch (error) {
+      console.error(`Failed to report job completion: ${error.message}`);
+    }
   }
 }
+
+module.exports = RenderWorker;

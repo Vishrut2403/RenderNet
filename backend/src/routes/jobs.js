@@ -2,7 +2,15 @@ import express from 'express';
 import { cancelJob } from '../queue.js';
 import { getJob, getAllJobs, getQueueStatus, getQueuePosition } from '../queue.js';
 
+const express = require('express');
 const router = express.Router();
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const auth = require('../auth');
+const jobQueue = require('../queue');
+
+const upload = multer({ dest: 'uploads/' });
 
 router.get('/:id', (req, res) => {
   const jobId = parseInt(req.params.id);
