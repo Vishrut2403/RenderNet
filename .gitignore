@@ -1,0 +1,47 @@
+# .gitignore
+
+# Dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+.env.local
+
+# Uploaded files and renders
+uploads/
+renders/
+output/
+backend/uploads/
+backend/renders/
+backend/output/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Database
+*.db
+*.sqlite
+users.json
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Blender cache
+*.blend1
+*.blend2

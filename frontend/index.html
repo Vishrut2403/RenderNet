@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Render Farm - Blender Rendering Service</title>
+  <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+<!-- Login Screen -->
+<div id="login-screen" class="screen active">
+  <div class="login-container">
+    <h1>Render Farm</h1>
+    <p class="subtitle">Blender Rendering Service</p>
+    
+    <!-- Login Form -->
+    <form id="login-form">
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" required autocomplete="username">
+      </div>
+      
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" required autocomplete="current-password">
+      </div>
+      
+      <button type="submit" class="btn btn-primary">Login</button>
+      
+      <div id="login-error" class="error-message"></div>
+      
+      <p style="text-align: center; margin-top: 1rem; color: var(--text-muted);">
+        Don't have an account? 
+        <a href="#" id="show-signup" style="color: var(--primary); cursor: pointer;">Sign up</a>
+      </p>
+    </form>
+    
+    <!-- Signup Form -->
+    <form id="signup-form" style="display: none;">
+      <div class="form-group">
+        <label for="signup-username">Username</label>
+        <input type="text" id="signup-username" required minlength="3">
+        <small>At least 3 characters</small>
+      </div>
+      
+      <div class="form-group">
+        <label for="signup-password">Password</label>
+        <input type="password" id="signup-password" required minlength="6">
+        <small>At least 6 characters</small>
+      </div>
+      
+      <div class="form-group">
+        <label for="signup-password-confirm">Confirm Password</label>
+        <input type="password" id="signup-password-confirm" required>
+      </div>
+      
+      <button type="submit" class="btn btn-primary">Create Account</button>
+      
+      <div id="signup-error" class="error-message"></div>
+      <div id="signup-success" class="success-message"></div>
+      
+      <p style="text-align: center; margin-top: 1rem; color: var(--text-muted);">
+        Already have an account? 
+        <a href="#" id="show-login" style="color: var(--primary); cursor: pointer;">Login</a>
+      </p>
+    </form>
+  </div>
+</div>
+
+  <!-- Main App Screen -->
+  <div id="app-screen" class="screen">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-content">
+        <h1>Render Farm</h1>
+        <div class="header-right">
+          <div class="user-menu">
+            <button class="user-badge" id="user-menu-btn">
+              <span id="current-user"></span>
+              <span style="margin-left: 0.5rem;">▼</span>
+            </button>
+            
+            <!-- Dropdown Menu -->
+            <div class="user-dropdown" id="user-dropdown" style="display: none;">
+              <div class="dropdown-item" onclick="openChangePasswordModal()">
+                Change Password
+              </div>
+              <div class="dropdown-item" id="admin-menu-item" style="display: none;" onclick="openAdminPanel()">
+                Admin Panel
+              </div>
+              <div class="dropdown-divider"></div>
+              <div class="dropdown-item" id="logout-btn-menu" onclick="logout()">
+                Logout
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Notification Banner -->
+    <div id="notification-banner" class="notification-banner"></div>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Tabs -->
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="upload">Upload</button>
+        <button class="tab-btn" data-tab="my-jobs">My Jobs</button>
+        <button class="tab-btn" data-tab="queue">Queue Status</button>
+        <button class="tab-btn" data-tab="dashboard">Dashboard</button>
+      </div>
+
+      <!-- Upload Tab -->
+      <div id="upload-tab" class="tab-content active">
+        <div class="card">
+          <h2>Upload Render Job</h2>
+          
+          <form id="upload-form">
+            <div class="form-group">
+              <label for="blend-file">Select .blend File</label>
+              <input type="file" id="blend-file" accept=".blend" required>
+              <small>Max file size: 500MB</small>
+            </div>
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="frame-start">Start Frame</label>
+                <input type="number" id="frame-start" value="1" min="1" required>
+              </div>
+
+              <div class="form-group">
+                <label for="frame-end">End Frame</label>
+                <input type="number" id="frame-end" value="100" min="1" required>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="render-engine">Render Engine</label>
+              <select id="render-engine" required>
+                <option value="CYCLES">Cycles</option>
+                <option value="BLENDER_EEVEE">Eevee</option>
+                <option value="BLENDER_WORKBENCH">Workbench</option>
+              </select>
+              <small>Note: Samples and resolution should be set in your .blend file</small>
+            </div>
+
+            <button type="submit" class="btn btn-primary" id="upload-btn">
+              Upload & Start Render
+            </button>
+          </form>
+
+          <div id="upload-progress" class="upload-progress" style="display: none;">
+            <div class="progress-bar">
+              <div class="progress-fill" id="upload-progress-bar"></div>
+            </div>
+            <p id="upload-status">Uploading...</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- My Jobs Tab -->
+      <div id="my-jobs-tab" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <h2>My Render Jobs</h2>
+            <button id="refresh-jobs-btn" class="btn btn-secondary">Refresh</button>
+          </div>
+          
+          <div id="jobs-list" class="jobs-list">
+            <p class="empty-state">No jobs yet. Upload a .blend file to get started!</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Queue Status Tab -->
+      <div id="queue-tab" class="tab-content">
+        <div class="card">
+          <div class="card-header">
+            <h2>Render Queue</h2>
+            <button id="refresh-queue-btn" class="btn btn-secondary">Refresh</button>
+          </div>
+          
+          <div id="queue-status" class="queue-status">
+            <div class="queue-stats">
+              <div class="stat-item">
+                <span class="stat-label">Currently Rendering:</span>
+                <span id="current-render" class="stat-value">None</span>
+              </div>
+              <div class="stat-item">
+                <span class="stat-label">Jobs in Queue:</span>
+                <span id="queue-length" class="stat-value">0</span>
+              </div>
+            </div>
+
+            <div id="queue-list" class="queue-list"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dashboard Tab -->
+      <div id="dashboard-tab" class="tab-content">
+        <div class="card">
+          <h2>Statistics Dashboard</h2>
+          
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-icon"></div>
+              <div class="stat-info">
+                <span class="stat-number" id="total-jobs">0</span>
+                <span class="stat-text">Total Jobs</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon"></div>
+              <div class="stat-info">
+                <span class="stat-number" id="completed-jobs">0</span>
+                <span class="stat-text">Completed</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon">🎬</div>
+              <div class="stat-info">
+                <span class="stat-number" id="rendering-jobs">0</span>
+                <span class="stat-text">Rendering</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon"></div>
+              <div class="stat-info">
+                <span class="stat-number" id="pending-jobs">0</span>
+                <span class="stat-text">Pending</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon"></div>
+              <div class="stat-info">
+                <span class="stat-number" id="failed-jobs">0</span>
+                <span class="stat-text">Failed</span>
+              </div>
+            </div>
+
+            <div class="stat-card">
+              <div class="stat-icon"></div>
+              <div class="stat-info">
+                <span class="stat-number" id="avg-time">--</span>
+                <span class="stat-text">Avg. Time (min)</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="recent-activity">
+            <h3>Recent Activity</h3>
+            <div id="recent-jobs" class="activity-list"></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- Change Password Modal -->
+  <div id="password-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Change Password</h2>
+        <button class="modal-close" onclick="closeChangePasswordModal()">×</button>
+      </div>
+      
+      <form id="modal-change-password-form">
+        <div class="form-group">
+          <label for="modal-current-password">Current Password</label>
+          <input type="password" id="modal-current-password" required>
+        </div>
+        
+        <div class="form-group">
+          <label for="modal-new-password">New Password</label>
+          <input type="password" id="modal-new-password" required minlength="6">
+          <small>At least 6 characters</small>
+        </div>
+        
+        <div class="form-group">
+          <label for="modal-new-password-confirm">Confirm New Password</label>
+          <input type="password" id="modal-new-password-confirm" required>
+        </div>
+        
+        <button type="submit" class="btn btn-primary">Change Password</button>
+        
+        <div id="modal-password-error" class="error-message"></div>
+        <div id="modal-password-success" class="success-message"></div>
+      </form>
+      
+      <p style="margin-top: 1rem; color: var(--text-muted); font-size: 0.875rem;">
+        Forgot your password? Contact the admin for a reset.
+      </p>
+    </div>
+  </div>
+
+  <!-- Admin Panel Modal -->
+  <div id="admin-modal" class="modal" style="display: none;">
+    <div class="modal-content" style="max-width: 600px;">
+      <div class="modal-header">
+        <h2>Admin Panel</h2>
+        <button class="modal-close" onclick="closeAdminPanel()">×</button>
+      </div>
+      
+      <div class="admin-section">
+        <h3>Reset User Password</h3>
+        <form id="modal-admin-reset-form">
+          <div class="form-group">
+            <label for="modal-reset-username">Username</label>
+            <input type="text" id="modal-reset-username" required>
+          </div>
+          
+          <div class="form-group">
+            <label for="modal-reset-password">New Password</label>
+            <input type="text" id="modal-reset-password" required minlength="6">
+            <small>You'll need to give this to the user</small>
+          </div>
+          
+          <button type="submit" class="btn btn-danger">Reset Password</button>
+          
+          <div id="modal-reset-error" class="error-message"></div>
+          <div id="modal-reset-success" class="success-message"></div>
+        </form>
+      </div>
+      
+      <div class="admin-section" style="margin-top: 2rem;">
+        <h3>All Users</h3>
+        <div id="modal-users-list" style="max-height: 300px; overflow-y: auto;">
+          <button class="btn btn-secondary" onclick="loadUsersInModal()">Load Users</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+
+  <button id="logout-btn" style="display: none;"></button>
+
+  <script src="js/config.js"></script>
+  <script src="js/auth.js"></script>
+  <script src="js/upload.js"></script>
+  <script src="js/jobs.js"></script>
+  <script src="js/dashboard.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
