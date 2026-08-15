@@ -179,6 +179,22 @@ Authenticated with an `x-worker-secret` header instead of a user token.
 
 ---
 
+## Testing
+
+```bash
+cd backend
+npm test
+```
+
+Two suites run in sequence:
+
+- **Worker callback endpoints** — the callback API exercised in-process against the real queue. Blender is never spawned, so this runs anywhere.
+- **API, rendering and persistence** — a real server instance covering upload validation, ownership and access control, admin routes, an actual Blender render, downloads, and recovery across a restart.
+
+Each suite runs in its own temporary directory with a separate database, so tests never touch real uploads, renders or user accounts. Render-dependent checks are skipped automatically when Blender is not installed, leaving 34 of the 45 checks still meaningful on a machine without it.
+
+---
+
 ## Reliability
 
 **Persistence.** Jobs and sessions are written to SQLite as they change. Restarting the server preserves job history, progress and login sessions.
@@ -197,7 +213,7 @@ Worth being explicit about, since this is a personal project rather than product
 - **Users are stored in `users.json`** while jobs and sessions live in SQLite — an inconsistency left over from an earlier iteration.
 - **One worker at a time.** The queue renders strictly sequentially; the HTTP callback boundary exists so this can change, but multi-worker dispatch is not implemented.
 - **A resumed job re-renders from the first frame** rather than continuing where it stopped.
-- **No automated test suite in the repository.**
+- **The frontend has no automated coverage** — the test suite exercises the API only.
 
 ---
 
