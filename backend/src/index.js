@@ -8,6 +8,7 @@ import authRouter from './routes/auth.js'
 import { requireAuth } from './auth.js';
 import uploadRouter from './routes/upload.js';
 import jobsRouter from './routes/jobs.js';
+import { resumeInterruptedJobs } from './queue.js';
 import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
 import crypto from 'crypto';
@@ -68,8 +69,9 @@ app.get('/api/cleanup-test', (req, res) => {
 });
 
 cleanupOldFiles();
+resumeInterruptedJobs();
 
-const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000; 
+const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;
 setInterval(cleanupOldFiles, CLEANUP_INTERVAL);
 console.log('Auto-cleanup scheduled (runs every 24 hours, deletes files older than 48 hours)');
 

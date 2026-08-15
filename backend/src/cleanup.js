@@ -1,9 +1,11 @@
 import fs from 'fs';
 import path from 'path';
+import { pruneOldJobs } from './queue.js';
+import { purgeExpiredSessions } from './db.js';
 
 export function cleanupOldFiles() {
   const now = Date.now();
-  const fortyEightHoursAgo = now - (48 * 60 * 60 * 1000); 
+  const fortyEightHoursAgo = now - (48 * 60 * 60 * 1000);
   
   console.log('Starting cleanup process...');
   
@@ -49,8 +51,15 @@ export function cleanupOldFiles() {
       }
     });
     
+    const prunedJobs = pruneOldJobs(fortyEightHoursAgo);
+    const prunedSessions = purgeExpiredSessions();
+
+    if (prunedJobs || prunedSessions) {
+      console.log(`Pruned ${prunedJobs} job record(s) and ${prunedSessions} expired session(s)`);
+    }
+
     console.log('Cleanup complete!');
-    
+
   } catch (error) {
     console.error('Cleanup error:', error.message);
   }

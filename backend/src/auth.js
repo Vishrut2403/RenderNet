@@ -1,5 +1,6 @@
 import crypto from 'crypto';
 import fs from 'fs';
+import { saveSession, loadSessions, deleteSession } from './db.js';
 
 const USERS_FILE = 'users.json';
 
@@ -37,7 +38,15 @@ function generateToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-const sessions = new Map(); 
+const sessions = new Map();
+
+for (const row of loadSessions()) {
+  sessions.set(row.token, {
+    username: row.username,
+    role: row.role,
+    expiresAt: row.expiresAt
+  });
+}
 
 const SESSION_DURATION = 24 * 60 * 60 * 1000;
 
@@ -57,12 +66,10 @@ export function login(username, password) {
   const token = generateToken();
   const expiresAt = Date.now() + SESSION_DURATION;
   
-  sessions.set(token, {
-    username: user.username,
-    role: user.role,
-    expiresAt
-  });
-  
+  const session = { username: user.username, role: user.role, expiresAt };
+  sessions.set(token, session);
+  saveSession(token, session);
+
   console.log(`User logged in: ${username}`);
   
   return {
@@ -136,6 +143,7 @@ export function verifyToken(token) {
   
   if (Date.now() > session.expiresAt) {
     sessions.delete(token);
+    deleteSession(token);
     return { valid: false, error: 'Session expired' };
   }
   
@@ -148,6 +156,7 @@ export function verifyToken(token) {
 
 export function logout(token) {
   sessions.delete(token);
+  deleteSession(token);
   return { success: true };
 }
 

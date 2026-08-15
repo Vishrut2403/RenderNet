@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import RenderWorker from './render-worker.js';
 import { ensureDir } from './utils/file-utils.js';
+import { saveJob, loadJobs, deleteJob } from './db.js';
 
 const jobs = new Map();
 const renderQueue = [];
@@ -15,10 +16,55 @@ const WORKER_SCRATCH = 'worker-tmp';
 
 let lastJobId = 0;
 
+for (const job of loadJobs()) {
+  jobs.set(job.id, job);
+  lastJobId = Math.max(lastJobId, job.id);
+}
+
 function nextJobId() {
   const now = Date.now();
   lastJobId = now > lastJobId ? now : lastJobId + 1;
   return lastJobId;
+}
+
+// A job left mid-render by a restart has no worker behind it any more. Reset it
+// and queue it again, giving up after repeated interruptions so a job that
+// crashes the server cannot loop forever.
+export function resumeInterruptedJobs() {
+  let resumed = 0;
+  let abandoned = 0;
+
+  for (const job of jobs.values()) {
+    if (job.status !== 'rendering' && job.status !== 'pending') continue;
+
+    if (job.status === 'rendering' && ++job.interruptions > 2) {
+      job.status = 'failed';
+      job.error = 'Abandoned after repeated server restarts';
+      job.completedAt = new Date().toISOString();
+      abandoned++;
+    } else {
+      Object.assign(job, {
+        status: 'pending',
+        startedAt: null,
+        currentFrame: null,
+        progress: 0,
+        completedFrames: 0,
+        failedFrames: 0,
+        uploadedFrames: [],
+        frameErrors: []
+      });
+      renderQueue.push(job.id);
+      resumed++;
+    }
+
+    saveJob(job);
+  }
+
+  if (resumed || abandoned) {
+    console.log(`Recovered ${resumed} interrupted job(s), abandoned ${abandoned}`);
+  }
+
+  if (resumed) processQueue();
 }
 
 export function addToQueue(jobData) {
@@ -47,10 +93,12 @@ export function addToQueue(jobData) {
     completedFrames: 0,
     failedFrames: 0,
     uploadedFrames: [],
-    frameErrors: []
+    frameErrors: [],
+    interruptions: 0
   };
-  
+
   jobs.set(jobId, job);
+  saveJob(job);
   renderQueue.push(jobId);
   
   console.log(`Job ${jobId} added to queue. Queue length: ${renderQueue.length}`);
@@ -82,6 +130,7 @@ function processQueue() {
   
   job.status = 'rendering';
   job.startedAt = new Date().toISOString();
+  saveJob(job);
   isRendering = true;
   currentJobId = jobId;
   
@@ -114,6 +163,7 @@ function failJob(jobId, message) {
     job.status = 'failed';
     job.error = message;
     job.completedAt = new Date().toISOString();
+    saveJob(job);
   }
 
   if (currentJobId === jobId) {
@@ -122,6 +172,21 @@ function failJob(jobId, message) {
     currentWorker = null;
     setTimeout(processQueue, 1000);
   }
+}
+
+export function pruneOldJobs(cutoffMs) {
+  let pruned = 0;
+
+  for (const job of jobs.values()) {
+    if (job.status === 'pending' || job.status === 'rendering') continue;
+    if (new Date(job.createdAt).getTime() >= cutoffMs) continue;
+
+    jobs.delete(job.id);
+    deleteJob(job.id);
+    pruned++;
+  }
+
+  return pruned;
 }
 
 export function getJob(jobId) {
@@ -162,6 +227,7 @@ export function updateJobProgress(jobId, currentFrame) {
 
   job.currentFrame = currentFrame;
   job.progress = computeProgress(job, currentFrame);
+  saveJob(job);
 
   return job;
 }
@@ -176,6 +242,7 @@ export function recordFrameUpload(jobId, frameNumber, filename) {
   job.completedFrames = job.uploadedFrames.length;
   job.currentFrame = frameNumber;
   job.progress = computeProgress(job, frameNumber);
+  saveJob(job);
 
   return job;
 }
@@ -190,6 +257,7 @@ export function recordFrameFailure(jobId, frameNumber, error) {
     at: new Date().toISOString()
   });
   job.failedFrames = job.frameErrors.length;
+  saveJob(job);
 
   return job;
 }
@@ -217,6 +285,7 @@ export function completeJob(jobId, { successfulFrames, failedFrames }) {
     job.progress = 100;
   }
 
+  saveJob(job);
   console.log(`Job ${jobId} finished: ${job.status} (${successfulFrames} ok, ${failedFrames} failed)`);
 
   if (currentJobId === jobId) {
@@ -247,9 +316,10 @@ export function cancelJob(jobId) {
     
     job.status = 'cancelled';
     job.cancelledAt = new Date().toISOString();
-    
+    saveJob(job);
+
     deleteJobFiles(job);
-    
+
     console.log(`Job ${jobId} cancelled (was pending)`);
     return { success: true, message: 'Job cancelled successfully' };
   }
@@ -272,9 +342,10 @@ export function cancelJob(jobId) {
 
     job.status = 'cancelled';
     job.cancelledAt = new Date().toISOString();
+    saveJob(job);
     isRendering = false;
     currentJobId = null;
-    
+
     deleteJobFiles(job);
     
     console.log(`Job ${jobId} cancelled (was rendering)`);
