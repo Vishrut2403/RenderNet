@@ -34,7 +34,8 @@ The worker renders one frame at a time and uploads each as it finishes, so progr
 
 - Upload `.blend` files and render a chosen frame range remotely
 - Token-based authentication with user and admin roles, bcrypt password hashing
-- Single-worker job queue with live progress and per-frame error reporting
+- Live render progress: per-frame position, percentage, and per-frame error detail
+- Thumbnail gallery of rendered frames, straight from the browser
 - Cancel queued or in-flight jobs (terminates the running Blender process)
 - Download finished renders individually or as a ZIP
 - Jobs and sessions survive restarts; interrupted renders resume automatically
@@ -46,7 +47,7 @@ The worker renders one frame at a time and uploads each as it finishes, so progr
 
 **Backend** — Node.js, Express, SQLite (`better-sqlite3`), bcrypt, Multer, Archiver, Blender CLI
 
-**Frontend** — Vanilla JavaScript, HTML and CSS (dark theme), no framework or build step
+**Frontend** — React 18, Vite, hand-written CSS (dark theme)
 
 ---
 
@@ -83,14 +84,21 @@ The worker renders one frame at a time and uploads each as it finishes, so progr
    npm start        # or: npm run dev
    ```
 
-4. **Serve the frontend**
+4. **Run the frontend**
 
    ```bash
    cd ../frontend
-   npx http-server -p 8080
+   npm install
+   npm run dev
    ```
 
-   The frontend has no dependencies and needs no build step. If you serve it on a different port or host, update `API_URL` in `frontend/js/config.js`.
+   The dev server runs on port 8080 and proxies `/api` to the backend, so there is no CORS setup. Open **http://localhost:8080** — Vite binds the hostname, so `127.0.0.1` will not connect.
+
+   For a production build run `npm run build` and serve `dist/`, setting `VITE_API_URL` to the backend origin if it is not same-origin.
+
+   > Opening `index.html` directly, or serving the source folder with something
+   > like `http-server`, cannot work: browsers refuse to load `.jsx` modules
+   > without Vite compiling them. Doing so shows a message saying as much.
 
 ### First login
 
@@ -116,6 +124,8 @@ All settings are environment variables read from `backend/.env`.
 | `BLENDER_PATH` | auto-detected | Blender executable, if not on `PATH` |
 | `CYCLES_DEVICE` | `CPU` | Cycles render device: `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI`, `METAL` |
 | `API_URL` | `http://localhost:5500` | Base URL the worker posts results back to |
+
+The frontend reads one variable of its own, `VITE_API_URL`, defaulting to `/api` (the dev proxy).
 
 ---
 
@@ -213,7 +223,7 @@ Worth being explicit about, since this is a personal project rather than product
 
 - **One worker at a time.** The queue renders strictly sequentially; the HTTP callback boundary exists so this can change, but multi-worker dispatch is not implemented.
 - **A resumed job re-renders from the first frame** rather than continuing where it stopped.
-- **The frontend has no automated coverage** — the test suite exercises the API only.
+- **The frontend has no automated coverage in the repo** — it has been verified end-to-end in a headless browser, but those checks are not committed.
 
 ---
 
