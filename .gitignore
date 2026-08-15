@@ -14,9 +14,11 @@ yarn-error.log*
 uploads/
 renders/
 output/
+worker-tmp/
 backend/uploads/
 backend/renders/
 backend/output/
+backend/worker-tmp/
 
 # OS files
 .DS_Store

@@ -181,6 +181,10 @@ export function requireAdmin(req, res, next) {
 
 initUsersFile();
 
+export function listUsers() {
+  return Object.values(loadUsers()).map(({ passwordHash, ...user }) => user);
+}
+
 export function adminResetPassword(targetUsername, newPassword) {
   const users = loadUsers();
   

@@ -33,7 +33,33 @@ function authenticateDownload(req, res, next) {
   next();
 }
 
-router.use('/files', authenticateDownload, express.static('renders'));
+function canAccess(job, user) {
+  return job.owner === user.username || user.role === 'admin';
+}
+
+router.get('/files/render_:id/:filename', authenticateDownload, (req, res) => {
+  const job = getJob(Number(req.params.id));
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (!canAccess(job, req.user)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const filePath = path.resolve(job.outputFolder, path.basename(req.params.filename));
+
+  if (!filePath.startsWith(path.resolve(job.outputFolder) + path.sep)) {
+    return res.status(400).json({ error: 'Invalid file path' });
+  }
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'File not found' });
+  }
+
+  res.sendFile(filePath);
+});
 
 router.get('/:id/files', authenticateDownload, (req, res) => {
   try {
@@ -44,7 +70,7 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
       return res.status(404).json({ error: 'Job not found' });
     }
     
-    if (job.owner !== req.user.username && req.user.role !== 'admin') {
+    if (!canAccess(job, req.user)) {
       return res.status(403).json({ error: 'Access denied' });
     }
     
@@ -93,7 +119,7 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
       return res.status(404).json({ error: 'Job not found' });
     }
     
-    if (job.owner !== req.user.username && req.user.role !== 'admin') {
+    if (!canAccess(job, req.user)) {
       return res.status(403).json({ error: 'Access denied' });
     }
     

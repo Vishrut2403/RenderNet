@@ -1,27 +1,26 @@
 import express from 'express';
-import { cancelJob } from '../queue.js';
-import { getJob, getAllJobs, getQueueStatus, getQueuePosition } from '../queue.js';
+import { cancelJob, getJob, getAllJobs, getQueueStatus, getQueuePosition } from '../queue.js';
 
-const express = require('express');
 const router = express.Router();
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-const auth = require('../auth');
-const jobQueue = require('../queue');
 
-const upload = multer({ dest: 'uploads/' });
+function canAccess(job, user) {
+  return job.owner === user.username || user.role === 'admin';
+}
 
 router.get('/:id', (req, res) => {
-  const jobId = parseInt(req.params.id);
+  const jobId = Number(req.params.id);
   const job = getJob(jobId);
-  
+
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
-  
+
+  if (!canAccess(job, req.user)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
   const queuePosition = job.status === 'pending' ? getQueuePosition(jobId) : null;
-  
+
   res.json({
     ...job,
     queuePosition
@@ -29,22 +28,22 @@ router.get('/:id', (req, res) => {
 });
 
 router.get('/', (req, res) => {
-  const allJobs = getAllJobs();
+  const visible = getAllJobs().filter(job => canAccess(job, req.user));
   res.json({
-    total: allJobs.length,
-    jobs: allJobs
+    total: visible.length,
+    jobs: visible
   });
 });
 
 router.post('/:id/cancel', (req, res) => {
-  const jobId = parseInt(req.params.id);
+  const jobId = Number(req.params.id);
   const job = getJob(jobId);
-  
+
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
-  
-  if (job.owner !== req.user.username && req.user.role !== 'admin') {
+
+  if (!canAccess(job, req.user)) {
     return res.status(403).json({ error: 'You can only cancel your own jobs' });
   }
   
@@ -58,7 +57,15 @@ router.post('/:id/cancel', (req, res) => {
 });
 
 router.get('/queue/status', (req, res) => {
-  res.json(getQueueStatus());
+  const status = getQueueStatus();
+
+  res.json({
+    ...status,
+    queue: status.queue.filter(entry => {
+      const job = getJob(entry.id);
+      return job && canAccess(job, req.user);
+    })
+  });
 });
 
 export default router;

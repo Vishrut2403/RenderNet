@@ -9,11 +9,21 @@ import { requireAuth } from './auth.js';
 import uploadRouter from './routes/upload.js';
 import jobsRouter from './routes/jobs.js';
 import downloadRouter from './routes/download.js';
+import workerRouter from './routes/worker.js';
+import crypto from 'crypto';
 
 dotenv.config();
 
+// Ephemeral rather than a hardcoded default, so an unconfigured deployment
+// never ships a publicly-known credential.
+if (!process.env.WORKER_SECRET) {
+  process.env.WORKER_SECRET = crypto.randomBytes(32).toString('hex');
+  console.warn('WORKER_SECRET not set - generated a temporary one for this process.');
+  console.warn('Remote workers will not be able to authenticate until you set it in .env');
+}
+
 const app = express();
-const PORT = process.env.PORT || 4000;
+const PORT = process.env.PORT || 5500;
 
 app.use(cors({
   origin: '*', 
@@ -27,6 +37,7 @@ app.get('/api/test', (req, res) => {
 
 ensureDir('uploads');
 ensureDir('renders');
+ensureDir('worker-tmp');
 
 const blenderPath = findBlenderExecutable();
 if (!blenderPath) {
@@ -40,7 +51,9 @@ if (!blenderPath) {
 app.use('/api/auth', authRouter);
 app.use('/api/upload', requireAuth, uploadRouter);
 app.use('/api/jobs', requireAuth, jobsRouter);
-app.use('/api/download', requireAuth, downloadRouter);
+// Both authenticate inside their own routers.
+app.use('/api/download', downloadRouter);
+app.use('/api/worker', workerRouter);
 
 app.get('/api/health', (req, res) => {
   res.json({ 

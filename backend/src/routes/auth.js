@@ -1,5 +1,5 @@
 import express from 'express';
-import { login, signup, changePassword, logout, requireAuth, requireAdmin, adminResetPassword } from '../auth.js';
+import { login, signup, changePassword, logout, requireAuth, requireAdmin, adminResetPassword, listUsers } from '../auth.js';
 
 const router = express.Router();
 
@@ -66,6 +66,10 @@ router.get('/verify', (req, res) => {
   } catch {
     res.json({ valid: false });
   }
+});
+
+router.get('/users', requireAuth, requireAdmin, (req, res) => {
+  res.json({ users: listUsers() });
 });
 
 router.post('/admin/reset-password', requireAuth, requireAdmin, (req, res) => {

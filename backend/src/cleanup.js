@@ -28,26 +28,26 @@ export function cleanupOldFiles() {
         console.log(`Cleaned ${deletedUploads} old upload(s)`);
       }
     }
-    const rendersDir = 'renders';
-    if (fs.existsSync(rendersDir)) {
-      const renderFolders = fs.readdirSync(rendersDir);
-      let deletedRenders = 0;
-      
-      renderFolders.forEach(folder => {
-        const folderPath = path.join(rendersDir, folder);
+    ['renders', 'worker-tmp'].forEach(dir => {
+      if (!fs.existsSync(dir)) return;
+
+      let deleted = 0;
+
+      fs.readdirSync(dir).forEach(folder => {
+        const folderPath = path.join(dir, folder);
         const stats = fs.statSync(folderPath);
-        
+
         if (stats.mtimeMs < fortyEightHoursAgo) {
           fs.rmSync(folderPath, { recursive: true, force: true });
-          deletedRenders++;
-          console.log(`   🗑️ Deleted old render folder: ${folder}`);
+          deleted++;
+          console.log(`   🗑️ Deleted old folder: ${folderPath}`);
         }
       });
-      
-      if (deletedRenders > 0) {
-        console.log(`Cleaned ${deletedRenders} old render folder(s)`);
+
+      if (deleted > 0) {
+        console.log(`Cleaned ${deleted} old folder(s) from ${dir}`);
       }
-    }
+    });
     
     console.log('Cleanup complete!');
     

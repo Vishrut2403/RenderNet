@@ -1,30 +1,53 @@
 import fs from 'fs';
-import { execFile } from 'child_process';
-import { renderJob } from './render-worker.js';
+import path from 'path';
+import RenderWorker from './render-worker.js';
+import { ensureDir } from './utils/file-utils.js';
+
 const jobs = new Map();
 const renderQueue = [];
 let isRendering = false;
 let currentJobId = null;
-let currentBlenderProcess = null;
+let currentWorker = null;
+
+// Separate from 'renders' so a worker never streams a frame out of the same
+// file the upload route is writing into.
+const WORKER_SCRATCH = 'worker-tmp';
+
+let lastJobId = 0;
+
+function nextJobId() {
+  const now = Date.now();
+  lastJobId = now > lastJobId ? now : lastJobId + 1;
+  return lastJobId;
+}
 
 export function addToQueue(jobData) {
-  const jobId = Date.now();
-  
+  const jobId = nextJobId();
+  const outputFolder = path.join('renders', `render_${jobId}`);
+  ensureDir(outputFolder);
+
   const job = {
     id: jobId,
     status: 'pending',
     filePath: jobData.filePath,
-    outputPath: jobData.outputPath,
-    outputFolder: jobData.outputFolder,
+    outputPath: path.join(outputFolder, 'frame_####.png'),
+    outputFolder,
     frameStart: jobData.frameStart,
     frameEnd: jobData.frameEnd,
     renderEngine: jobData.renderEngine || 'CYCLES',
     originalFilename: jobData.originalFilename,
-    owner: jobData.owner || 'anonymous',  
+    owner: jobData.owner || 'anonymous',
     createdAt: new Date().toISOString(),
     startedAt: null,
     completedAt: null,
-    error: null
+    error: null,
+    totalFrames: jobData.frameEnd - jobData.frameStart + 1,
+    currentFrame: null,
+    progress: 0,
+    completedFrames: 0,
+    failedFrames: 0,
+    uploadedFrames: [],
+    frameErrors: []
   };
   
   jobs.set(jobId, job);
@@ -64,34 +87,41 @@ function processQueue() {
   
   console.log(`Starting render for job ${jobId}`);
 
-  renderJob(
-    {
-      filePath: job.filePath,
-      outputPath: job.outputPath,
+  const worker = new RenderWorker('local-worker');
+  currentWorker = worker;
+
+  worker
+    .renderJob({
+      id: jobId,
+      blendPath: job.filePath,
+      outputDir: path.join(WORKER_SCRATCH, `job_${jobId}`),
       frameStart: job.frameStart,
       frameEnd: job.frameEnd,
       renderEngine: job.renderEngine
-    },
-    (error, result) => {
-      if (error) {
-        job.status = 'failed';
-        job.error = error.message;
-        console.error(`Job ${jobId} failed: ${error.message}`);
-      } else {
-        job.status = 'completed';
-        job.completedAt = new Date().toISOString();
-        console.log(`Job ${jobId} completed successfully`);
-      }
-      isRendering = false;
-      currentJobId = null;
-      currentBlenderProcess = null;
-      
-      setTimeout(processQueue, 1000);
-    },
-    (process) => {
-      currentBlenderProcess = process;
-    }
-  );
+    })
+    .catch((error) => {
+      // Completion normally arrives over HTTP; this only fires if the worker
+      // died before reporting, which would otherwise wedge the queue.
+      console.error(`Worker crashed on job ${jobId}: ${error.message}`);
+      failJob(jobId, error.message);
+    });
+}
+
+function failJob(jobId, message) {
+  const job = jobs.get(jobId);
+
+  if (job && job.status === 'rendering') {
+    job.status = 'failed';
+    job.error = message;
+    job.completedAt = new Date().toISOString();
+  }
+
+  if (currentJobId === jobId) {
+    isRendering = false;
+    currentJobId = null;
+    currentWorker = null;
+    setTimeout(processQueue, 1000);
+  }
 }
 
 export function getJob(jobId) {
@@ -121,6 +151,84 @@ export function getQueuePosition(jobId) {
   return index === -1 ? null : index + 1;
 }
 
+function computeProgress(job, currentFrame) {
+  const done = currentFrame - job.frameStart + 1;
+  return Math.max(0, Math.min(100, Math.round((done / job.totalFrames) * 100)));
+}
+
+export function updateJobProgress(jobId, currentFrame) {
+  const job = jobs.get(jobId);
+  if (!job) return null;
+
+  job.currentFrame = currentFrame;
+  job.progress = computeProgress(job, currentFrame);
+
+  return job;
+}
+
+export function recordFrameUpload(jobId, frameNumber, filename) {
+  const job = jobs.get(jobId);
+  if (!job) return null;
+
+  if (!job.uploadedFrames.includes(filename)) {
+    job.uploadedFrames.push(filename);
+  }
+  job.completedFrames = job.uploadedFrames.length;
+  job.currentFrame = frameNumber;
+  job.progress = computeProgress(job, frameNumber);
+
+  return job;
+}
+
+export function recordFrameFailure(jobId, frameNumber, error) {
+  const job = jobs.get(jobId);
+  if (!job) return null;
+
+  job.frameErrors.push({
+    frame: frameNumber,
+    error,
+    at: new Date().toISOString()
+  });
+  job.failedFrames = job.frameErrors.length;
+
+  return job;
+}
+
+export function completeJob(jobId, { successfulFrames, failedFrames }) {
+  const job = jobs.get(jobId);
+  if (!job) return null;
+
+  // A late callback must not resurrect a job cancelled mid-render.
+  if (job.status === 'cancelled') {
+    console.log(`Ignoring completion for cancelled job ${jobId}`);
+    return job;
+  }
+
+  job.completedFrames = successfulFrames;
+  job.failedFrames = failedFrames;
+  job.completedAt = new Date().toISOString();
+  job.currentFrame = null;
+
+  if (failedFrames > 0 && successfulFrames === 0) {
+    job.status = 'failed';
+    job.error = `All ${failedFrames} frame(s) failed to render`;
+  } else {
+    job.status = 'completed';
+    job.progress = 100;
+  }
+
+  console.log(`Job ${jobId} finished: ${job.status} (${successfulFrames} ok, ${failedFrames} failed)`);
+
+  if (currentJobId === jobId) {
+    isRendering = false;
+    currentJobId = null;
+    currentWorker = null;
+    setTimeout(processQueue, 1000);
+  }
+
+  return job;
+}
+
 export function cancelJob(jobId) {
   const job = jobs.get(jobId);
   if (!job) return { success: false, error: 'Job not found' };
@@ -147,17 +255,21 @@ export function cancelJob(jobId) {
   }
   
   if (job.status === 'rendering') {
-    if (currentBlenderProcess && currentJobId === jobId) {
+    if (currentWorker && currentJobId === jobId) {
       try {
-        currentBlenderProcess.kill('SIGTERM');
-        console.log(`Killed Blender process for job ${jobId}`);
+        const killed = currentWorker.cancel();
+        console.log(
+          killed
+            ? `Killed Blender process for job ${jobId}`
+            : `Job ${jobId} will stop before its next frame`
+        );
       } catch (error) {
-        console.error(`Failed to kill process:`, error.message);
+        console.error(`Failed to cancel worker:`, error.message);
       }
-      
-      currentBlenderProcess = null;
+
+      currentWorker = null;
     }
-    
+
     job.status = 'cancelled';
     job.cancelledAt = new Date().toISOString();
     isRendering = false;
