@@ -37,6 +37,16 @@ db.exec(`
     expiresAt INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS users (
+    username TEXT PRIMARY KEY,
+    passwordHash TEXT NOT NULL,
+    hashAlgo TEXT NOT NULL DEFAULT 'bcrypt',
+    role TEXT NOT NULL DEFAULT 'user',
+    createdAt TEXT,
+    passwordChangedAt TEXT,
+    passwordResetAt TEXT
+  );
+
   CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner);
 `);
 
@@ -101,6 +111,37 @@ export function deleteSession(token) {
 
 export function purgeExpiredSessions() {
   return db.prepare('DELETE FROM sessions WHERE expiresAt <= ?').run(Date.now()).changes;
+}
+
+const upsertUser = db.prepare(`
+  INSERT OR REPLACE INTO users
+    (username, passwordHash, hashAlgo, role, createdAt, passwordChangedAt, passwordResetAt)
+  VALUES
+    (@username, @passwordHash, @hashAlgo, @role, @createdAt, @passwordChangedAt, @passwordResetAt)
+`);
+
+export function saveUser(user) {
+  upsertUser.run({
+    username: user.username,
+    passwordHash: user.passwordHash,
+    hashAlgo: user.hashAlgo || 'bcrypt',
+    role: user.role || 'user',
+    createdAt: user.createdAt ?? null,
+    passwordChangedAt: user.passwordChangedAt ?? null,
+    passwordResetAt: user.passwordResetAt ?? null
+  });
+}
+
+export function getUser(username) {
+  return db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+}
+
+export function getAllUsers() {
+  return db.prepare('SELECT * FROM users ORDER BY createdAt').all();
+}
+
+export function countUsers() {
+  return db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
 }
 
 export default db;

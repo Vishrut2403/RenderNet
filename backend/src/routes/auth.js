@@ -3,14 +3,14 @@ import { login, signup, changePassword, logout, requireAuth, requireAdmin, admin
 
 const router = express.Router();
 
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const { username, password } = req.body;
   
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
   
-  const result = login(username, password);
+  const result = await login(username, password);
   
   if (result.success) {
     res.json(result);
@@ -19,10 +19,10 @@ router.post('/login', (req, res) => {
   }
 });
 
-router.post('/signup', (req, res) => {
+router.post('/signup', async (req, res) => {
   const { username, password } = req.body;
   
-  const result = signup(username, password);
+  const result = await signup(username, password);
   
   if (result.success) {
     res.json(result);
@@ -31,7 +31,7 @@ router.post('/signup', (req, res) => {
   }
 });
 
-router.post('/change-password', requireAuth, (req, res) => {
+router.post('/change-password', requireAuth, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   const username = req.user.username;
   
@@ -39,7 +39,7 @@ router.post('/change-password', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Old and new passwords required' });
   }
   
-  const result = changePassword(username, oldPassword, newPassword);
+  const result = await changePassword(username, oldPassword, newPassword);
   
   if (result.success) {
     res.json(result);
@@ -72,14 +72,14 @@ router.get('/users', requireAuth, requireAdmin, (req, res) => {
   res.json({ users: listUsers() });
 });
 
-router.post('/admin/reset-password', requireAuth, requireAdmin, (req, res) => {
+router.post('/admin/reset-password', requireAuth, requireAdmin, async (req, res) => {
   const { targetUsername, newPassword } = req.body;
   
   if (!targetUsername || !newPassword) {
     return res.status(400).json({ error: 'Username and new password required' });
   }
   
-  const result = adminResetPassword(targetUsername, newPassword);
+  const result = await adminResetPassword(targetUsername, newPassword);
   
   if (result.success) {
     res.json(result);

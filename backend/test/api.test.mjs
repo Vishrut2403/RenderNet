@@ -2,6 +2,8 @@
 // Render-dependent checks are skipped when Blender is unavailable.
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
+import Database from 'better-sqlite3';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, blenderAvailable, createFixtureBlend
@@ -15,8 +17,54 @@ export default async function run() {
   let server;
 
   try {
+    // Seeded before the server boots so the one-time users.json import runs.
+    const legacyHash = crypto.createHash('sha256').update('legacypass').digest('hex');
+    fs.writeFileSync(path.join(sandbox, 'users.json'), JSON.stringify({
+      admin: {
+        username: 'admin',
+        passwordHash: crypto.createHash('sha256').update('admin123').digest('hex'),
+        role: 'admin',
+        createdAt: '2026-02-02T00:00:00.000Z'
+      },
+      legacyuser: {
+        username: 'legacyuser',
+        passwordHash: legacyHash,
+        role: 'user',
+        createdAt: '2026-03-01T00:00:00.000Z'
+      }
+    }, null, 2));
+
     server = await startServer({ port: PORT, cwd: sandbox });
     const { base } = server;
+
+    const openDb = () => new Database(path.join(sandbox, 'test.db'), { readonly: true });
+    const algoFor = username => {
+      const db = openDb();
+      const row = db.prepare('SELECT hashAlgo, passwordHash FROM users WHERE username = ?').get(username);
+      db.close();
+      return row;
+    };
+
+    console.log('\n  Password hashing and legacy migration');
+    results.check('users.json imported into the database', !!algoFor('legacyuser'));
+    results.check('imported hashes keep their original algorithm',
+      algoFor('legacyuser').hashAlgo === 'sha256', algoFor('legacyuser')?.hashAlgo);
+
+    const legacyToken = await login(base, 'legacyuser', 'legacypass');
+    results.check('legacy sha256 password still authenticates', !!legacyToken);
+    results.check('hash upgraded to bcrypt after login',
+      algoFor('legacyuser').hashAlgo === 'bcrypt', algoFor('legacyuser').hashAlgo);
+    results.check('upgraded hash is a bcrypt digest',
+      algoFor('legacyuser').passwordHash.startsWith('$2b$'));
+    results.check('re-login works against the upgraded hash',
+      !!(await login(base, 'legacyuser', 'legacypass')));
+
+    results.check('wrong password rejected',
+      await status(`${base}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'legacyuser', password: 'wrong' })
+      }) === 401);
 
     const adminToken = await login(base, 'admin', 'admin123');
 
@@ -26,6 +74,23 @@ export default async function run() {
       body: JSON.stringify({ username: 'tester', password: 'testpass123' })
     });
     const userToken = await login(base, 'tester', 'testpass123');
+
+    results.check('new signups are hashed with bcrypt',
+      algoFor('tester').hashAlgo === 'bcrypt' && algoFor('tester').passwordHash.startsWith('$2b$'));
+
+    const changed = await fetch(`${base}/auth/change-password`, {
+      method: 'POST',
+      headers: { ...auth(userToken), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword: 'testpass123', newPassword: 'newpass456' })
+    });
+    results.check('password change succeeds', changed.status === 200, `got ${changed.status}`);
+    results.check('new password authenticates', !!(await login(base, 'tester', 'newpass456')));
+    results.check('old password no longer authenticates',
+      await status(`${base}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'tester', password: 'testpass123' })
+      }) === 401);
 
     // Only the extension is checked at upload time, so validation and access
     // control can be exercised without invoking Blender.

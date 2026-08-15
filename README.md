@@ -33,7 +33,7 @@ The worker renders one frame at a time and uploads each as it finishes, so progr
 ## Features
 
 - Upload `.blend` files and render a chosen frame range remotely
-- Token-based authentication with user and admin roles
+- Token-based authentication with user and admin roles, bcrypt password hashing
 - Single-worker job queue with live progress and per-frame error reporting
 - Cancel queued or in-flight jobs (terminates the running Blender process)
 - Download finished renders individually or as a ZIP
@@ -44,7 +44,7 @@ The worker renders one frame at a time and uploads each as it finishes, so progr
 
 ## Tech Stack
 
-**Backend** — Node.js, Express, SQLite (`better-sqlite3`), Multer, Archiver, Blender CLI
+**Backend** — Node.js, Express, SQLite (`better-sqlite3`), bcrypt, Multer, Archiver, Blender CLI
 
 **Frontend** — Vanilla JavaScript, HTML and CSS (dark theme), no framework or build step
 
@@ -191,7 +191,7 @@ Two suites run in sequence:
 - **Worker callback endpoints** — the callback API exercised in-process against the real queue. Blender is never spawned, so this runs anywhere.
 - **API, rendering and persistence** — a real server instance covering upload validation, ownership and access control, admin routes, an actual Blender render, downloads, and recovery across a restart.
 
-Each suite runs in its own temporary directory with a separate database, so tests never touch real uploads, renders or user accounts. Render-dependent checks are skipped automatically when Blender is not installed, leaving 34 of the 45 checks still meaningful on a machine without it.
+Each suite runs in its own temporary directory with a separate database, so tests never touch real uploads, renders or user accounts. Render-dependent checks are skipped automatically when Blender is not installed, leaving 45 of the 56 checks still meaningful on a machine without it.
 
 ---
 
@@ -203,14 +203,14 @@ Each suite runs in its own temporary directory with a separate database, so test
 
 **Cleanup.** Every 24 hours, uploads, render output, worker scratch files and job records older than 48 hours are deleted, along with expired sessions.
 
+**Upgrading an existing install.** Earlier versions kept accounts in `users.json` with unsalted SHA-256 hashes. On first start those accounts are imported into the database and the file is renamed to `users.json.migrated`. Existing passwords keep working and are re-hashed with bcrypt the next time each user logs in, so no password resets are needed.
+
 ---
 
 ## Known Limitations
 
 Worth being explicit about, since this is a personal project rather than production software:
 
-- **Password hashing is unsalted SHA-256.** Adequate for a local instance, not for anything internet-facing; bcrypt or argon2 is the correct choice.
-- **Users are stored in `users.json`** while jobs and sessions live in SQLite — an inconsistency left over from an earlier iteration.
 - **One worker at a time.** The queue renders strictly sequentially; the HTTP callback boundary exists so this can change, but multi-worker dispatch is not implemented.
 - **A resumed job re-renders from the first frame** rather than continuing where it stopped.
 - **The frontend has no automated coverage** — the test suite exercises the API only.
@@ -222,7 +222,6 @@ Worth being explicit about, since this is a personal project rather than product
 - Multi-worker dispatch across machines
 - WebSocket progress updates in place of polling
 - Resume interrupted jobs from the last completed frame
-- bcrypt password hashing and a single storage backend
 
 ---
 

@@ -40,6 +40,7 @@ logs/
 *.db-shm
 *.sqlite
 users.json
+users.json.migrated
 
 # Temporary files
 tmp/
