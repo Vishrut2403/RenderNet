@@ -6,13 +6,20 @@ import path from 'path';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, getJob, adminSession, signUp,
-  createFakeBlender, createFakeScene, waitForCondition, stubbornIsUnkillable
+  createFakeBlender, createFakeScene, waitForCondition, stubbornIsUnkillable,
+  FAKE_BLENDER_SUPPORTED
 } from './helpers.mjs';
 
 const PORT = 5593;
 
 export default async function run() {
   const results = createResults('render-pipeline');
+
+  if (!FAKE_BLENDER_SUPPORTED) {
+    results.skipped('render pipeline suite', 'the Blender stand-in cannot run on Windows');
+    return results;
+  }
+
   const sandbox = makeSandbox('pipeline');
   // Deliberately not the data directory: on the workstation the server is
   // launched by Task Scheduler, which may start it anywhere.

@@ -96,6 +96,12 @@ const PNG_1X1 = Buffer.from(
 // (wait for stubbornIsUnkillable before cancelling; see below),
 // 'stalls' delivers its first frame and then never finishes another,
 // 'broken' exits non-zero with its complaint on stdout.
+// The stand-in is a Node script made runnable by its shebang. Windows has no
+// shebang, will not execute a bare .js, and since Node 20.12 refuses to spawn a
+// .cmd wrapper without a shell - so the suites that drive it sit out until the
+// worker learns to launch through cmd.exe and kill the process tree it starts.
+export const FAKE_BLENDER_SUPPORTED = process.platform !== 'win32';
+
 export function createFakeBlender(dir) {
   const blenderPath = path.join(dir, 'fake-blender');
 

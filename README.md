@@ -1,5 +1,7 @@
 # RenderNet
 
+[![CI](https://github.com/Vishrut2403/RenderNet/actions/workflows/ci.yml/badge.svg)](https://github.com/Vishrut2403/RenderNet/actions/workflows/ci.yml)
+
 A self-hosted Blender render farm for a shared workstation. One machine does the rendering; everyone else submits `.blend` files and collects finished frames from a browser, with nothing to install.
 
 ```mermaid
@@ -192,6 +194,11 @@ Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
 Blender is absent, leaving 152 of the 165 still meaningful.
+
+CI runs the suite on Linux and Windows against Node 20 and 22, which is the only
+place this is exercised on the platform the workstation actually runs. Windows
+covers 49 of those checks: the two suites driving a stand-in for Blender need an
+executable the worker can launch there, so they sit out for now.
 
 ---
 
