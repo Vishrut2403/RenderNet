@@ -22,7 +22,7 @@ The renderer runs as a separate `RenderWorker` reporting back over HTTP rather t
 
 ## Setting up the workstation
 
-Needs **Node.js LTS** and **Blender**. Use an LTS Node release: `better-sqlite3` and `bcrypt` ship prebuilt binaries per Node version, and a mismatch forces a compile that needs a C++ toolchain.
+Needs **Node.js 22 or newer** and **Blender**. Not 20, even though it is still LTS: `better-sqlite3` publishes no prebuilt binary for Node 20, so installing it compiles from source and needs a C++ toolchain — on Windows that means Visual Studio with the Desktop C++ workload. On 22 and 24 the binary is downloaded and nothing is built.
 
 **1. Build it**
 
@@ -195,7 +195,7 @@ elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
 Blender is absent, leaving 152 of the 165 still meaningful.
 
-CI runs the suite on Linux and Windows against Node 20 and 22, which is the only
+CI runs the suite on Linux and Windows against Node 22 and 24, which is the only
 place this is exercised on the platform the workstation actually runs. Windows
 covers 49 of those checks: the two suites driving a stand-in for Blender need an
 executable the worker can launch there, so they sit out for now.
