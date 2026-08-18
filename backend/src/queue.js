@@ -309,15 +309,27 @@ function failJob(jobId, message) {
   releaseSlot(jobId);
 }
 
+function jobFilesExist(job) {
+  return !!(job.filePath && fs.existsSync(dataPath(job.filePath)))
+    || !!(job.outputFolder && fs.existsSync(dataPath(job.outputFolder)));
+}
+
+// Jobs are pruned by age but files are deleted by mtime, and a render's mtime
+// is its last frame - long after the job was created. The record is the only
+// thing tying those bytes to an owner, so it has to outlive them or the space
+// stops counting against anybody's quota. Cleanup deletes the files first, so
+// the record goes in the same pass.
 export function pruneOldJobs(cutoffMs) {
   let pruned = 0;
 
   for (const job of jobs.values()) {
     if (job.status === 'pending' || job.status === 'rendering') continue;
     if (new Date(job.createdAt).getTime() >= cutoffMs) continue;
+    if (jobFilesExist(job)) continue;
 
     jobs.delete(job.id);
     deleteJob(job.id);
+    forgetUsage(job.owner);
     pruned++;
   }
 
@@ -488,10 +500,18 @@ export function cancelJob(jobId) {
     if (index > -1) {
       renderQueue.splice(index, 1);
     }
-    
+
     job.status = 'cancelled';
     job.cancelledAt = new Date().toISOString();
     saveJob(job);
+
+    // A job paused for a higher-priority one is pending while its Blender is
+    // still winding down. Deleting its files now would pull the scratch dir out
+    // from under a live process, so finishRender does it once that has stopped.
+    if (currentJobId === jobId) {
+      console.log(`Job ${jobId} cancelled while it was pausing`);
+      return { success: true, message: 'Job cancelled successfully' };
+    }
 
     deleteJobFiles(job);
     forgetUsage(job.owner);

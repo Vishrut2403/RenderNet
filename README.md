@@ -78,6 +78,9 @@ Open the UI and sign in as `admin` / `admin123`. It immediately requires a new
 password and refuses everything else until one is set — that is the intended path,
 not a fault. The same applies to anyone whose password an admin resets later.
 
+Five wrong passwords lock a username out for fifteen minutes; restarting the
+server clears it.
+
 ---
 
 ## Windows: three settings and a startup task
@@ -182,13 +185,13 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 135 checks
+cd backend  && npm test        # 165 checks
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 122 of the 135 still meaningful.
+Blender is absent, leaving 152 of the 165 still meaningful.
 
 ---
 

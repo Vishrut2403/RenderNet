@@ -136,6 +136,73 @@ export default async function run() {
         body: JSON.stringify({ username: 'tester', password: 'testpass123' })
       }) === 401);
 
+    // A JSON body can carry any shape. An object reaching SQLite as a bind
+    // parameter throws, and an async route that throws is an unhandled
+    // rejection - which takes the whole server down, render and all.
+    console.log('\n  Malformed credentials do not take the server down');
+    const post = (route, body) => status(`${base}${route}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
+
+    const malformed = [
+      await post('/auth/login', { username: { a: 1 }, password: 'x' }),
+      await post('/auth/login', { username: 'admin', password: ['x'] }),
+      await post('/auth/login', { username: 42, password: 'x' }),
+      await post('/auth/signup', { username: { a: 1 }, password: 'x', code: SIGNUP_CODE })
+    ];
+
+    results.check('non-string credentials are refused, not thrown on',
+      malformed.every(code => code === 400), malformed.join(','));
+    results.check('and the server is still serving afterwards',
+      await status(`${base}/health`) === 200);
+
+    console.log('\n  Repeated failed logins lock the account out');
+    await signUp(base, 'guessme', 'correcthorse', SIGNUP_CODE);
+
+    const tryLogin = (password) => fetch(`${base}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'guessme', password })
+    });
+
+    const refusals = [];
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      refusals.push((await tryLogin(`wrong-${attempt}`)).status);
+    }
+
+    results.check('the first five wrong guesses are ordinary refusals',
+      refusals.every(code => code === 401), refusals.join(','));
+
+    const locked = await tryLogin('wrong-6');
+    results.check('the sixth is refused as a lockout', locked.status === 429,
+      `got ${locked.status}`);
+    results.check('and says how long to wait', !!locked.headers.get('retry-after'),
+      String(locked.headers.get('retry-after')));
+
+    // The point of a lockout: guessing is stopped even if the next guess is
+    // the right one, so an attacker cannot simply keep going.
+    const rightButLocked = await tryLogin('correcthorse');
+    results.check('the correct password is refused while locked out',
+      rightButLocked.status === 429, `got ${rightButLocked.status}`);
+
+    // A name that does not exist is counted the same way, so a lockout never
+    // reveals which accounts are real.
+    const ghost = (password) => fetch(`${base}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'no-such-person', password })
+    });
+
+    for (let attempt = 1; attempt <= 5; attempt++) await ghost(`wrong-${attempt}`);
+
+    results.check('an unknown username locks out the same way',
+      (await ghost('wrong-6')).status === 429);
+
+    results.check('an untouched account is unaffected',
+      !!(await login(base, 'tester', 'newpass456')));
+
     console.log('\n  Upload validation');
     const bad = async opts => (await submitJob(base, adminToken, stubBlend, opts)).status;
     results.check('end before start rejected', await bad({ frameStart: 5, frameEnd: 1 }) === 400);

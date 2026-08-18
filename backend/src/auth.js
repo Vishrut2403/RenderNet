@@ -10,6 +10,44 @@ import { USERS_FILE } from './paths.js';
 const BCRYPT_ROUNDS = 12;
 const SESSION_DURATION = 24 * 60 * 60 * 1000;
 const DEFAULT_ADMIN_PASSWORD = 'admin123';
+const LOGIN_ATTEMPT_LIMIT = 5;
+const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+
+// Held in memory on purpose. The workstation is switched off nightly, and a
+// lockout that outlived a reboot would mostly punish whoever mistyped last.
+const failedLogins = new Map();
+
+// Unknown usernames are counted too, so a lockout says nothing about whether
+// the account exists.
+function lockoutSecondsLeft(username) {
+  const record = failedLogins.get(username);
+  if (!record) return 0;
+
+  if (Date.now() >= record.until) {
+    failedLogins.delete(username);
+    return 0;
+  }
+
+  return record.count >= LOGIN_ATTEMPT_LIMIT
+    ? Math.ceil((record.until - Date.now()) / 1000)
+    : 0;
+}
+
+function recordFailedLogin(username) {
+  // Keys come from whatever was typed into the login box, so expired entries
+  // are swept rather than left to pile up.
+  if (failedLogins.size > 1000) {
+    for (const [name, seen] of failedLogins) {
+      if (Date.now() >= seen.until) failedLogins.delete(name);
+    }
+  }
+
+  const record = failedLogins.get(username) ?? { count: 0 };
+
+  record.count++;
+  record.until = Date.now() + LOGIN_LOCKOUT_MS;
+  failedLogins.set(username, record);
+}
 
 // Read lazily: index.js loads .env before this module, but tests set it per run.
 function signupCode() {
@@ -126,18 +164,35 @@ for (const row of loadSessions()) {
 }
 
 export async function login(username, password) {
+  // Checked before any hashing: a locked-out name must not cost a bcrypt round
+  // on the way to being refused.
+  const lockedFor = lockoutSecondsLeft(username);
+
+  if (lockedFor > 0) {
+    return {
+      success: false,
+      locked: true,
+      retryAfter: lockedFor,
+      error: `Too many failed attempts. Try again in ${Math.ceil(lockedFor / 60)} minute(s).`
+    };
+  }
+
   const user = getUser(username);
 
   if (!user) {
     // Spend comparable time on an unknown username so response timing does not
     // reveal which accounts exist.
     await bcrypt.compare(password, '$2b$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidinv');
+    recordFailedLogin(username);
     return { success: false, error: 'Invalid username or password' };
   }
 
   if (!await verifyPassword(password, user)) {
+    recordFailedLogin(username);
     return { success: false, error: 'Invalid username or password' };
   }
+
+  failedLogins.delete(username);
 
   if (user.hashAlgo === 'sha256') {
     await upgradeLegacyHash(user, password);

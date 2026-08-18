@@ -92,7 +92,9 @@ const PNG_1X1 = Buffer.from(
 // keyed off the .blend filename so one server can drive every scenario:
 // 'noisy' floods stdout, 'slow' takes its time per frame, 'hang' stays on one
 // frame long enough to test against a job that is genuinely mid-render,
-// 'stubborn' ignores SIGTERM and stays alive so cancelling it has to escalate,
+// 'stubborn' ignores SIGTERM and stays alive so cancelling it has to escalate
+// (wait for stubbornIsUnkillable before cancelling; see below),
+// 'stalls' delivers its first frame and then never finishes another,
 // 'broken' exits non-zero with its complaint on stdout.
 export function createFakeBlender(dir) {
   const blenderPath = path.join(dir, 'fake-blender');
@@ -111,6 +113,10 @@ const target = valueOf('-o').replace('####', String(frame).padStart(4, '0')) + '
 if (scene.includes('stubborn')) {
   process.on('SIGTERM', () => {});
   setInterval(() => {}, 1000);
+  // Until this exists the process is still bootable and a SIGTERM kills it
+  // outright, so the caller has to wait for it before cancelling.
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(path.join(path.dirname(target), 'ignoring-sigterm'), '');
 }
 
 if (scene.includes('noisy')) {
@@ -124,16 +130,33 @@ if (scene.includes('broken')) {
   process.exit(1);
 }
 
+const delay = scene.includes('hang') || scene.includes('stubborn') ? 60000
+  : scene.includes('stalls') ? (frame === 1 ? 0 : 60000)
+  : scene.includes('slow') ? 2000
+  : 0;
+
 setTimeout(() => {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, Buffer.from('${PNG_1X1.toString('base64')}', 'base64'));
   process.exit(0);
-}, scene.includes('hang') || scene.includes('stubborn') ? 60000 : scene.includes('slow') ? 2000 : 0);
+}, delay);
 `);
 
   fs.chmodSync(blenderPath, 0o755);
 
   return blenderPath;
+}
+
+// Node needs a few milliseconds to boot and install the handler, and a job is
+// already 'rendering' the moment it is submitted - so a cancel sent as soon as
+// the status flips lands before the stand-in can ignore anything, killing it on
+// the default disposition and leaving the escalation path untested.
+export function stubbornIsUnkillable(sandbox, jobId) {
+  const marker = path.join(sandbox, 'worker-tmp', `job_${jobId}`, 'ignoring-sigterm');
+
+  return waitForCondition(() => fs.existsSync(marker), {
+    label: 'the stubborn Blender to start ignoring SIGTERM'
+  });
 }
 
 export function createFakeScene(dir, name) {

@@ -14,7 +14,7 @@ import workerRouter from './routes/worker.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST } from './paths.js';
+import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST, RETENTION_DAYS } from './paths.js';
 
 // Ephemeral rather than a hardcoded default, so an unconfigured deployment
 // never ships a publicly-known credential.
@@ -27,10 +27,9 @@ if (!process.env.WORKER_SECRET) {
 const app = express();
 const PORT = process.env.PORT || 5500;
 
-app.use(cors({
-  origin: '*', 
-  credentials: true
-}));
+// No credentials: sessions travel as a bearer token, and a browser refuses a
+// credentialed request to a wildcard origin anyway.
+app.use(cors({ origin: '*' }));
 app.use(express.json());
 
 app.get('/api/test', (req, res) => {
@@ -88,7 +87,23 @@ resumeInterruptedJobs();
 
 const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;
 setInterval(cleanupOldFiles, CLEANUP_INTERVAL);
-console.log('Auto-cleanup scheduled (runs every 24 hours, deletes files older than 48 hours)');
+console.log(`Auto-cleanup scheduled (runs every 24 hours, deletes files older than ${RETENTION_DAYS} days)`);
+
+// Last resort: a handler that threw has already been caught by the async route
+// wrapper, and this turns it into a 500 rather than a hung request.
+app.use((error, req, res, next) => {
+  console.error(`Unhandled error on ${req.method} ${req.path}:`, error);
+
+  if (res.headersSent) return next(error);
+
+  res.status(500).json({ error: 'Something went wrong' });
+});
+
+// An unattended workstation losing a render to a stray rejection is worse than
+// running on with it logged, and jobs resume from their last frame anyway.
+process.on('unhandledRejection', (reason) => {
+  console.error('Unhandled promise rejection:', reason);
+});
 
 app.listen(PORT, () => {
   console.log(`Render Farm started.

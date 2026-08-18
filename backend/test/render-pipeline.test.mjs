@@ -6,7 +6,7 @@ import path from 'path';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, getJob, adminSession, signUp,
-  createFakeBlender, createFakeScene, waitForCondition
+  createFakeBlender, createFakeScene, waitForCondition, stubbornIsUnkillable
 } from './helpers.mjs';
 
 const PORT = 5593;
@@ -104,20 +104,27 @@ export default async function run() {
     });
     const stubbornId = stubborn.body.jobId;
 
-    await waitForCondition(
-      async () => (await getJob(base, token, stubbornId)).status === 'rendering',
-      { label: 'the stubborn job to start' }
-    );
+    await stubbornIsUnkillable(sandbox, stubbornId);
 
     const after = await submitJob(base, token, createFakeScene(sandbox, 'after.blend'), {
       frameStart: 1, frameEnd: 1
     });
 
+    const cancelledAt = Date.now();
     await fetch(`${base}/jobs/${stubbornId}/cancel`, { method: 'POST', headers: auth(token) });
 
     // SIGTERM is ignored, so the queue only moves once the escalation lands.
-    const followUp = await waitForJob(base, token, after.body.jobId, 30000);
-    results.check('SIGKILL escalation releases the queue', followUp.status === 'completed', followUp.status);
+    // Left to itself the stand-in exits after 60s, so the bound is what
+    // separates a real escalation from simply outwaiting the process.
+    const released = await waitForCondition(
+      async () => (await getJob(base, token, after.body.jobId)).status === 'completed',
+      { timeoutMs: 25000, label: 'the queue to be released by SIGKILL' }
+    );
+    const releasedIn = Date.now() - cancelledAt;
+
+    results.check('SIGKILL escalation releases the queue', released, `after ${releasedIn}ms`);
+    results.check('and does not wait out the process on its own', releasedIn < 25000,
+      `${releasedIn}ms`);
 
     console.log('\n  Cleanup endpoint');
     results.check('anonymous cleanup rejected',
@@ -211,10 +218,7 @@ export default async function run() {
     });
     const wedgedId = wedged.body.jobId;
 
-    await waitForCondition(
-      async () => (await getJob(base, token, wedgedId)).status === 'rendering',
-      { label: 'the stubborn job to start' }
-    );
+    await stubbornIsUnkillable(sandbox, wedgedId);
 
     const rush = [];
     for (const name of ['rush-one.blend', 'rush-two.blend']) {
@@ -241,6 +245,46 @@ export default async function run() {
       async () => (await getJob(base, token, wedgedId)).status === 'cancelled',
       { label: 'the stubborn job to be cancelled' }
     );
+
+    // A job paused for something more important is 'pending', so nothing about
+    // it looks in flight - but its worker still owns the slot and its Blender
+    // may still be alive. This walks the path end to end; it does not prove the
+    // ordering, which converges either way once the worker settles.
+    console.log('\n  Cancelling a job that is paused but still winding down');
+    const pausing = await submitJob(base, token, createFakeScene(sandbox, 'stubborn.blend'), {
+      frameStart: 1, frameEnd: 2
+    });
+    const pausingId = pausing.body.jobId;
+
+    await stubbornIsUnkillable(sandbox, pausingId);
+
+    const jumper = await submitJob(base, token, createFakeScene(sandbox, 'jumper.blend'), {
+      frameStart: 1, frameEnd: 1, priority: 1
+    });
+
+    await waitForCondition(
+      async () => (await getJob(base, token, pausingId)).status === 'pending',
+      { label: 'the stubborn job to be paused' }
+    );
+
+    const cancelPaused = await fetch(`${base}/jobs/${pausingId}/cancel`, {
+      method: 'POST', headers: auth(token)
+    });
+    results.check('a paused job can be cancelled', cancelPaused.status === 200,
+      `got ${cancelPaused.status}`);
+
+    const jumperDone = await waitForJob(base, token, jumper.body.jobId, 30000);
+    results.check('the urgent job that displaced it still finishes',
+      jumperDone.status === 'completed', jumperDone.status);
+
+    const cancelledWhilePaused = await getJob(base, token, pausingId);
+    const leftBehind = [
+      inSandbox(cancelledWhilePaused.outputFolder),
+      path.join(sandbox, 'worker-tmp', `job_${pausingId}`)
+    ].filter(fs.existsSync);
+
+    results.check('cancelling a paused job clears up once its worker stops',
+      leftBehind.length === 0, leftBehind.join(','));
 
     console.log('\n  Deleting a job frees its space');
     const usageBefore = (await (await fetch(`${base}/jobs`, { headers: auth(token) })).json()).usage;
@@ -351,6 +395,65 @@ export default async function run() {
       abandoned.status === 'failed', abandoned.status);
     results.check('and says why', /without rendering/.test(abandoned.error || ''), abandoned.error);
 
+    // Abandoning a job must not abandon the frames it already delivered: those
+    // are the only thing standing between the user and re-rendering the range.
+    console.log('\n  Frames delivered before a job is given up on stay downloadable');
+    const stalled = await submitJob(base, session, createFakeScene(sandbox, 'stalls.blend'), {
+      frameStart: 1, frameEnd: 4
+    });
+    const stalledId = stalled.body.jobId;
+
+    await waitForCondition(
+      async () => (await getJob(server.base, session, stalledId)).completedFrames === 1,
+      { label: 'the first frame to be delivered', timeoutMs: 30000 }
+    );
+
+    // One more shutdown than the doomed job above: the first restart sees a
+    // frame delivered since submission, so it does not count as a lost evening.
+    for (let attempt = 1; attempt <= 4; attempt++) {
+      await waitForCondition(
+        async () => (await getJob(server.base, session, stalledId)).status === 'rendering',
+        { label: 'the stalled job to pick back up' }
+      );
+      session = await restart();
+    }
+
+    const givenUp = await getJob(server.base, session, stalledId);
+    results.check('a job given up on part-way is marked failed', givenUp.status === 'failed',
+      givenUp.status);
+    results.check('and keeps the frame it did deliver', givenUp.completedFrames === 1,
+      `got ${givenUp.completedFrames}`);
+
+    const listing = await fetch(`${server.base}/download/${stalledId}/files`, {
+      headers: auth(session)
+    });
+    const listed = await listing.json();
+
+    results.check('its finished frames are still listed',
+      listing.status === 200 && listed.totalFiles === 1,
+      `${listing.status} ${JSON.stringify(listed)}`);
+    results.check('and the listing marks the set as partial', listed.partial === true,
+      JSON.stringify(listed.partial));
+
+    const partialZip = await fetch(`${server.base}/download/${stalledId}/zip`, {
+      headers: auth(session)
+    });
+    const zipBytes = Buffer.from(await partialZip.arrayBuffer());
+
+    results.check('a partial ZIP downloads', partialZip.status === 200, `got ${partialZip.status}`);
+    results.check('it is named so the user knows it is incomplete',
+      /render_\d+_partial\.zip/.test(partialZip.headers.get('content-disposition') || ''),
+      partialZip.headers.get('content-disposition'));
+    results.check('and it really is an archive with something in it',
+      zipBytes.length > 100 && zipBytes.subarray(0, 2).toString() === 'PK',
+      `${zipBytes.length} bytes`);
+
+    const nothingToGet = await fetch(`${server.base}/download/${doomed.body.jobId}/zip`, {
+      headers: auth(session)
+    });
+    results.check('a job that delivered nothing still refuses to download',
+      nothingToGet.status === 400, `got ${nothingToGet.status}`);
+
     console.log('\n  Data lives where it was configured, not where it was launched');
     results.check('nothing was written to the working directory',
       fs.readdirSync(elsewhere).length === 0, fs.readdirSync(elsewhere).join(','));
@@ -361,6 +464,79 @@ export default async function run() {
     await stopServer(server);
     removeSandbox(sandbox);
     removeSandbox(elsewhere);
+  }
+
+  // Pruning is by job age, deleting is by file age, and the two disagree: a
+  // render's mtime is its last frame, long after the job was created. Its own
+  // instance because it needs a retention window nothing else can tolerate.
+  const pruneBox = makeSandbox('prune');
+  let pruneServer;
+
+  try {
+    console.log('\n  Space still on disk keeps counting against its owner');
+    pruneServer = await startServer({
+      port: PORT + 2,
+      cwd: pruneBox,
+      // Negative: the cutoff lands in the future, so every job record is old
+      // enough to prune and only the files' mtimes decide anything.
+      env: { BLENDER_PATH: createFakeBlender(pruneBox), RETENTION_DAYS: '-1' }
+    });
+
+    const pruneToken = await adminSession(pruneServer.base);
+    const kept = await submitJob(
+      pruneServer.base, pruneToken, createFakeScene(pruneBox, 'keeper.blend'),
+      { frameStart: 1, frameEnd: 2 }
+    );
+    const keptJob = await waitForJob(pruneServer.base, pruneToken, kept.body.jobId, 30000);
+
+    const usage = async () => (await (await fetch(`${pruneServer.base}/jobs`, {
+      headers: auth(pruneToken)
+    })).json()).usage;
+
+    const beforeSweep = await usage();
+    results.check('a finished job uses space', beforeSweep.bytes > 0,
+      JSON.stringify(beforeSweep));
+
+    const upload = path.join(pruneBox, keptJob.filePath);
+    const renders = path.join(pruneBox, keptJob.outputFolder);
+    const future = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+
+    fs.utimesSync(upload, future, future);
+    fs.utimesSync(renders, future, future);
+
+    const sweep = () => fetch(`http://127.0.0.1:${PORT + 2}/api/cleanup`, {
+      method: 'POST', headers: auth(pruneToken)
+    });
+
+    await sweep();
+
+    results.check('files too new to delete are still there',
+      fs.existsSync(upload) && fs.existsSync(renders));
+    results.check('the job that owns them survives the sweep',
+      await status(`${pruneServer.base}/jobs/${keptJob.id}`, { headers: auth(pruneToken) }) === 200);
+
+    const afterSweep = await usage();
+    results.check('and its bytes still count against the owner',
+      afterSweep.bytes === beforeSweep.bytes,
+      `${beforeSweep.bytes} -> ${afterSweep.bytes}`);
+
+    const past = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(upload, past, past);
+    fs.utimesSync(renders, past, past);
+
+    await sweep();
+
+    results.check('once the files age out they are deleted',
+      !fs.existsSync(upload) && !fs.existsSync(renders),
+      `upload=${fs.existsSync(upload)} renders=${fs.existsSync(renders)}`);
+    results.check('and only then is the job record pruned',
+      await status(`${pruneServer.base}/jobs/${keptJob.id}`, { headers: auth(pruneToken) }) === 404);
+    results.check('the space is released with it', (await usage()).bytes === 0,
+      JSON.stringify(await usage()));
+
+  } finally {
+    await stopServer(pruneServer);
+    removeSandbox(pruneBox);
   }
 
   // A tiny quota on its own instance: the real 5GB limit is not reachable in a

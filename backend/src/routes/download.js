@@ -5,7 +5,7 @@ import path from 'path';
 import { getJob } from '../queue.js';
 import { getFilesInDirectory } from '../utils/file-utils.js';
 import { verifyToken, mustChangePassword } from '../auth.js';
-import { dataPath } from '../paths.js';
+import { dataPath, RETENTION_DAYS } from '../paths.js';
 
 const router = express.Router();
 
@@ -43,6 +43,14 @@ function authenticateDownload(req, res, next) {
 
 function canAccess(job, user) {
   return job.owner === user.username || user.role === 'admin';
+}
+
+// A job that stopped early keeps every frame it delivered, and those frames are
+// all that stands between the user and re-rendering the whole range. Cancelled
+// jobs are absent because cancelling deletes their output.
+function deliveredFrames(job) {
+  if (job.status === 'completed') return true;
+  return job.status === 'failed' && job.completedFrames > 0;
 }
 
 router.get('/files/render_:id/:filename', authenticateDownload, (req, res) => {
@@ -83,17 +91,17 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
     
-    if (job.status !== 'completed') {
+    if (!deliveredFrames(job)) {
       return res.status(400).json({
         error: `Cannot download files. Job status: ${job.status}`,
-        details: 'Wait for job to complete before downloading'
+        details: 'Wait for the job to finish before downloading'
       });
     }
-    
+
     if (!fs.existsSync(dataPath(job.outputFolder))) {
       return res.status(404).json({
         error: 'No files found',
-        details: 'Files may have been cleaned up (48 hour limit)'
+        details: `Files are removed after ${RETENTION_DAYS} days`
       });
     }
     
@@ -107,6 +115,7 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
       jobId,
       outputFolder: job.outputFolder,
       totalFiles: files.length,
+      partial: job.status !== 'completed',
       // API-relative and without a token: the caller knows its own API origin,
       // and only it knows whether the token belongs in the URL at all.
       files: files.map(filename => ({
@@ -134,19 +143,21 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
       return res.status(403).json({ error: 'Access denied' });
     }
     
-    if (job.status !== 'completed') {
-      return res.status(400).json({ error: 'Job not completed yet' });
+    if (!deliveredFrames(job)) {
+      return res.status(400).json({ error: 'Job has no finished frames to download' });
     }
-    
+
     if (!fs.existsSync(dataPath(job.outputFolder))) {
       return res.status(404).json({ error: 'Output folder not found' });
     }
-    
+
+    const partial = job.status !== 'completed';
+
     console.log(`Creating ZIP for job ${jobId} (user: ${req.user.username})`);
-    
+
     const archive = archiver('zip', { zlib: { level: 9 } });
-    
-    res.attachment(`render_${jobId}.zip`);
+
+    res.attachment(partial ? `render_${jobId}_partial.zip` : `render_${jobId}.zip`);
     res.setHeader('Content-Type', 'application/zip');
     
     archive.pipe(res);
@@ -155,9 +166,16 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
 
     archive.on('error', (err) => {
       console.error('Archive error:', err);
+
       if (!res.headersSent) {
         res.status(500).json({ error: 'Failed to create ZIP' });
+        return;
       }
+
+      // Mid-stream there is no status left to change, and ending cleanly would
+      // hand back a truncated ZIP that looks complete. Destroying the socket is
+      // the only way left to tell the client the download is not whole.
+      res.destroy(err);
     });
     
     archive.on('end', () => {

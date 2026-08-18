@@ -11,6 +11,9 @@ export function JobCard({ job, onChanged, onError }) {
 
   const active = job.status === 'rendering';
   const done = job.status === 'completed';
+  // A job that failed part-way still delivered real frames, and re-rendering
+  // the range to get them back is the expensive thing this avoids.
+  const partial = job.status === 'failed' && job.completedFrames > 0;
 
   const now = useNow(active);
   const started = job.startedAt ? new Date(job.startedAt).getTime() : null;
@@ -163,9 +166,13 @@ export function JobCard({ job, onChanged, onError }) {
       )}
 
       <footer className="job-actions">
-        {done && (
+        {(done || partial) && (
           <>
-            <a className="btn btn-primary" href={api.zipUrl(job.id)}>Download ZIP</a>
+            <a className="btn btn-primary" href={api.zipUrl(job.id)}>
+              {partial
+                ? `Download ${job.completedFrames} finished frame${job.completedFrames === 1 ? '' : 's'}`
+                : 'Download ZIP'}
+            </a>
             <Button busy={busy} onClick={toggleFrames}>
               {frames ? 'Hide frames' : 'View frames'}
             </Button>
