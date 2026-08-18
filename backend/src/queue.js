@@ -14,6 +14,10 @@ let currentWorker = null;
 // file the upload route is writing into.
 const WORKER_SCRATCH = 'worker-tmp';
 
+function workerScratchDir(jobId) {
+  return path.join(WORKER_SCRATCH, `job_${jobId}`);
+}
+
 let lastJobId = 0;
 
 for (const job of loadJobs()) {
@@ -43,6 +47,13 @@ export function resumeInterruptedJobs() {
       job.completedAt = new Date().toISOString();
       abandoned++;
     } else {
+      // The retry starts from the first frame again, so frames left by the
+      // abandoned attempt would otherwise show up in the listing and the ZIP
+      // of a job whose counters say they were never rendered.
+      if (job.outputFolder) {
+        fs.rmSync(job.outputFolder, { recursive: true, force: true });
+      }
+
       Object.assign(job, {
         status: 'pending',
         startedAt: null,
@@ -51,7 +62,8 @@ export function resumeInterruptedJobs() {
         completedFrames: 0,
         failedFrames: 0,
         uploadedFrames: [],
-        frameErrors: []
+        frameErrors: [],
+        error: null
       });
       renderQueue.push(job.id);
       resumed++;
@@ -143,17 +155,41 @@ function processQueue() {
     .renderJob({
       id: jobId,
       blendPath: job.filePath,
-      outputDir: path.join(WORKER_SCRATCH, `job_${jobId}`),
+      outputDir: workerScratchDir(jobId),
       frameStart: job.frameStart,
       frameEnd: job.frameEnd,
       renderEngine: job.renderEngine
     })
+    .then(() => finishRender(jobId))
     .catch((error) => {
-      // Completion normally arrives over HTTP; this only fires if the worker
-      // died before reporting, which would otherwise wedge the queue.
       console.error(`Worker crashed on job ${jobId}: ${error.message}`);
       failJob(jobId, error.message);
     });
+}
+
+// Reached only once the worker has stopped for good. Completion and failure
+// normally arrive over HTTP and have already released the slot; this covers
+// cancellation, where the worker stops without reporting anything.
+function finishRender(jobId) {
+  const job = jobs.get(jobId);
+
+  if (job?.status === 'cancelled') {
+    deleteJobFiles(job);
+  } else if (job?.status === 'rendering') {
+    failJob(jobId, 'Worker stopped without reporting completion');
+    return;
+  }
+
+  releaseSlot(jobId);
+}
+
+function releaseSlot(jobId) {
+  if (currentJobId !== jobId) return;
+
+  isRendering = false;
+  currentJobId = null;
+  currentWorker = null;
+  setTimeout(processQueue, 1000);
 }
 
 function failJob(jobId, message) {
@@ -166,12 +202,7 @@ function failJob(jobId, message) {
     saveJob(job);
   }
 
-  if (currentJobId === jobId) {
-    isRendering = false;
-    currentJobId = null;
-    currentWorker = null;
-    setTimeout(processQueue, 1000);
-  }
+  releaseSlot(jobId);
 }
 
 export function pruneOldJobs(cutoffMs) {
@@ -221,8 +252,16 @@ function computeProgress(job, currentFrame) {
   return Math.max(0, Math.min(100, Math.round((done / job.totalFrames) * 100)));
 }
 
-export function updateJobProgress(jobId, currentFrame) {
+// A worker callback for a job that is no longer rendering must not touch it:
+// a cancelled job would have its counters moved and its output folder written
+// back after cancellation already deleted it.
+function renderingJob(jobId) {
   const job = jobs.get(jobId);
+  return job && job.status === 'rendering' ? job : null;
+}
+
+export function updateJobProgress(jobId, currentFrame) {
+  const job = renderingJob(jobId);
   if (!job) return null;
 
   job.currentFrame = currentFrame;
@@ -233,7 +272,7 @@ export function updateJobProgress(jobId, currentFrame) {
 }
 
 export function recordFrameUpload(jobId, frameNumber, filename) {
-  const job = jobs.get(jobId);
+  const job = renderingJob(jobId);
   if (!job) return null;
 
   if (!job.uploadedFrames.includes(filename)) {
@@ -248,7 +287,7 @@ export function recordFrameUpload(jobId, frameNumber, filename) {
 }
 
 export function recordFrameFailure(jobId, frameNumber, error) {
-  const job = jobs.get(jobId);
+  const job = renderingJob(jobId);
   if (!job) return null;
 
   job.frameErrors.push({
@@ -272,28 +311,36 @@ export function completeJob(jobId, { successfulFrames, failedFrames }) {
     return job;
   }
 
-  job.completedFrames = successfulFrames;
-  job.failedFrames = failedFrames;
+  // What actually arrived is authoritative. The worker's tally can disagree
+  // with it - an upload whose response was lost counts as failed there and as
+  // delivered here - and only the frames on disk are downloadable.
+  const delivered = job.uploadedFrames.length;
+  const failed = job.frameErrors.length;
+
+  if (delivered !== successfulFrames || failed !== failedFrames) {
+    console.warn(
+      `Job ${jobId}: worker reported ${successfulFrames} ok / ${failedFrames} failed, ` +
+      `server recorded ${delivered} / ${failed}`
+    );
+  }
+
+  job.completedFrames = delivered;
+  job.failedFrames = failed;
   job.completedAt = new Date().toISOString();
   job.currentFrame = null;
 
-  if (failedFrames > 0 && successfulFrames === 0) {
+  if (failed > 0 && delivered === 0) {
     job.status = 'failed';
-    job.error = `All ${failedFrames} frame(s) failed to render`;
+    job.error = `All ${failed} frame(s) failed to render`;
   } else {
     job.status = 'completed';
     job.progress = 100;
   }
 
   saveJob(job);
-  console.log(`Job ${jobId} finished: ${job.status} (${successfulFrames} ok, ${failedFrames} failed)`);
+  console.log(`Job ${jobId} finished: ${job.status} (${delivered} ok, ${failed} failed)`);
 
-  if (currentJobId === jobId) {
-    isRendering = false;
-    currentJobId = null;
-    currentWorker = null;
-    setTimeout(processQueue, 1000);
-  }
+  releaseSlot(jobId);
 
   return job;
 }
@@ -325,36 +372,40 @@ export function cancelJob(jobId) {
   }
   
   if (job.status === 'rendering') {
+    job.status = 'cancelled';
+    job.cancelledAt = new Date().toISOString();
+    saveJob(job);
+
     if (currentWorker && currentJobId === jobId) {
+      let killed = false;
+
       try {
-        const killed = currentWorker.cancel();
-        console.log(
-          killed
-            ? `Killed Blender process for job ${jobId}`
-            : `Job ${jobId} will stop before its next frame`
-        );
+        killed = currentWorker.cancel();
       } catch (error) {
         console.error(`Failed to cancel worker:`, error.message);
       }
 
-      currentWorker = null;
+      console.log(
+        killed
+          ? `Killed Blender process for job ${jobId}`
+          : `Job ${jobId} will stop before its next frame`
+      );
+
+      // The slot and the job's files are released by finishRender, once the
+      // worker has actually stopped. Doing it here would let a frame still in
+      // flight recreate the output folder after it was deleted, and would run
+      // the next job alongside a Blender process that is still winding down.
+      return { success: true, message: 'Job cancelled successfully' };
     }
 
-    job.status = 'cancelled';
-    job.cancelledAt = new Date().toISOString();
-    saveJob(job);
-    isRendering = false;
-    currentJobId = null;
-
     deleteJobFiles(job);
-    
+    releaseSlot(jobId);
+
     console.log(`Job ${jobId} cancelled (was rendering)`);
-    
-    setTimeout(processQueue, 1000);
-    
+
     return { success: true, message: 'Job cancelled successfully' };
   }
-  
+
   return { success: false, error: 'Job cannot be cancelled' };
 }
 
@@ -364,12 +415,30 @@ function deleteJobFiles(job) {
       fs.unlinkSync(job.filePath);
       console.log(`Deleted upload: ${job.filePath}`);
     }
-    
+
     if (job.outputFolder && fs.existsSync(job.outputFolder)) {
       fs.rmSync(job.outputFolder, { recursive: true, force: true });
       console.log(`Deleted renders: ${job.outputFolder}`);
     }
+
+    fs.rmSync(workerScratchDir(job.id), { recursive: true, force: true });
   } catch (error) {
     console.error(`Error deleting files:`, error.message);
   }
+}
+
+// Cleanup deletes by age alone, which would otherwise take the .blend out from
+// under a job that has been sitting in the queue for longer than the cutoff.
+export function getActiveJobPaths() {
+  const active = new Set();
+
+  for (const job of jobs.values()) {
+    if (job.status !== 'pending' && job.status !== 'rendering') continue;
+
+    if (job.filePath) active.add(path.resolve(job.filePath));
+    if (job.outputFolder) active.add(path.resolve(job.outputFolder));
+    active.add(path.resolve(workerScratchDir(job.id)));
+  }
+
+  return active;
 }

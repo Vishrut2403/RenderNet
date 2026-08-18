@@ -10,6 +10,8 @@ export function usePolling(fetcher, intervalFor, deps = []) {
 
   const timer = useRef(null);
   const cancelled = useRef(false);
+  const paused = useRef(false);
+  const runId = useRef(0);
   const fetcherRef = useRef(fetcher);
   const intervalRef = useRef(intervalFor);
   const dataRef = useRef(null);
@@ -19,25 +21,33 @@ export function usePolling(fetcher, intervalFor, deps = []) {
   dataRef.current = data;
 
   const tick = useCallback(async () => {
+    // Clearing the timer cannot cancel a request already in flight. Without
+    // this, a refresh landing mid-request leaves both ticks scheduling a
+    // successor, and the loop forks in two for the rest of the session.
+    const run = ++runId.current;
+    const stale = () => cancelled.current || run !== runId.current;
+
     try {
       const result = await fetcherRef.current();
-      if (cancelled.current) return;
+      if (stale()) return;
 
       setData(result);
       setError(null);
     } catch (err) {
-      if (cancelled.current) return;
+      if (stale()) return;
       if (err.status !== 401) setError(err.message);
     } finally {
-      if (cancelled.current) return;
+      if (!stale()) {
+        setLoading(false);
 
-      setLoading(false);
+        if (!paused.current) {
+          const delay = typeof intervalRef.current === 'function'
+            ? intervalRef.current(dataRef.current)
+            : intervalRef.current;
 
-      const delay = typeof intervalRef.current === 'function'
-        ? intervalRef.current(dataRef.current)
-        : intervalRef.current;
-
-      timer.current = setTimeout(tick, delay);
+          timer.current = setTimeout(tick, delay);
+        }
+      }
     }
   }, []);
 
@@ -48,11 +58,14 @@ export function usePolling(fetcher, intervalFor, deps = []) {
 
   useEffect(() => {
     cancelled.current = false;
+    paused.current = false;
     tick();
 
     const onVisibility = () => {
-      if (document.visibilityState === 'visible') refresh();
-      else clearTimeout(timer.current);
+      paused.current = document.visibilityState !== 'visible';
+
+      if (paused.current) clearTimeout(timer.current);
+      else refresh();
     };
 
     document.addEventListener('visibilitychange', onVisibility);

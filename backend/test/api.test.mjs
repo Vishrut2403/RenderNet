@@ -110,6 +110,11 @@ export default async function run() {
     results.check('non-blend file rejected with 400',
       (await submitJob(base, adminToken, notBlend, { frameStart: 1, frameEnd: 1 })).status === 400);
 
+    const upperBlend = path.join(sandbox, 'SHOUTING.BLEND');
+    fs.writeFileSync(upperBlend, Buffer.alloc(1024, 7));
+    results.check('extension check is case-insensitive',
+      (await submitJob(base, adminToken, upperBlend, { frameStart: 1, frameEnd: 1 })).status === 200);
+
     console.log('\n  Ownership and access control');
     const stub = await submitJob(base, adminToken, stubBlend, { frameStart: 1, frameEnd: 1 });
     const stubId = stub.body.jobId;
@@ -175,6 +180,19 @@ export default async function run() {
       await status(`${base}/download/files/render_${jobId}/frame_0001.png?token=${userToken}`) === 403);
     results.check('path traversal blocked',
       await status(`${base}/download/files/render_${jobId}/..%2f..%2fusers.json?token=${adminToken}`) === 404);
+
+    const listing = await (await fetch(`${base}/download/${jobId}/files`, {
+      headers: auth(adminToken)
+    })).json();
+    results.check('frame listing works with a header token', listing.files.length === 2,
+      JSON.stringify(listing.files));
+    // The browser composes the fetchable URL; baking in an origin and a token
+    // here breaks any deployment where the API is not same-origin.
+    results.check('frame paths are API-relative and carry no token',
+      listing.files.every(file =>
+        file.path === `/download/files/render_${jobId}/${file.filename}`)
+      && !JSON.stringify(listing).includes('token'),
+      JSON.stringify(listing.files));
 
     console.log('\n  Persistence across restart');
     await stopServer(server);

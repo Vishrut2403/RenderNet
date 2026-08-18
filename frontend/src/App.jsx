@@ -51,8 +51,15 @@ export default function App() {
     return <div className="boot">Checking session…</div>;
   }
 
+  // The toast belongs here too: an expired session signs the user out, and the
+  // notice explaining why would otherwise be dropped with the rest of the app.
   if (!user) {
-    return <Login onAuthenticated={setUser} />;
+    return (
+      <>
+        <Login onAuthenticated={setUser} />
+        <Toast toast={toast} onDismiss={() => setToast(null)} />
+      </>
+    );
   }
 
   async function handleSignOut() {

@@ -136,12 +136,3 @@ export function relativeTime(iso) {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
   return new Date(iso).toLocaleDateString();
 }
-
-export function duration(startIso, endIso) {
-  if (!startIso || !endIso) return null;
-
-  const seconds = Math.round((new Date(endIso) - new Date(startIso)) / 1000);
-
-  if (seconds < 60) return `${seconds}s`;
-  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}

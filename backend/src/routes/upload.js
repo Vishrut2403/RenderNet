@@ -20,7 +20,7 @@ const upload = multer({
     fileSize: 500 * 1024 * 1024
   },
   fileFilter: (req, file, cb) => {
-    if (file.originalname.endsWith('.blend')) {
+    if (file.originalname.toLowerCase().endsWith('.blend')) {
       cb(null, true);
     } else {
       cb(new Error('Only .blend files are allowed'));

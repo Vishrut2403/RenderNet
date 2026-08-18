@@ -196,12 +196,13 @@ cd backend
 npm test
 ```
 
-Two suites run in sequence:
+Three suites run in sequence:
 
 - **Worker callback endpoints** — the callback API exercised in-process against the real queue. Blender is never spawned, so this runs anywhere.
+- **Render pipeline** — cancellation, queue hand-off and cleanup, driven by a stand-in for Blender that can be made to flood stdout, render slowly, fail, or ignore `SIGTERM` on demand. Real Blender cannot be asked for those behaviours reliably, and none of them need it.
 - **API, rendering and persistence** — a real server instance covering upload validation, ownership and access control, admin routes, an actual Blender render, downloads, and recovery across a restart.
 
-Each suite runs in its own temporary directory with a separate database, so tests never touch real uploads, renders or user accounts. Render-dependent checks are skipped automatically when Blender is not installed, leaving 45 of the 56 checks still meaningful on a machine without it.
+Each suite runs in its own temporary directory with a separate database, so tests never touch real uploads, renders or user accounts. Render-dependent checks are skipped automatically when Blender is not installed, leaving 75 of the 88 checks still meaningful on a machine without it.
 
 ---
 
@@ -209,9 +210,11 @@ Each suite runs in its own temporary directory with a separate database, so test
 
 **Persistence.** Jobs and sessions are written to SQLite as they change. Restarting the server preserves job history, progress and login sessions.
 
-**Crash recovery.** A job left mid-render by a restart has no worker behind it, so it is reset and requeued on the next boot. Jobs interrupted more than twice are marked failed rather than retried forever.
+**Crash recovery.** A job left mid-render by a restart has no worker behind it, so it is reset and requeued on the next boot. Since the retry starts again from the first frame, output from the abandoned attempt is discarded rather than left to mix with the new run. Jobs interrupted more than twice are marked failed rather than retried forever.
 
-**Cleanup.** Every 24 hours, uploads, render output, worker scratch files and job records older than 48 hours are deleted, along with expired sessions.
+**Cleanup.** Every 24 hours, uploads, render output, worker scratch files and job records older than 48 hours are deleted, along with expired sessions. Anything belonging to a job that is still queued or rendering is left alone however old it is, so a job that waits out the cutoff behind a long render does not lose its `.blend`. An admin can trigger a sweep on demand with `POST /api/cleanup`.
+
+**Cancellation.** Cancelling a running job kills its Blender process (escalating to `SIGKILL` if it does not stop), and the queue holds the slot until that worker has actually stopped before starting the next job. Callbacks that arrive from a worker after its job left the `rendering` state are rejected, so a frame still in flight cannot write output back for a job that was already cancelled.
 
 **Upgrading an existing install.** Earlier versions kept accounts in `users.json` with unsalted SHA-256 hashes. On first start those accounts are imported into the database and the file is renamed to `users.json.migrated`. Existing passwords keep working and are re-hashed with bcrypt the next time each user logs in, so no password resets are needed.
 

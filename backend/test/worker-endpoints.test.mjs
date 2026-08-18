@@ -78,6 +78,16 @@ export default async function run() {
     });
     results.check('wrong secret is rejected', res.status === 401, `got ${res.status}`);
 
+    // Same character count as the secret, one byte longer once encoded, which
+    // is what a raw timingSafeEqual comparison throws on.
+    res = await fetch(`${base}/jobs/${jobId}/progress`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-worker-secret': 'tést-secret-abc123' },
+      body: JSON.stringify({ currentFrame: 1 })
+    });
+    results.check('multi-byte secret of the same length is rejected, not a server error',
+      res.status === 401, `got ${res.status}`);
+
     res = await fetch(`${base}/jobs/99999999/progress`, {
       method: 'POST', headers: json, body: JSON.stringify({ currentFrame: 1 })
     });
@@ -140,17 +150,53 @@ export default async function run() {
     body = await res.json();
     results.check('completion accepted', res.status === 200, `got ${res.status}`);
     results.check('partial success still completes', body.status === 'completed', `got ${body.status}`);
+    // One frame was uploaded and one reported failed above, whatever the
+    // worker claims in its closing tally.
+    results.check('final counts come from what the server received',
+      body.completedFrames === 1 && body.failedFrames === 1,
+      JSON.stringify({ completed: body.completedFrames, failed: body.failedFrames }));
     results.check('progress pinned to 100', queue.getJob(jobId).progress === 100);
     results.check('completedAt stamped', !!queue.getJob(jobId).completedAt);
 
     console.log('\n  Cancelled jobs are not resurrected');
+    const outputFolder = path.join(sandbox, queue.getJob(jobId).outputFolder);
+    fs.rmSync(outputFolder, { recursive: true, force: true });
+
     queue.getJob(jobId).status = 'cancelled';
+    const cancelledSnapshot = { ...queue.getJob(jobId) };
+
     res = await fetch(`${base}/jobs/${jobId}/complete`, {
       method: 'POST', headers: json,
       body: JSON.stringify({ successfulFrames: 4, failedFrames: 0 })
     });
     body = await res.json();
     results.check('late completion ignored', body.status === 'cancelled', `got ${body.status}`);
+
+    res = await fetch(`${base}/jobs/${jobId}/progress`, {
+      method: 'POST', headers: json, body: JSON.stringify({ currentFrame: 4 })
+    });
+    results.check('late progress rejected', res.status === 409, `got ${res.status}`);
+
+    const lateFrame = new FormData();
+    lateFrame.set('frame', new File([png], 'late.png', { type: 'image/png' }));
+    res = await fetch(`${base}/jobs/${jobId}/frames/2`, {
+      method: 'POST', headers: secretHeader, body: lateFrame
+    });
+    results.check('late frame upload rejected', res.status === 409, `got ${res.status}`);
+    results.check('late frame does not recreate the deleted output folder',
+      !fs.existsSync(outputFolder));
+
+    res = await fetch(`${base}/jobs/${jobId}/frames/2/failed`, {
+      method: 'POST', headers: json, body: JSON.stringify({ error: 'signal SIGTERM' })
+    });
+    results.check('late frame failure rejected', res.status === 409, `got ${res.status}`);
+
+    const untouched = queue.getJob(jobId);
+    results.check('cancelled job counters are left alone',
+      untouched.progress === cancelledSnapshot.progress
+      && untouched.completedFrames === cancelledSnapshot.completedFrames
+      && untouched.frameErrors.length === cancelledSnapshot.frameErrors.length,
+      JSON.stringify({ progress: untouched.progress, done: untouched.completedFrames }));
 
   } finally {
     server.close();

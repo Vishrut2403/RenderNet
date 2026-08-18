@@ -98,9 +98,11 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
       jobId,
       outputFolder: job.outputFolder,
       totalFiles: files.length,
+      // API-relative and without a token: the caller knows its own API origin,
+      // and only it knows whether the token belongs in the URL at all.
       files: files.map(filename => ({
         filename,
-        url: `/api/download/files/render_${jobId}/${filename}?token=${req.query.token || ''}`
+        path: `/download/files/render_${jobId}/${encodeURIComponent(filename)}`
       }))
     });
   } catch (error) {

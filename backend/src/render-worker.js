@@ -10,6 +10,8 @@ const API_URL = process.env.API_URL || 'http://localhost:5500';
 const WORKER_BASE = `${API_URL}/api/worker`;
 // CPU, OPTIX, CUDA, HIP, ONEAPI or METAL. Cycles only.
 const CYCLES_DEVICE = process.env.CYCLES_DEVICE || 'CPU';
+const OUTPUT_TAIL = 4000;
+const KILL_GRACE_MS = 5000;
 
 // Read lazily: the server may generate the secret at boot, after this import.
 function workerHeaders(extra = {}) {
@@ -22,15 +24,23 @@ class RenderWorker {
     this.currentJob = null;
     this.currentProcess = null;
     this.cancelled = false;
+    this.killTimer = null;
   }
 
   cancel() {
     this.cancelled = true;
-    if (this.currentProcess) {
-      this.currentProcess.kill('SIGTERM');
-      return true;
-    }
-    return false;
+
+    const running = this.currentProcess;
+    if (!running) return false;
+
+    running.kill('SIGTERM');
+
+    // The queue holds the slot until this worker stops, so a Blender that
+    // ignores SIGTERM would keep the whole queue waiting.
+    this.killTimer = setTimeout(() => running.kill('SIGKILL'), KILL_GRACE_MS);
+    this.killTimer.unref();
+
+    return true;
   }
 
   async renderJob(job) {
@@ -83,9 +93,12 @@ class RenderWorker {
         await this.reportProgress(id, frame);
 
       } catch (error) {
+        // A frame killed by cancellation is not a render failure.
+        if (this.cancelled) break;
+
         console.error(`❌ Frame ${frame} failed:`, error.message);
         failedFrames++;
-        
+
         await this.reportFrameFailure(id, frame, error.message);
       }
     }
@@ -145,17 +158,25 @@ class RenderWorker {
 
       console.log(`   Running: ${BLENDER_PATH} ${args.join(' ')}`);
 
-      const blender = spawn(BLENDER_PATH, args);
+      const blender = spawn(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       this.currentProcess = blender;
 
+      let stdout = '';
       let stderr = '';
 
+      // Both pipes have to be drained. An unread one fills its buffer and
+      // blocks Blender mid-write, and nothing here would ever time out.
+      blender.stdout.on('data', (data) => {
+        stdout = (stdout + data).slice(-OUTPUT_TAIL);
+      });
+
       blender.stderr.on('data', (data) => {
-        stderr += data.toString();
+        stderr = (stderr + data).slice(-OUTPUT_TAIL);
       });
 
       blender.on('close', (code, signal) => {
         this.currentProcess = null;
+        clearTimeout(this.killTimer);
 
         if (signal) {
           reject(new Error(`Blender terminated by signal ${signal}`));
@@ -163,7 +184,9 @@ class RenderWorker {
         }
 
         if (code !== 0) {
-          reject(new Error(`Blender exited with code ${code}: ${stderr.trim().slice(-500)}`));
+          // Blender reports most failures on stdout, not stderr.
+          const detail = (stderr.trim() || stdout.trim()).slice(-500);
+          reject(new Error(`Blender exited with code ${code}: ${detail}`));
           return;
         }
 
@@ -176,6 +199,7 @@ class RenderWorker {
 
       blender.on('error', (err) => {
         this.currentProcess = null;
+        clearTimeout(this.killTimer);
         reject(new Error(`Failed to start Blender: ${err.message}`));
       });
     });

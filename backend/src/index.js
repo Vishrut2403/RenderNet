@@ -5,7 +5,7 @@ import { ensureDir } from './utils/file-utils.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
 import { cleanupOldFiles } from './cleanup.js';
 import authRouter from './routes/auth.js'
-import { requireAuth } from './auth.js';
+import { requireAuth, requireAdmin } from './auth.js';
 import uploadRouter from './routes/upload.js';
 import jobsRouter from './routes/jobs.js';
 import { resumeInterruptedJobs } from './queue.js';
@@ -63,7 +63,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-app.get('/api/cleanup-test', (req, res) => {
+app.post('/api/cleanup', requireAuth, requireAdmin, (req, res) => {
   cleanupOldFiles();
   res.json({ message: 'Cleanup triggered' });
 });

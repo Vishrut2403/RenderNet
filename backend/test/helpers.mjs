@@ -83,6 +83,79 @@ bpy.ops.wm.save_as_mainfile(filepath=r'${blendPath}')
   return blendPath;
 }
 
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64'
+);
+
+// A stand-in for Blender that writes the frame the worker expects. Behaviour is
+// keyed off the .blend filename so one server can drive every scenario:
+// 'noisy' floods stdout, 'slow' takes its time per frame, 'stubborn' ignores
+// SIGTERM, 'broken' exits non-zero with its complaint on stdout.
+export function createFakeBlender(dir) {
+  const blenderPath = path.join(dir, 'fake-blender');
+
+  fs.writeFileSync(blenderPath, `#!/usr/bin/env node
+const fs = require('fs');
+const path = require('path');
+
+const args = process.argv.slice(2);
+const valueOf = flag => args[args.indexOf(flag) + 1];
+
+const scene = path.basename(valueOf('-b') || '');
+const frame = Number(valueOf('-f'));
+const target = valueOf('-o').replace('####', String(frame).padStart(4, '0')) + '.png';
+
+if (scene.includes('stubborn')) {
+  process.on('SIGTERM', () => {});
+  setInterval(() => {}, 1000);
+}
+
+if (scene.includes('noisy')) {
+  // Written synchronously, the way Blender writes its progress log.
+  const line = 'x'.repeat(99) + '\\n';
+  for (let i = 0; i < 4096; i++) fs.writeSync(1, line);
+}
+
+if (scene.includes('broken')) {
+  fs.writeSync(1, 'Error: cannot read scene\\n');
+  process.exit(1);
+}
+
+setTimeout(() => {
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, Buffer.from('${PNG_1X1.toString('base64')}', 'base64'));
+  process.exit(0);
+}, scene.includes('slow') ? 2000 : 0);
+`);
+
+  fs.chmodSync(blenderPath, 0o755);
+
+  return blenderPath;
+}
+
+export function createFakeScene(dir, name) {
+  const scenePath = path.join(dir, name);
+  fs.writeFileSync(scenePath, Buffer.alloc(256, 3));
+  return scenePath;
+}
+
+export async function waitForCondition(check, { timeoutMs = 15000, label = 'condition' } = {}) {
+  const deadline = Date.now() + timeoutMs;
+
+  while (Date.now() < deadline) {
+    if (await check()) return true;
+    await sleep(200);
+  }
+
+  console.log(`    (timed out waiting for ${label})`);
+  return false;
+}
+
+export async function getJob(base, token, jobId) {
+  return (await fetch(`${base}/jobs/${jobId}`, { headers: auth(token) })).json();
+}
+
 export async function startServer({ port, cwd, env = {} }) {
   const proc = spawn('node', [path.join(BACKEND_ROOT, 'src', 'index.js')], {
     cwd,

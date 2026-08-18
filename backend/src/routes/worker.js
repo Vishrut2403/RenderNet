@@ -22,13 +22,15 @@ function requireWorker(req, res, next) {
 
   const provided = req.headers['x-worker-secret'];
 
-  if (typeof provided !== 'string' || provided.length !== expected.length) {
+  if (typeof provided !== 'string') {
     return res.status(401).json({ error: 'Invalid worker credentials' });
   }
 
+  // Digests rather than the raw values: timingSafeEqual throws on a length
+  // mismatch, and header characters outside ASCII do not encode one byte each.
   const match = crypto.timingSafeEqual(
-    Buffer.from(provided),
-    Buffer.from(expected)
+    crypto.createHash('sha256').update(provided).digest(),
+    crypto.createHash('sha256').update(expected).digest()
   );
 
   if (!match) {
@@ -49,6 +51,18 @@ function loadJob(req, res, next) {
 
   req.jobId = jobId;
   req.job = job;
+  next();
+}
+
+// Runs before multer so a callback for a cancelled job cannot recreate the
+// output folder that cancellation just deleted.
+function requireRendering(req, res, next) {
+  if (req.job.status !== 'rendering') {
+    return res.status(409).json({
+      error: `Job ${req.jobId} is ${req.job.status}, not rendering`
+    });
+  }
+
   next();
 }
 
@@ -88,13 +102,19 @@ function validFrame(req, res, next) {
 
 router.use(requireWorker);
 
-router.post('/jobs/:id/frames/:frame', loadJob, validFrame, upload.single('frame'), (req, res) => {
+router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, upload.single('frame'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No frame file uploaded' });
   }
 
   const frame = Number(req.params.frame);
   const job = recordFrameUpload(req.jobId, frame, req.file.filename);
+
+  // Cancellation can land while the frame is still streaming in.
+  if (!job) {
+    fs.rmSync(req.file.path, { force: true });
+    return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
+  }
 
   console.log(`Frame ${frame} received for job ${req.jobId} (${job.progress}%)`);
 
@@ -106,18 +126,22 @@ router.post('/jobs/:id/frames/:frame', loadJob, validFrame, upload.single('frame
   });
 });
 
-router.post('/jobs/:id/frames/:frame/failed', loadJob, validFrame, (req, res) => {
+router.post('/jobs/:id/frames/:frame/failed', loadJob, requireRendering, validFrame, (req, res) => {
   const frame = Number(req.params.frame);
   const { error } = req.body;
 
   const job = recordFrameFailure(req.jobId, frame, error || 'Unknown error');
+
+  if (!job) {
+    return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
+  }
 
   console.warn(`Frame ${frame} failed for job ${req.jobId}: ${error}`);
 
   res.json({ success: true, frame, failedFrames: job.failedFrames });
 });
 
-router.post('/jobs/:id/progress', loadJob, (req, res) => {
+router.post('/jobs/:id/progress', loadJob, requireRendering, (req, res) => {
   const currentFrame = Number(req.body.currentFrame);
 
   if (!Number.isInteger(currentFrame)) {
@@ -125,6 +149,10 @@ router.post('/jobs/:id/progress', loadJob, (req, res) => {
   }
 
   const job = updateJobProgress(req.jobId, currentFrame);
+
+  if (!job) {
+    return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
+  }
 
   res.json({ success: true, progress: job.progress, currentFrame: job.currentFrame });
 });

@@ -1,8 +1,10 @@
 import workerEndpoints from './worker-endpoints.test.mjs';
+import renderPipeline from './render-pipeline.test.mjs';
 import api from './api.test.mjs';
 
 const suites = [
   ['Worker callback endpoints', workerEndpoints],
+  ['Render pipeline', renderPipeline],
   ['API, rendering and persistence', api]
 ];
 

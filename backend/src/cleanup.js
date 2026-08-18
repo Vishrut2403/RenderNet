@@ -1,15 +1,18 @@
 import fs from 'fs';
 import path from 'path';
-import { pruneOldJobs } from './queue.js';
+import { pruneOldJobs, getActiveJobPaths } from './queue.js';
 import { purgeExpiredSessions } from './db.js';
 
 export function cleanupOldFiles() {
   const now = Date.now();
   const fortyEightHoursAgo = now - (48 * 60 * 60 * 1000);
-  
+
   console.log('Starting cleanup process...');
-  
+
   try {
+    // A job can sit in the queue for longer than the cutoff; deleting by age
+    // alone would take its .blend away before it ever renders.
+    const active = getActiveJobPaths();
     const uploadsDir = 'uploads';
     if (fs.existsSync(uploadsDir)) {
       const uploadFiles = fs.readdirSync(uploadsDir);
@@ -17,8 +20,10 @@ export function cleanupOldFiles() {
       
       uploadFiles.forEach(file => {
         const filePath = path.join(uploadsDir, file);
+        if (active.has(path.resolve(filePath))) return;
+
         const stats = fs.statSync(filePath);
-        
+
         if (stats.mtimeMs < fortyEightHoursAgo) {
           fs.unlinkSync(filePath);
           deletedUploads++;
@@ -37,6 +42,8 @@ export function cleanupOldFiles() {
 
       fs.readdirSync(dir).forEach(folder => {
         const folderPath = path.join(dir, folder);
+        if (active.has(path.resolve(folderPath))) return;
+
         const stats = fs.statSync(folderPath);
 
         if (stats.mtimeMs < fortyEightHoursAgo) {
@@ -63,8 +70,4 @@ export function cleanupOldFiles() {
   } catch (error) {
     console.error('Cleanup error:', error.message);
   }
-}
-
-export function forceCleanup() {
-  console.log('FORCE CLEANUP - Deleting ALL files');
 }

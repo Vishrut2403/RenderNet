@@ -31,6 +31,12 @@ export function clearSession() {
   localStorage.removeItem('rendernet.user');
 }
 
+// For URLs the browser fetches on its own - <img> sources and download links -
+// which cannot carry an Authorization header.
+function authorizedUrl(path) {
+  return `${BASE}${path}?token=${encodeURIComponent(getToken())}`;
+}
+
 class ApiError extends Error {
   constructor(message, status) {
     super(message);
@@ -97,9 +103,19 @@ export const api = {
 
   cancelJob: id => request(`/jobs/${id}/cancel`, { method: 'POST' }),
 
-  jobFiles: id => request(`/download/${id}/files?token=${encodeURIComponent(getToken())}`),
+  // The frame URLs are built here rather than server-side: only the browser
+  // knows which API origin it is talking to, and a token belongs in the URL
+  // solely because <img> cannot carry an Authorization header.
+  async jobFiles(id) {
+    const result = await request(`/download/${id}/files`);
 
-  zipUrl: id => `${BASE}/download/${id}/zip?token=${encodeURIComponent(getToken())}`,
+    return {
+      ...result,
+      files: result.files.map(file => ({ ...file, url: authorizedUrl(file.path) }))
+    };
+  },
+
+  zipUrl: id => authorizedUrl(`/download/${id}/zip`),
 
   upload(file, { frameStart, frameEnd, renderEngine }, onProgress) {
     // XHR rather than fetch: upload progress events have no fetch equivalent.
