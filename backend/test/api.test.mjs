@@ -6,7 +6,8 @@ import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
-  login, auth, status, submitJob, waitForJob, blenderAvailable, createFixtureBlend
+  login, auth, status, submitJob, waitForJob, blenderAvailable, createFixtureBlend,
+  adminSession, signUp, SIGNUP_CODE, ADMIN_PASSWORD
 } from './helpers.mjs';
 
 const PORT = 5592;
@@ -66,13 +67,56 @@ export default async function run() {
         body: JSON.stringify({ username: 'legacyuser', password: 'wrong' })
       }) === 401);
 
-    const adminToken = await login(base, 'admin', 'admin123');
+    // Only the extension is checked at upload time, so validation and access
+    // control can be exercised without invoking Blender.
+    const stubBlend = path.join(sandbox, 'stub.blend');
+    fs.writeFileSync(stubBlend, Buffer.alloc(1024, 7));
 
-    await fetch(`${base}/auth/signup`, {
+    console.log('\n  The seeded admin must replace its password first');
+    const seeded = await (await fetch(`${base}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'tester', password: 'testpass123' })
+      body: JSON.stringify({ username: 'admin', password: 'admin123' })
+    })).json();
+
+    results.check('the default password still signs in', !!seeded.token);
+    results.check('and the response says a change is required',
+      seeded.mustChangePassword === true, JSON.stringify(seeded.mustChangePassword));
+    results.check('but it cannot reach the jobs it would own',
+      await status(`${base}/jobs`, { headers: auth(seeded.token) }) === 403);
+    results.check('nor upload anything',
+      (await submitJob(base, seeded.token, stubBlend, { frameStart: 1, frameEnd: 1 })).status === 403);
+    results.check('nor download anything',
+      await status(`${base}/download/1/zip`, { headers: auth(seeded.token) }) === 403);
+    results.check('verify reports the requirement so the UI can act on it',
+      (await (await fetch(`${base}/auth/verify`, { headers: auth(seeded.token) })).json())
+        .mustChangePassword === true);
+
+    const cleared = await fetch(`${base}/auth/change-password`, {
+      method: 'POST',
+      headers: { ...auth(seeded.token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword: 'admin123', newPassword: ADMIN_PASSWORD })
     });
+    results.check('changing the password is allowed while locked out', cleared.status === 200,
+      `got ${cleared.status}`);
+    results.check('the same token then works normally',
+      await status(`${base}/jobs`, { headers: auth(seeded.token) }) === 200);
+
+    console.log('\n  Account creation is gated');
+    results.check('signup with no code rejected',
+      await signUp(base, 'nocode', 'password123', null) === 400);
+    results.check('signup with the wrong code rejected',
+      await signUp(base, 'wrongcode', 'password123', 'not-the-code') === 400);
+    results.check('signup with the right code accepted',
+      await signUp(base, 'tester', 'testpass123', SIGNUP_CODE) === 200);
+    results.check('a rejected signup creates no account',
+      await status(`${base}/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: 'wrongcode', password: 'password123' })
+      }) === 401);
+
+    const adminToken = await adminSession(base);
     const userToken = await login(base, 'tester', 'testpass123');
 
     results.check('new signups are hashed with bcrypt',
@@ -91,11 +135,6 @@ export default async function run() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: 'tester', password: 'testpass123' })
       }) === 401);
-
-    // Only the extension is checked at upload time, so validation and access
-    // control can be exercised without invoking Blender.
-    const stubBlend = path.join(sandbox, 'stub.blend');
-    fs.writeFileSync(stubBlend, Buffer.alloc(1024, 7));
 
     console.log('\n  Upload validation');
     const bad = async opts => (await submitJob(base, adminToken, stubBlend, opts)).status;
@@ -144,6 +183,23 @@ export default async function run() {
     const users = await (await fetch(`${base}/auth/users`, { headers: auth(adminToken) })).text();
     results.check('password hashes are not exposed', !users.includes('passwordHash'));
 
+    // A throwaway account: resetting one still in use below would lock the
+    // token those checks depend on and pass them for the wrong reason.
+    await signUp(base, 'resetme', 'originalpass');
+    await fetch(`${base}/auth/admin/reset-password`, {
+      method: 'POST',
+      headers: { ...auth(adminToken), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetUsername: 'resetme', newPassword: 'reset-by-admin' })
+    });
+    const afterReset = await (await fetch(`${base}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'resetme', password: 'reset-by-admin' })
+    })).json();
+    // The admin who set it knows it, so the owner has to replace it.
+    results.check('an admin reset hands the account back locked',
+      afterReset.mustChangePassword === true, JSON.stringify(afterReset.mustChangePassword));
+
     console.log('\n  Worker callback authentication');
     results.check('worker route rejects a request with no secret',
       await status(`${base}/worker/jobs/1/progress`, { method: 'POST' }) === 401);
@@ -151,8 +207,10 @@ export default async function run() {
     if (!blenderAvailable()) {
       console.log('\n  Rendering, downloads and persistence');
       for (const name of ['render completes', 'frames written', 'download by header',
-        'download by query token', 'cross-user download denied', 'traversal blocked',
-        'session survives restart', 'job survives restart', 'download survives restart']) {
+        'download by query token', 'unauthenticated download rejected',
+        'cross-user download denied', 'traversal blocked', 'frame listing by header',
+        'frame paths carry no token', 'session survives restart', 'job survives restart',
+        'progress survives restart', 'download survives restart']) {
         results.skipped(name, 'Blender not installed');
       }
       return results;

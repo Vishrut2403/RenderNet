@@ -5,10 +5,27 @@ import {
   saveSession, loadSessions, deleteSession,
   saveUser, getUser, getAllUsers, countUsers
 } from './db.js';
+import { USERS_FILE } from './paths.js';
 
-const USERS_FILE = 'users.json';
 const BCRYPT_ROUNDS = 12;
 const SESSION_DURATION = 24 * 60 * 60 * 1000;
+const DEFAULT_ADMIN_PASSWORD = 'admin123';
+
+// Read lazily: index.js loads .env before this module, but tests set it per run.
+function signupCode() {
+  return process.env.SIGNUP_CODE;
+}
+
+function matchesSecret(provided, expected) {
+  if (typeof provided !== 'string' || !expected) return false;
+
+  // Digests rather than raw values, so length never has to match and the
+  // comparison cannot throw on unexpected input.
+  return crypto.timingSafeEqual(
+    crypto.createHash('sha256').update(provided).digest(),
+    crypto.createHash('sha256').update(expected).digest()
+  );
+}
 
 function legacyHash(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
@@ -60,17 +77,39 @@ function seedAdmin() {
 
   saveUser({
     username: 'admin',
-    passwordHash: bcrypt.hashSync('admin123', BCRYPT_ROUNDS),
+    passwordHash: bcrypt.hashSync(DEFAULT_ADMIN_PASSWORD, BCRYPT_ROUNDS),
     hashAlgo: 'bcrypt',
     role: 'admin',
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    mustChangePassword: 1
   });
 
-  console.warn('Created default admin account (admin / admin123) - change this password.');
+  console.warn('Created default admin account (admin / admin123).');
+  console.warn('It cannot do anything until its password is changed at first login.');
+}
+
+// Installs that predate the flag can still be sitting on the seeded password,
+// which is the one credential everybody already knows.
+function usesDefaultPassword(user) {
+  return user.hashAlgo === 'sha256'
+    ? legacyHash(DEFAULT_ADMIN_PASSWORD) === user.passwordHash
+    : bcrypt.compareSync(DEFAULT_ADMIN_PASSWORD, user.passwordHash);
+}
+
+function flagDefaultAdminPassword() {
+  const admin = getUser('admin');
+
+  if (!admin || admin.mustChangePassword) return;
+  if (!usesDefaultPassword(admin)) return;
+
+  admin.mustChangePassword = 1;
+  saveUser(admin);
+  console.warn('The admin account still uses the default password - a change is now required.');
 }
 
 migrateUsersFile();
 seedAdmin();
+flagDefaultAdminPassword();
 
 function generateToken() {
   return crypto.randomBytes(32).toString('hex');
@@ -116,10 +155,27 @@ export async function login(username, password) {
 
   console.log(`User logged in: ${username}`);
 
-  return { success: true, token, username: user.username, role: user.role };
+  return {
+    success: true,
+    token,
+    username: user.username,
+    role: user.role,
+    mustChangePassword: !!user.mustChangePassword
+  };
 }
 
-export async function signup(username, password) {
+export async function signup(username, password, code) {
+  if (!signupCode()) {
+    return {
+      success: false,
+      error: 'Account creation is turned off. Ask an administrator to set SIGNUP_CODE.'
+    };
+  }
+
+  if (!matchesSecret(code, signupCode())) {
+    return { success: false, error: 'That signup code is not right' };
+  }
+
   if (!username || username.length < 3) {
     return { success: false, error: 'Username must be at least 3 characters' };
   }
@@ -163,6 +219,7 @@ export async function changePassword(username, oldPassword, newPassword) {
   user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
   user.hashAlgo = 'bcrypt';
   user.passwordChangedAt = new Date().toISOString();
+  user.mustChangePassword = 0;
   saveUser(user);
 
   console.log(`Password changed for user: ${username}`);
@@ -184,6 +241,8 @@ export async function adminResetPassword(targetUsername, newPassword) {
   user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
   user.hashAlgo = 'bcrypt';
   user.passwordResetAt = new Date().toISOString();
+  // The admin who set it knows it, so the owner has to replace it.
+  user.mustChangePassword = 1;
   saveUser(user);
 
   console.log(`Password reset for user: ${targetUsername}`);
@@ -217,7 +276,9 @@ export function logout(token) {
   return { success: true };
 }
 
-export function requireAuth(req, res, next) {
+// Establishes who is calling and nothing more. Used by the routes an account
+// must still reach while it is locked out of everything else.
+export function requireSession(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
 
   if (!token) {
@@ -232,10 +293,30 @@ export function requireAuth(req, res, next) {
 
   req.user = {
     username: verification.username,
-    role: verification.role
+    role: verification.role,
+    mustChangePassword: mustChangePassword(verification.username)
   };
 
   next();
+}
+
+// Looked up per request rather than stored on the session, so changing the
+// password clears the lock immediately instead of at the next login.
+export function mustChangePassword(username) {
+  return !!getUser(username)?.mustChangePassword;
+}
+
+export function requireAuth(req, res, next) {
+  requireSession(req, res, () => {
+    if (req.user.mustChangePassword) {
+      return res.status(403).json({
+        error: 'Choose a new password before using RenderNet',
+        mustChangePassword: true
+      });
+    }
+
+    next();
+  });
 }
 
 export function requireAdmin(req, res, next) {

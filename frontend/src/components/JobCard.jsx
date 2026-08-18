@@ -36,6 +36,36 @@ export function JobCard({ job, onChanged, onError }) {
         ]
       : null;
 
+  async function remove() {
+    if (!confirm(`Delete job ${job.id}? Its frames are removed from the workstation.`)) return;
+
+    setBusy(true);
+    try {
+      await api.deleteJob(job.id);
+      onChanged?.();
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function prioritise() {
+    const urgent = !job.priority;
+
+    if (urgent && !confirm('Mark as urgent? This pauses whatever is rendering now.')) return;
+
+    setBusy(true);
+    try {
+      await api.setPriority(job.id, urgent ? 1 : 0);
+      onChanged?.();
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function cancel() {
     if (!confirm(`Cancel job ${job.id}? Rendered frames will be deleted.`)) return;
 
@@ -80,6 +110,7 @@ export function JobCard({ job, onChanged, onError }) {
             #{job.id} · {job.renderEngine} · frames {job.frameStart}–{job.frameEnd} ·{' '}
             {relativeTime(job.createdAt)}
             {job.owner && <> · <span className="owner">{job.owner}</span></>}
+            {job.priority > 0 && <> · <span className="urgent">urgent</span></>}
           </div>
         </div>
         <StatusBadge status={job.status} />
@@ -91,7 +122,9 @@ export function JobCard({ job, onChanged, onError }) {
 
       {job.status === 'pending' && (
         <p className="job-note">
-          {job.queuePosition ? `Queued — position ${job.queuePosition}` : 'Queued'}
+          {job.pausedBy
+            ? `Paused for ${job.pausedBy}'s urgent job — resumes with ${job.completedFrames} frame${job.completedFrames === 1 ? '' : 's'} already done`
+            : job.queuePosition ? `Queued — position ${job.queuePosition}` : 'Queued'}
         </p>
       )}
 
@@ -130,10 +163,6 @@ export function JobCard({ job, onChanged, onError }) {
       )}
 
       <footer className="job-actions">
-        {(job.status === 'pending' || active) && (
-          <Button variant="danger" busy={busy} onClick={cancel}>Cancel</Button>
-        )}
-
         {done && (
           <>
             <a className="btn btn-primary" href={api.zipUrl(job.id)}>Download ZIP</a>
@@ -141,6 +170,19 @@ export function JobCard({ job, onChanged, onError }) {
               {frames ? 'Hide frames' : 'View frames'}
             </Button>
           </>
+        )}
+
+        {(job.status === 'pending' || active) && (
+          <>
+            <Button busy={busy} onClick={prioritise}>
+              {job.priority > 0 ? 'Make normal' : 'Mark urgent'}
+            </Button>
+            <Button variant="danger" busy={busy} onClick={cancel}>Cancel</Button>
+          </>
+        )}
+
+        {(done || job.status === 'failed' || job.status === 'cancelled') && (
+          <Button variant="danger" busy={busy} onClick={remove}>Delete</Button>
         )}
       </footer>
     </article>

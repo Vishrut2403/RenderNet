@@ -455,6 +455,38 @@ button, input, select { font: inherit; color: inherit; }
 
 .modal-close:hover { color: var(--text); }
 
+.urgent {
+  color: var(--accent);
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+}
+
+.check {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  background: var(--surface-2);
+  cursor: pointer;
+}
+
+.check input { margin-top: 3px; flex: none; }
+.check > span { display: flex; flex-direction: column; gap: 3px; }
+.check strong { font-size: 14px; font-weight: 600; }
+.check-hint { font-size: 13px; color: var(--text-3); line-height: 1.5; }
+
+.modal-note {
+  margin: 0 0 1.1rem;
+  padding-left: 0.85rem;
+  border-left: 2px solid var(--accent);
+  color: var(--text-2);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
 .modal-body { padding: 18px; }
 
 .modal-section {

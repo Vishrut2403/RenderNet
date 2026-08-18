@@ -1,7 +1,7 @@
 import { api } from '../api/client';
 import { usePolling, jobsInterval } from '../hooks/usePolling';
 import { JobCard } from '../components/JobCard';
-import { EmptyState, ProgressBar, StatusBadge, Metrics, formatDuration, useNow } from '../components/ui';
+import { EmptyState, ProgressBar, StatusBadge, Metrics, formatDuration, formatBytes, useNow } from '../components/ui';
 
 function Stat({ label, value, tone }) {
   return (
@@ -18,6 +18,7 @@ export function Dashboard({ notify }) {
 
   const jobs = jobsPoll.data?.jobs || [];
   const queue = queuePoll.data;
+  const usage = jobsPoll.data?.usage;
 
   const tally = jobs.reduce((acc, job) => {
     acc[job.status] = (acc[job.status] || 0) + 1;
@@ -53,6 +54,22 @@ export function Dashboard({ notify }) {
         <Stat label="Frames rendered" value={framesRendered} />
         <Stat label="Render time" value={totalRenderMs ? formatDuration(totalRenderMs) : '—'} />
       </div>
+
+      {usage && (
+        <section className="panel">
+          <h2 className="panel-title">Your space</h2>
+          <ProgressBar
+            value={Math.round((usage.bytes / usage.quota) * 100)}
+            label={`${formatBytes(usage.bytes)} of ${formatBytes(usage.quota)} used`}
+            tone={usage.remaining === 0 ? 'fail' : 'active'}
+          />
+          <p className="idle">
+            {usage.remaining === 0
+              ? 'Full — delete a finished job before uploading another.'
+              : `${formatBytes(usage.remaining)} free. Delete finished jobs once you have downloaded them.`}
+          </p>
+        </section>
+      )}
 
       <section className="panel">
         <h2 className="panel-title">Worker</h2>

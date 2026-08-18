@@ -4,7 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import { getJob } from '../queue.js';
 import { getFilesInDirectory } from '../utils/file-utils.js';
-import { verifyToken } from '../auth.js';
+import { verifyToken, mustChangePassword } from '../auth.js';
+import { dataPath } from '../paths.js';
 
 const router = express.Router();
 
@@ -25,11 +26,18 @@ function authenticateDownload(req, res, next) {
     return res.status(401).json({ error: verification.error });
   }
   
+  if (mustChangePassword(verification.username)) {
+    return res.status(403).json({
+      error: 'Choose a new password before using RenderNet',
+      mustChangePassword: true
+    });
+  }
+
   req.user = {
     username: verification.username,
     role: verification.role
   };
-  
+
   next();
 }
 
@@ -48,9 +56,10 @@ router.get('/files/render_:id/:filename', authenticateDownload, (req, res) => {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  const filePath = path.resolve(job.outputFolder, path.basename(req.params.filename));
+  const outputFolder = dataPath(job.outputFolder);
+  const filePath = path.resolve(outputFolder, path.basename(req.params.filename));
 
-  if (!filePath.startsWith(path.resolve(job.outputFolder) + path.sep)) {
+  if (!filePath.startsWith(outputFolder + path.sep)) {
     return res.status(400).json({ error: 'Invalid file path' });
   }
 
@@ -81,14 +90,14 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
       });
     }
     
-    if (!fs.existsSync(job.outputFolder)) {
+    if (!fs.existsSync(dataPath(job.outputFolder))) {
       return res.status(404).json({
         error: 'No files found',
         details: 'Files may have been cleaned up (48 hour limit)'
       });
     }
     
-    const files = getFilesInDirectory(job.outputFolder);
+    const files = getFilesInDirectory(dataPath(job.outputFolder));
     
     if (files.length === 0) {
       return res.status(404).json({ error: 'No rendered files found' });
@@ -129,7 +138,7 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
       return res.status(400).json({ error: 'Job not completed yet' });
     }
     
-    if (!fs.existsSync(job.outputFolder)) {
+    if (!fs.existsSync(dataPath(job.outputFolder))) {
       return res.status(404).json({ error: 'Output folder not found' });
     }
     
@@ -142,7 +151,7 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
     
     archive.pipe(res);
     
-    archive.directory(job.outputFolder, false);
+    archive.directory(dataPath(job.outputFolder), false);
 
     archive.on('error', (err) => {
       console.error('Archive error:', err);

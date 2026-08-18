@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api/client';
-import { Alert, Button, Field, Modal, relativeTime } from '../components/ui';
+import { Alert, Button, Field, Modal, relativeTime, formatBytes } from '../components/ui';
 
-export function ChangePasswordModal({ onClose, notify }) {
+export function ChangePasswordModal({ onClose, notify, forced = false, onChanged }) {
   const [oldPassword, setOld] = useState('');
   const [newPassword, setNew] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -20,7 +20,8 @@ export function ChangePasswordModal({ onClose, notify }) {
     try {
       await api.changePassword(oldPassword, newPassword);
       notify('Password changed', 'success');
-      onClose();
+      onChanged?.();
+      if (!forced) onClose();
     } catch (err) {
       setError(err.message);
     } finally {
@@ -29,7 +30,14 @@ export function ChangePasswordModal({ onClose, notify }) {
   }
 
   return (
-    <Modal title="Change password" onClose={onClose}>
+    <Modal title="Change password" onClose={onClose} dismissible={!forced}>
+      {forced && (
+        <p className="modal-note">
+          This account is still on the password it was given. Choose your own before
+          you can queue renders.
+        </p>
+      )}
+
       <form onSubmit={submit}>
         <Field label="Current password" type="password" value={oldPassword}
           onChange={e => setOld(e.target.value)} autoComplete="current-password" required />
@@ -48,6 +56,7 @@ export function ChangePasswordModal({ onClose, notify }) {
 
 export function AdminModal({ onClose, notify }) {
   const [users, setUsers] = useState(null);
+  const [usage, setUsage] = useState({});
   const [target, setTarget] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
@@ -57,6 +66,10 @@ export function AdminModal({ onClose, notify }) {
     api.listUsers()
       .then(result => setUsers(result.users))
       .catch(err => setError(err.message));
+
+    api.allUsage()
+      .then(result => setUsage(result.usage))
+      .catch(() => {});
   }, []);
 
   async function submit(event) {
@@ -88,7 +101,10 @@ export function AdminModal({ onClose, notify }) {
             <li key={user.username}>
               <div>
                 <strong>{user.username}</strong>
-                <span className="user-meta">joined {relativeTime(user.createdAt)}</span>
+                <span className="user-meta">
+                  joined {relativeTime(user.createdAt)}
+                  {usage[user.username] && ` · ${formatBytes(usage[user.username].bytes)} used`}
+                </span>
               </div>
               <div className="user-side">
                 {user.role === 'admin' && <span className="badge badge-admin">admin</span>}

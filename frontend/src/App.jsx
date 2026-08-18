@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, clearSession, getStoredUser, getToken, setUnauthorizedHandler } from './api/client';
+import {
+  api, clearSession, getStoredUser, getToken,
+  setUnauthorizedHandler, setPasswordChangeRequiredHandler
+} from './api/client';
 import { Login } from './pages/Login';
 import { Upload } from './pages/Upload';
 import { Jobs } from './pages/Jobs';
@@ -35,6 +38,11 @@ export default function App() {
       setUser(null);
       notify('Session expired — please sign in again', 'error');
     });
+
+    // Reachable mid-session: an admin can reset your password while you work.
+    setPasswordChangeRequiredHandler(() => {
+      setUser(current => (current ? { ...current, mustChangePassword: true } : current));
+    });
   }, [notify]);
 
   // A stored token may have expired while the tab was closed.
@@ -42,7 +50,11 @@ export default function App() {
     if (!getToken()) return;
 
     api.verify()
-      .then(result => setUser({ username: result.username, role: result.role }))
+      .then(result => setUser({
+        username: result.username,
+        role: result.role,
+        mustChangePassword: result.mustChangePassword
+      }))
       .catch(() => clearSession())
       .finally(() => setChecking(false));
   }, []);
@@ -69,6 +81,30 @@ export default function App() {
       // The local session is cleared either way.
     }
     signOut();
+  }
+
+  // Nothing else is reachable until the password is replaced, so there is no
+  // point rendering the tabs behind it.
+  if (user.mustChangePassword) {
+    return (
+      <div className="app">
+        <header className="topbar">
+          <div className="brand">RenderNet</div>
+          <div className="account">
+            <button className="account-btn" onClick={handleSignOut}>Sign out</button>
+          </div>
+        </header>
+
+        <ChangePasswordModal
+          forced
+          notify={notify}
+          onClose={() => {}}
+          onChanged={() => setUser(current => ({ ...current, mustChangePassword: false }))}
+        />
+
+        <Toast toast={toast} onDismiss={() => setToast(null)} />
+      </div>
+    );
   }
 
   return (

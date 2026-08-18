@@ -12,6 +12,10 @@ const WORKER_BASE = `${API_URL}/api/worker`;
 const CYCLES_DEVICE = process.env.CYCLES_DEVICE || 'CPU';
 const OUTPUT_TAIL = 4000;
 const KILL_GRACE_MS = 5000;
+const FAILFAST_FRAMES = 3;
+// The server decides when a frame has had enough attempts; this only stops a
+// misbehaving one from looping the worker forever.
+const ATTEMPT_CEILING = 10;
 
 // Read lazily: the server may generate the secret at boot, after this import.
 function workerHeaders(extra = {}) {
@@ -44,65 +48,49 @@ class RenderWorker {
   }
 
   async renderJob(job) {
-    const { id, blendPath, outputDir, frameStart, frameEnd, renderEngine } = job;
-    
+    const { id, blendPath, outputDir, frames, renderEngine } = job;
+
     console.log(`\n🎬 Worker ${this.workerId}: Starting job ${id}`);
     console.log(`📁 Blend file: ${blendPath}`);
-    console.log(`🎞️  Frames: ${frameStart} - ${frameEnd}`);
+    console.log(`🎞️  Frames left to render: ${frames.length}`);
     console.log(`⚙️  Engine: ${renderEngine}`);
-    
+
     this.currentJob = job;
 
     fs.mkdirSync(outputDir, { recursive: true });
-    
+
     let successfulFrames = 0;
     let failedFrames = 0;
-    
-    for (let frame = frameStart; frame <= frameEnd; frame++) {
+
+    for (const [index, frame] of frames.entries()) {
       if (this.cancelled) {
         console.log(`Worker ${this.workerId}: job ${id} cancelled, stopping at frame ${frame}`);
         break;
       }
 
-      try {
-        console.log(`\n🎬 Rendering frame ${frame}/${frameEnd} (${Math.round(((frame - frameStart) / (frameEnd - frameStart + 1)) * 100)}%)`);
-        
-        const framePath = await this.renderSingleFrame(
-          blendPath,
-          frame,
-          outputDir,
-          renderEngine
-        );
-        
-        console.log(`✅ Frame ${frame} rendered: ${framePath}`);
-        
-        const uploaded = await this.uploadFrame(id, frame, framePath);
+      console.log(`\n🎬 Rendering frame ${frame} (${index + 1} of ${frames.length})`);
 
-        if (!uploaded) {
-          // Rendered but undelivered is still a frame the user cannot download.
-          console.warn(`⚠️  Frame ${frame} upload failed, keeping local copy`);
-          failedFrames++;
-          await this.reportFrameFailure(id, frame, 'Frame rendered but upload failed');
-          continue;
-        }
+      const outcome = await this.renderFrame(id, frame, blendPath, outputDir, renderEngine);
 
-        console.log(`📤 Frame ${frame} uploaded successfully`);
-        fs.rmSync(framePath, { force: true });
+      if (outcome === 'cancelled') break;
+
+      if (outcome === 'done') {
         successfulFrames++;
-
         await this.reportProgress(id, frame);
+        continue;
+      }
 
-      } catch (error) {
-        // A frame killed by cancellation is not a render failure.
-        if (this.cancelled) break;
+      failedFrames++;
 
-        console.error(`❌ Frame ${frame} failed:`, error.message);
-        failedFrames++;
-
-        await this.reportFrameFailure(id, frame, error.message);
+      // A scene that cannot render its opening frames will not render the rest
+      // either, and on a workstation shared for a few hours that is an evening
+      // spent producing nothing.
+      if (successfulFrames === 0 && failedFrames >= FAILFAST_FRAMES) {
+        console.error(`❌ Job ${id}: first ${failedFrames} frames all failed, abandoning the job`);
+        break;
       }
     }
-    
+
     // Succeeds only when every frame was uploaded and removed.
     try {
       fs.rmdirSync(outputDir);
@@ -129,6 +117,43 @@ class RenderWorker {
       successfulFrames,
       failedFrames
     };
+  }
+
+  // Retries are driven by the server's answer rather than a local count, so
+  // there is one place that decides when a frame has had enough attempts.
+  async renderFrame(jobId, frame, blendPath, outputDir, renderEngine) {
+    for (let attempt = 1; attempt <= ATTEMPT_CEILING; attempt++) {
+      if (this.cancelled) return 'cancelled';
+
+      try {
+        const framePath = await this.renderSingleFrame(blendPath, frame, outputDir, renderEngine);
+        console.log(`✅ Frame ${frame} rendered: ${framePath}`);
+
+        if (await this.uploadFrame(jobId, frame, framePath)) {
+          console.log(`📤 Frame ${frame} uploaded successfully`);
+          fs.rmSync(framePath, { force: true });
+          return 'done';
+        }
+
+        // Rendered but undelivered is still a frame the user cannot download.
+        console.warn(`⚠️  Frame ${frame} upload failed, keeping local copy`);
+
+        if (!await this.reportFrameFailure(jobId, frame, 'Frame rendered but upload failed')) {
+          return 'failed';
+        }
+      } catch (error) {
+        // A frame killed by cancellation is not a render failure.
+        if (this.cancelled) return 'cancelled';
+
+        console.error(`❌ Frame ${frame} failed:`, error.message);
+
+        if (!await this.reportFrameFailure(jobId, frame, error.message)) return 'failed';
+      }
+
+      console.log(`↻ Retrying frame ${frame}`);
+    }
+
+    return 'failed';
   }
 
   renderSingleFrame(blendPath, frame, outputDir, renderEngine) {
@@ -242,15 +267,22 @@ class RenderWorker {
     }
   }
 
+  // Resolves to whether the frame still has attempts left.
   async reportFrameFailure(jobId, frameNumber, error) {
     try {
-      await fetch(`${WORKER_BASE}/jobs/${jobId}/frames/${frameNumber}/failed`, {
+      const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/frames/${frameNumber}/failed`, {
         method: 'POST',
         headers: workerHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ error })
       });
+
+      const body = await response.json().catch(() => ({}));
+
+      return body.retry === true;
     } catch (err) {
+      // Retrying against a server we cannot reach would just spin.
       console.error(`Failed to report frame failure: ${err.message}`);
+      return false;
     }
   }
   

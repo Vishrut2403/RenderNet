@@ -1,18 +1,6 @@
 # RenderNet
 
-A self-hosted Blender render farm: submit `.blend` files through a web interface, have them rendered frame-by-frame by a background worker, and download the results as a ZIP.
-
----
-
-## Overview
-
-RenderNet accepts `.blend` uploads from authenticated users, queues them, and drives Blender's CLI to render each frame. The renderer runs as a separate `RenderWorker` that reports progress back to the API over HTTP rather than through in-process callbacks — the same boundary a worker on another machine would use, which is what makes distributed rendering the natural next step.
-
-Jobs and sessions are persisted in SQLite, so a restart or crash does not lose work: interrupted renders are requeued automatically.
-
----
-
-## Architecture
+A self-hosted Blender render farm for a shared workstation. One machine does the rendering; everyone else submits `.blend` files and collects finished frames from a browser, with nothing to install.
 
 ```mermaid
 flowchart LR
@@ -26,218 +14,182 @@ flowchart LR
     A -->|"ZIP download"| B
 ```
 
-The worker renders one frame at a time and uploads each as it finishes, so progress is visible during long jobs and a failure costs one frame rather than the whole range. It authenticates with a shared secret (`WORKER_SECRET`) since it has no user session of its own.
+The renderer runs as a separate `RenderWorker` reporting back over HTTP rather than through in-process callbacks — the same boundary a worker on another machine would use. Jobs are tracked frame by frame in SQLite, so a render interrupted by the machine being switched off resumes at the frames it never delivered instead of starting over.
 
 ---
 
-## Features
+## Setting up the workstation
 
-- Upload `.blend` files and render a chosen frame range remotely
-- Token-based authentication with user and admin roles, bcrypt password hashing
-- Live render progress: per-frame position, percentage, and per-frame error detail
-- Thumbnail gallery of rendered frames, straight from the browser
-- Cancel queued or in-flight jobs (terminates the running Blender process)
-- Download finished renders individually or as a ZIP
-- Jobs and sessions survive restarts; interrupted renders resume automatically
-- Automatic cleanup of uploads, renders and job records after 48 hours
+Needs **Node.js LTS** and **Blender**. Use an LTS Node release: `better-sqlite3` and `bcrypt` ship prebuilt binaries per Node version, and a mismatch forces a compile that needs a C++ toolchain.
+
+**1. Build it**
+
+```bash
+git clone https://github.com/Vishrut2403/RenderNet.git
+cd RenderNet/backend && npm install
+cd ../frontend && npm install && npm run build
+```
+
+The frontend build is what lets clients get away with only a browser — the API serves `frontend/dist` itself. Rebuild after changing frontend code.
+
+**2. Write `backend/.env`**
+
+```env
+PORT=5500
+WORKER_SECRET=paste-a-long-random-string
+SIGNUP_CODE=what-you-tell-your-team
+BLENDER_PATH=C:\Program Files\Blender Foundation\Blender 4.2\blender.exe
+CYCLES_DEVICE=CUDA
+```
+
+Generate the secret with:
+
+```bash
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+`BLENDER_PATH` is required on Windows, where Blender is not on `PATH` — match the
+version folder actually installed. On Linux and macOS it can be omitted if
+`blender` is on `PATH`. Drop `CYCLES_DEVICE` without an NVIDIA card, or use
+`OPTIX` on RTX.
+
+**Without `SIGNUP_CODE` nobody can create an account.** That is deliberate —
+anyone who can reach the port could otherwise sign up — but it does have to be set
+before your team can register.
+
+**3. Start it and read the output**
+
+```bash
+cd ../backend && npm start
+```
+
+All three lines matter; they tell you whether step 2 worked:
+
+```
+Blender found: /usr/bin/blender
+    Port: 5500  , BlenderPath: Found
+    Data:  /home/you/RenderNet/backend
+    UI:    http://localhost:5500
+```
+
+**4. Take the admin account**
+
+Open the UI and sign in as `admin` / `admin123`. It immediately requires a new
+password and refuses everything else until one is set — that is the intended path,
+not a fault. The same applies to anyone whose password an admin resets later.
 
 ---
 
-## Tech Stack
+## Windows: three settings and a startup task
 
-**Backend** — Node.js, Express, SQLite (`better-sqlite3`), bcrypt, Multer, Archiver, Blender CLI
+**Open the port**, or nobody else can connect. As administrator:
 
-**Frontend** — React 18, Vite, hand-written CSS (dark theme)
+```
+netsh advfirewall firewall add rule name="RenderNet" dir=in action=allow protocol=TCP localport=5500
+```
 
----
+**Stop it sleeping** mid-render:
 
-## Installation
+```
+powercfg /change standby-timeout-ac 0
+powercfg /change hibernate-timeout-ac 0
+```
 
-### Prerequisites
+**Rename the PC** to something like `RENDERNET`, so people can use
+`http://rendernet:5500` rather than chasing a DHCP address.
 
-- Node.js 20 or later (required by `better-sqlite3`)
-- Blender installed and on your `PATH`
-- npm
+**Start on boot** — Task Scheduler, Create Task:
 
-### Setup
-
-1. **Clone and install**
-
-   ```bash
-   git clone https://github.com/Vishrut2403/RenderNet.git
-   cd RenderNet/backend
-   npm install
-   ```
-
-2. **Create `backend/.env`**
-
-   ```env
-   PORT=5500
-   WORKER_SECRET=change-me-to-a-long-random-string
-   ```
-
-   `.env` must live in `backend/`, not `backend/src/` — `dotenv` resolves it from the working directory.
-
-3. **Start the server**
-
-   ```bash
-   npm start        # or: npm run dev
-   ```
-
-4. **Run the frontend**
-
-   ```bash
-   cd ../frontend
-   npm install
-   npm run dev
-   ```
-
-   The dev server runs on port 8080 and proxies `/api` to the backend, so there is no CORS setup. Open **http://localhost:8080** — Vite binds the hostname, so `127.0.0.1` will not connect.
-
-   For a production build run `npm run build` and serve `dist/`, setting `VITE_API_URL` to the backend origin if it is not same-origin.
-
-   > Opening `index.html` directly, or serving the source folder with something
-   > like `http-server`, cannot work: browsers refuse to load `.jsx` modules
-   > without Vite compiling them. Doing so shows a message saying as much.
-
-### First login
-
-A default admin account is created on first run:
-
-| Username | Password |
+| Field | Value |
 | --- | --- |
-| `admin` | `admin123` |
+| Trigger | At log on |
+| Action | Start a program |
+| Program | `C:\Program Files\nodejs\node.exe` |
+| Arguments | `C:\RenderNet\backend\src\index.js` |
+| Settings | tick *If the task fails, restart every 1 minute* |
 
-**Change this immediately** if the instance is reachable by anyone else.
+Use `node.exe` rather than `npm`, which is a `.cmd` wrapper and behaves awkwardly
+under Task Scheduler. *At log on* rather than *At startup* keeps the server in the
+interactive session, where GPU rendering behaves as it does when Blender is
+launched by hand. The working directory does not matter: data paths and `.env` are
+resolved from the source tree, not from wherever the task starts.
+
+---
+
+## Setting up a client
+
+Nothing to install.
+
+1. Open `http://rendernet:5500`
+2. **Create account** — username, password, and the signup code
+3. Sign in and upload a `.blend`
+
+Jobs belong to the account rather than the machine, so someone can submit from one
+computer and download from another.
+
+To confirm the workstation is reachable, open `http://rendernet:5500/api/health`
+from a *different* machine. `{"status":"ok","blenderAvailable":true}` means the
+firewall rule and the name are both working.
+
+---
+
+## Behaviour worth knowing
+
+Things that would otherwise surprise you.
+
+- **An interrupted render resumes rather than restarting.** Frames are tracked
+  individually, so switching the machine off mid-job costs the frame in flight,
+  not the evening. A job is only given up on if it is interrupted repeatedly
+  *without ever completing a frame*.
+- **A failed frame gets three attempts**, since causes like a momentary memory
+  shortage rarely repeat. But a job whose first three frames all fail stops
+  immediately instead of working through the range.
+- **Each user holds 5 GB** across uploads and frames, and is expected to delete
+  finished jobs once downloaded. The 14-day sweep is a backstop, not the limit.
+  Anything still queued or rendering is never swept, however old.
+- **Any user can mark a job urgent**, which pauses whatever is rendering. The
+  paused job keeps its finished frames and carries on afterwards, and both cards
+  say what happened — visible rather than restricted.
+- **Cancelling deletes that job's files.** Uploads are capped at 500MB and 2000
+  frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`.
+
+Two things it does not do: renders run strictly one at a time, and the frontend
+has no automated tests in the repo.
 
 ---
 
 ## Configuration
 
-All settings are environment variables read from `backend/.env`.
+Environment variables, read from `backend/.env`. It is resolved from the source
+tree, so it is found however the server is started.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `PORT` | `5500` | API listen port |
-| `WORKER_SECRET` | *generated per process* | Shared secret authenticating worker callbacks. Must be set explicitly for workers on other machines; otherwise a random one is generated at boot and only the in-process worker can authenticate. |
-| `DB_PATH` | `rendernet.db` | SQLite database file |
-| `BLENDER_PATH` | auto-detected | Blender executable, if not on `PATH` |
-| `CYCLES_DEVICE` | `CPU` | Cycles render device: `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI`, `METAL` |
+| `PORT` | `5500` | API and UI listen port |
+| `SIGNUP_CODE` | *unset* | Code required to create an account. While unset, account creation is refused rather than left open. |
+| `WORKER_SECRET` | *generated per process* | Authenticates worker callbacks. Must be set explicitly for workers on other machines. |
+| `BLENDER_PATH` | auto-detected | Blender executable. Required on Windows. |
+| `CYCLES_DEVICE` | `CPU` | `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI` or `METAL` |
+| `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |
+| `USER_QUOTA_BYTES` | `5368709120` (5 GB) | Disk each user may hold in uploads and rendered frames |
+| `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |
+| `DB_PATH` | `rendernet.db` inside `DATA_DIR` | SQLite database file |
 | `API_URL` | `http://localhost:5500` | Base URL the worker posts results back to |
 
-The frontend reads one variable of its own, `VITE_API_URL`, defaulting to `/api` (the dev proxy).
-
 ---
 
-## Usage
-
-1. Sign up, or log in as `admin`
-2. Upload a `.blend`, choose a frame range and a render engine
-3. Watch status and progress on the dashboard
-4. Download the finished frames as a ZIP
-
-Supported engines: `CYCLES`, `BLENDER_EEVEE`, `BLENDER_WORKBENCH`. Uploads are limited to `.blend` files up to 500MB and a range of 2000 frames.
-
----
-
-## API
-
-All routes are prefixed with `/api`. Unless noted, they require an `Authorization: Bearer <token>` header.
-
-### Auth
-
-| Method | Route | Notes |
-| --- | --- | --- |
-| `POST` | `/auth/signup` | Public |
-| `POST` | `/auth/login` | Public; returns a token valid for 24 hours |
-| `GET` | `/auth/verify` | Checks a token; responds `401` if missing or expired |
-| `POST` | `/auth/logout` | |
-| `POST` | `/auth/change-password` | |
-| `GET` | `/auth/users` | Admin only |
-| `POST` | `/auth/admin/reset-password` | Admin only |
-
-### Jobs
-
-| Method | Route | Notes |
-| --- | --- | --- |
-| `POST` | `/upload` | Multipart: `blend`, `frameStart`, `frameEnd`, `renderEngine` |
-| `GET` | `/jobs` | Own jobs; admins see all |
-| `GET` | `/jobs/:id` | |
-| `POST` | `/jobs/:id/cancel` | |
-| `GET` | `/jobs/queue/status` | |
-
-### Downloads
-
-Accept a token either as a header or as a `?token=` query parameter, so frame URLs can be used directly in `<img>` tags.
-
-| Method | Route |
-| --- | --- |
-| `GET` | `/download/:id/files` |
-| `GET` | `/download/:id/zip` |
-| `GET` | `/download/files/render_:id/:filename` |
-
-### Worker callbacks
-
-Authenticated with an `x-worker-secret` header instead of a user token.
-
-| Method | Route |
-| --- | --- |
-| `POST` | `/worker/jobs/:id/frames/:frame` |
-| `POST` | `/worker/jobs/:id/frames/:frame/failed` |
-| `POST` | `/worker/jobs/:id/progress` |
-| `POST` | `/worker/jobs/:id/complete` |
-
----
-
-## Testing
+## Development
 
 ```bash
-cd backend
-npm test
+cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
+cd backend  && npm test        # 135 checks
 ```
 
-Three suites run in sequence:
-
-- **Worker callback endpoints** — the callback API exercised in-process against the real queue. Blender is never spawned, so this runs anywhere.
-- **Render pipeline** — cancellation, queue hand-off and cleanup, driven by a stand-in for Blender that can be made to flood stdout, render slowly, fail, or ignore `SIGTERM` on demand. Real Blender cannot be asked for those behaviours reliably, and none of them need it.
-- **API, rendering and persistence** — a real server instance covering upload validation, ownership and access control, admin routes, an actual Blender render, downloads, and recovery across a restart.
-
-Each suite runs in its own temporary directory with a separate database, so tests never touch real uploads, renders or user accounts. Render-dependent checks are skipped automatically when Blender is not installed, leaving 75 of the 88 checks still meaningful on a machine without it.
+Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
+elsewhere. Tests run in temporary directories with their own databases and never
+touch real uploads, renders or accounts; render-dependent checks are skipped when
+Blender is absent, leaving 122 of the 135 still meaningful.
 
 ---
-
-## Reliability
-
-**Persistence.** Jobs and sessions are written to SQLite as they change. Restarting the server preserves job history, progress and login sessions.
-
-**Crash recovery.** A job left mid-render by a restart has no worker behind it, so it is reset and requeued on the next boot. Since the retry starts again from the first frame, output from the abandoned attempt is discarded rather than left to mix with the new run. Jobs interrupted more than twice are marked failed rather than retried forever.
-
-**Cleanup.** Every 24 hours, uploads, render output, worker scratch files and job records older than 48 hours are deleted, along with expired sessions. Anything belonging to a job that is still queued or rendering is left alone however old it is, so a job that waits out the cutoff behind a long render does not lose its `.blend`. An admin can trigger a sweep on demand with `POST /api/cleanup`.
-
-**Cancellation.** Cancelling a running job kills its Blender process (escalating to `SIGKILL` if it does not stop), and the queue holds the slot until that worker has actually stopped before starting the next job. Callbacks that arrive from a worker after its job left the `rendering` state are rejected, so a frame still in flight cannot write output back for a job that was already cancelled.
-
-**Upgrading an existing install.** Earlier versions kept accounts in `users.json` with unsalted SHA-256 hashes. On first start those accounts are imported into the database and the file is renamed to `users.json.migrated`. Existing passwords keep working and are re-hashed with bcrypt the next time each user logs in, so no password resets are needed.
-
----
-
-## Known Limitations
-
-Worth being explicit about, since this is a personal project rather than production software:
-
-- **One worker at a time.** The queue renders strictly sequentially; the HTTP callback boundary exists so this can change, but multi-worker dispatch is not implemented.
-- **A resumed job re-renders from the first frame** rather than continuing where it stopped.
-- **The frontend has no automated coverage in the repo** — it has been verified end-to-end in a headless browser, but those checks are not committed.
-
----
-
-## Roadmap
-
-- Multi-worker dispatch across machines
-- WebSocket progress updates in place of polling
-- Resume interrupted jobs from the last completed frame
-
----
-
-## Contributing
 
 Built as an individual portfolio project. Feedback and suggestions are welcome.

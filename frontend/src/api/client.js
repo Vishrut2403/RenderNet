@@ -1,18 +1,23 @@
 const BASE = import.meta.env.VITE_API_URL || '/api';
 
 let onUnauthorized = () => {};
+let onPasswordChangeRequired = () => {};
 
 export function setUnauthorizedHandler(handler) {
   onUnauthorized = handler;
+}
+
+export function setPasswordChangeRequiredHandler(handler) {
+  onPasswordChangeRequired = handler;
 }
 
 export function getToken() {
   return localStorage.getItem('rendernet.token');
 }
 
-export function setSession({ token, username, role }) {
+export function setSession({ token, username, role, mustChangePassword }) {
   localStorage.setItem('rendernet.token', token);
-  localStorage.setItem('rendernet.user', JSON.stringify({ username, role }));
+  localStorage.setItem('rendernet.user', JSON.stringify({ username, role, mustChangePassword }));
 }
 
 export function getStoredUser() {
@@ -69,6 +74,12 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true }
 
   const payload = await response.json().catch(() => ({}));
 
+  // An account whose password must change can reach almost nothing until it
+  // does, so the app has to switch to that screen wherever the call came from.
+  if (response.status === 403 && payload.mustChangePassword) {
+    onPasswordChangeRequired();
+  }
+
   if (!response.ok) {
     throw new ApiError(payload.error || `Request failed (${response.status})`, response.status);
   }
@@ -80,8 +91,8 @@ export const api = {
   login: (username, password) =>
     request('/auth/login', { method: 'POST', body: { username, password }, auth: false }),
 
-  signup: (username, password) =>
-    request('/auth/signup', { method: 'POST', body: { username, password }, auth: false }),
+  signup: (username, password, code) =>
+    request('/auth/signup', { method: 'POST', body: { username, password, code }, auth: false }),
 
   logout: () => request('/auth/logout', { method: 'POST' }),
 
@@ -103,6 +114,13 @@ export const api = {
 
   cancelJob: id => request(`/jobs/${id}/cancel`, { method: 'POST' }),
 
+  deleteJob: id => request(`/jobs/${id}`, { method: 'DELETE' }),
+
+  setPriority: (id, priority) =>
+    request(`/jobs/${id}/priority`, { method: 'POST', body: { priority } }),
+
+  allUsage: () => request('/jobs/usage/all'),
+
   // The frame URLs are built here rather than server-side: only the browser
   // knows which API origin it is talking to, and a token belongs in the URL
   // solely because <img> cannot carry an Authorization header.
@@ -117,7 +135,7 @@ export const api = {
 
   zipUrl: id => authorizedUrl(`/download/${id}/zip`),
 
-  upload(file, { frameStart, frameEnd, renderEngine }, onProgress) {
+  upload(file, { frameStart, frameEnd, renderEngine, priority }, onProgress) {
     // XHR rather than fetch: upload progress events have no fetch equivalent.
     return new Promise((resolve, reject) => {
       const form = new FormData();
@@ -125,6 +143,7 @@ export const api = {
       form.append('frameStart', frameStart);
       form.append('frameEnd', frameEnd);
       form.append('renderEngine', renderEngine);
+      form.append('priority', priority ? 1 : 0);
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${BASE}/upload`);

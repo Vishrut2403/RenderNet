@@ -9,6 +9,7 @@ import {
   recordFrameFailure,
   completeJob
 } from '../queue.js';
+import { dataPath } from '../paths.js';
 
 const router = express.Router();
 
@@ -69,8 +70,9 @@ function requireRendering(req, res, next) {
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     try {
-      fs.mkdirSync(req.job.outputFolder, { recursive: true });
-      cb(null, req.job.outputFolder);
+      const folder = dataPath(req.job.outputFolder);
+      fs.mkdirSync(folder, { recursive: true });
+      cb(null, folder);
     } catch (error) {
       cb(error);
     }
@@ -130,15 +132,21 @@ router.post('/jobs/:id/frames/:frame/failed', loadJob, requireRendering, validFr
   const frame = Number(req.params.frame);
   const { error } = req.body;
 
-  const job = recordFrameFailure(req.jobId, frame, error || 'Unknown error');
+  const recorded = recordFrameFailure(req.jobId, frame, error || 'Unknown error');
 
-  if (!job) {
+  if (!recorded) {
     return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
   }
 
-  console.warn(`Frame ${frame} failed for job ${req.jobId}: ${error}`);
+  const { job, frame: record } = recorded;
+  const retry = record?.status === 'pending';
 
-  res.json({ success: true, frame, failedFrames: job.failedFrames });
+  console.warn(
+    `Frame ${frame} failed for job ${req.jobId} (attempt ${record?.attempts}): ${error}` +
+    (retry ? ' - will retry' : '')
+  );
+
+  res.json({ success: true, frame, retry, attempts: record?.attempts, failedFrames: job.failedFrames });
 });
 
 router.post('/jobs/:id/progress', loadJob, requireRendering, (req, res) => {

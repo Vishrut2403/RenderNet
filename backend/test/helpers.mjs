@@ -90,8 +90,10 @@ const PNG_1X1 = Buffer.from(
 
 // A stand-in for Blender that writes the frame the worker expects. Behaviour is
 // keyed off the .blend filename so one server can drive every scenario:
-// 'noisy' floods stdout, 'slow' takes its time per frame, 'stubborn' ignores
-// SIGTERM, 'broken' exits non-zero with its complaint on stdout.
+// 'noisy' floods stdout, 'slow' takes its time per frame, 'hang' stays on one
+// frame long enough to test against a job that is genuinely mid-render,
+// 'stubborn' ignores SIGTERM and stays alive so cancelling it has to escalate,
+// 'broken' exits non-zero with its complaint on stdout.
 export function createFakeBlender(dir) {
   const blenderPath = path.join(dir, 'fake-blender');
 
@@ -126,7 +128,7 @@ setTimeout(() => {
   fs.mkdirSync(path.dirname(target), { recursive: true });
   fs.writeFileSync(target, Buffer.from('${PNG_1X1.toString('base64')}', 'base64'));
   process.exit(0);
-}, scene.includes('slow') ? 2000 : 0);
+}, scene.includes('hang') || scene.includes('stubborn') ? 60000 : scene.includes('slow') ? 2000 : 0);
 `);
 
   fs.chmodSync(blenderPath, 0o755);
@@ -156,14 +158,16 @@ export async function getJob(base, token, jobId) {
   return (await fetch(`${base}/jobs/${jobId}`, { headers: auth(token) })).json();
 }
 
-export async function startServer({ port, cwd, env = {} }) {
+export async function startServer({ port, cwd, dataDir = cwd, env = {} }) {
   const proc = spawn('node', [path.join(BACKEND_ROOT, 'src', 'index.js')], {
     cwd,
     env: {
       ...process.env,
       PORT: String(port),
-      DB_PATH: path.join(cwd, 'test.db'),
+      DATA_DIR: dataDir,
+      DB_PATH: path.join(dataDir, 'test.db'),
       WORKER_SECRET: 'test-worker-secret',
+      SIGNUP_CODE: SIGNUP_CODE,
       API_URL: `http://127.0.0.1:${port}`,
       ...env
     },
@@ -224,17 +228,51 @@ export function auth(token) {
   return { Authorization: `Bearer ${token}` };
 }
 
+export const SIGNUP_CODE = 'test-signup-code';
+export const ADMIN_PASSWORD = 'workshop-admin-pw';
+
+// The seeded admin can do nothing until its password is replaced, so suites
+// start by doing that. Servers restarted mid-suite log straight back in.
+export async function adminSession(base) {
+  try {
+    const token = await login(base, 'admin', 'admin123');
+
+    const res = await fetch(`${base}/auth/change-password`, {
+      method: 'POST',
+      headers: { ...auth(token), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ oldPassword: 'admin123', newPassword: ADMIN_PASSWORD })
+    });
+
+    if (!res.ok) throw new Error(`Could not clear the forced change: ${await res.text()}`);
+
+    return token;
+  } catch {
+    return login(base, 'admin', ADMIN_PASSWORD);
+  }
+}
+
+export async function signUp(base, username, password, code = SIGNUP_CODE) {
+  const res = await fetch(`${base}/auth/signup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password, code })
+  });
+
+  return res.status;
+}
+
 export async function status(url, options) {
   const res = await fetch(url, options);
   return res.status;
 }
 
-export async function submitJob(base, token, blendPath, { frameStart, frameEnd, engine = 'CYCLES' }) {
+export async function submitJob(base, token, blendPath, { frameStart, frameEnd, engine = 'CYCLES', priority = 0 }) {
   const form = new FormData();
   form.set('blend', new Blob([fs.readFileSync(blendPath)]), path.basename(blendPath));
   form.set('frameStart', String(frameStart));
   form.set('frameEnd', String(frameEnd));
   form.set('renderEngine', engine);
+  form.set('priority', String(priority));
 
   const res = await fetch(`${base}/upload`, { method: 'POST', headers: auth(token), body: form });
   return { status: res.status, body: await res.json() };

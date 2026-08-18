@@ -2,7 +2,19 @@ import fs from 'fs';
 import path from 'path';
 import RenderWorker from './render-worker.js';
 import { ensureDir } from './utils/file-utils.js';
-import { saveJob, loadJobs, deleteJob } from './db.js';
+import { dataPath, SCRATCH_DIR, USER_QUOTA_BYTES } from './paths.js';
+import {
+  saveJob, loadJobs, deleteJob,
+  createFrames, getFrames, getPendingFrames, countFramesByStatus,
+  markFrameDone, markFramePending, markFrameAttemptFailed,
+  getFailedFrames, getAllFailedFrames
+} from './db.js';
+
+// A frame gets three goes before it counts as failed. Transient causes - a
+// momentary VRAM shortage, a file still being written - are common enough that
+// giving up on the first one loses frames that would have rendered.
+const MAX_FRAME_ATTEMPTS = 3;
+const MAX_INTERRUPTIONS = 2;
 
 const jobs = new Map();
 const renderQueue = [];
@@ -12,10 +24,8 @@ let currentWorker = null;
 
 // Separate from 'renders' so a worker never streams a frame out of the same
 // file the upload route is writing into.
-const WORKER_SCRATCH = 'worker-tmp';
-
 function workerScratchDir(jobId) {
-  return path.join(WORKER_SCRATCH, `job_${jobId}`);
+  return path.join(SCRATCH_DIR, `job_${jobId}`);
 }
 
 let lastJobId = 0;
@@ -31,9 +41,34 @@ function nextJobId() {
   return lastJobId;
 }
 
-// A job left mid-render by a restart has no worker behind it any more. Reset it
-// and queue it again, giving up after repeated interruptions so a job that
-// crashes the server cannot loop forever.
+// A frame is only really done if its output is still on disk. The database can
+// outlive the files - cleanup removes them, or someone empties renders/ - and
+// re-rendering a frame is cheaper than handing back a ZIP with a hole in it.
+function reconcileFrames(job) {
+  if (getFrames(job.id).length === 0 && Number.isInteger(job.frameStart)) {
+    createFrames(job.id, job.frameStart, job.frameEnd);
+  }
+
+  let done = 0;
+
+  for (const frame of getFrames(job.id)) {
+    if (frame.status !== 'done') continue;
+
+    const present = job.outputFolder
+      && frame.filename
+      && fs.existsSync(dataPath(job.outputFolder, frame.filename));
+
+    if (present) done++;
+    else markFramePending(job.id, frame.frame);
+  }
+
+  return done;
+}
+
+// A job left mid-render by a restart has no worker behind it any more, so it is
+// queued again to pick up at the frames it has not rendered yet. The workstation
+// is shut down nightly, which makes interruption routine rather than a fault:
+// only a job that keeps being interrupted without ever advancing is abandoned.
 export function resumeInterruptedJobs() {
   let resumed = 0;
   let abandoned = 0;
@@ -41,35 +76,34 @@ export function resumeInterruptedJobs() {
   for (const job of jobs.values()) {
     if (job.status !== 'rendering' && job.status !== 'pending') continue;
 
-    if (job.status === 'rendering' && ++job.interruptions > 2) {
-      job.status = 'failed';
-      job.error = 'Abandoned after repeated server restarts';
-      job.completedAt = new Date().toISOString();
-      abandoned++;
-    } else {
-      // The retry starts from the first frame again, so frames left by the
-      // abandoned attempt would otherwise show up in the listing and the ZIP
-      // of a job whose counters say they were never rendered.
-      if (job.outputFolder) {
-        fs.rmSync(job.outputFolder, { recursive: true, force: true });
-      }
+    const done = reconcileFrames(job);
 
-      Object.assign(job, {
-        status: 'pending',
-        startedAt: null,
-        currentFrame: null,
-        progress: 0,
-        completedFrames: 0,
-        failedFrames: 0,
-        uploadedFrames: [],
-        frameErrors: [],
-        error: null
-      });
-      renderQueue.push(job.id);
-      resumed++;
+    if (job.status === 'rendering') {
+      job.interruptions = done > (job.framesAtResume ?? 0) ? 0 : (job.interruptions ?? 0) + 1;
+
+      if (job.interruptions > MAX_INTERRUPTIONS) {
+        job.status = 'failed';
+        job.error = 'Abandoned after repeated restarts without rendering a frame';
+        job.completedAt = new Date().toISOString();
+        abandoned++;
+        saveJob(job);
+        continue;
+      }
     }
 
+    Object.assign(job, {
+      status: 'pending',
+      startedAt: null,
+      currentFrame: null,
+      error: null,
+      framesAtResume: done
+    });
+
+    syncFrameCounts(job);
     saveJob(job);
+
+    renderQueue.push(job.id);
+    resumed++;
   }
 
   if (resumed || abandoned) {
@@ -82,7 +116,7 @@ export function resumeInterruptedJobs() {
 export function addToQueue(jobData) {
   const jobId = nextJobId();
   const outputFolder = path.join('renders', `render_${jobId}`);
-  ensureDir(outputFolder);
+  ensureDir(dataPath(outputFolder));
 
   const job = {
     id: jobId,
@@ -104,20 +138,82 @@ export function addToQueue(jobData) {
     progress: 0,
     completedFrames: 0,
     failedFrames: 0,
-    uploadedFrames: [],
-    frameErrors: [],
-    interruptions: 0
+    interruptions: 0,
+    framesAtResume: 0,
+    priority: Number(jobData.priority) || 0,
+    pausedBy: null
   };
 
   jobs.set(jobId, job);
+  createFrames(jobId, job.frameStart, job.frameEnd);
   saveJob(job);
+  forgetUsage(job.owner);
   renderQueue.push(jobId);
-  
+
   console.log(`Job ${jobId} added to queue. Queue length: ${renderQueue.length}`);
-  
-  processQueue();
-  
+
+  if (!preemptFor(job)) processQueue();
+
   return jobId;
+}
+
+// A more important job does not wait for the current one to finish. The job it
+// displaces goes back to pending with every frame it delivered intact, so it
+// resumes where it stopped - the same path a job takes when the workstation is
+// switched off mid-render.
+function preemptFor(job) {
+  if (!isRendering || currentJobId === job.id) return false;
+
+  const running = jobs.get(currentJobId);
+  if (!running || running.status !== 'rendering') return false;
+  if ((running.priority ?? 0) >= (job.priority ?? 0)) return false;
+
+  console.log(`Job ${running.id} paused for higher priority job ${job.id}`);
+
+  running.status = 'pending';
+  running.startedAt = null;
+  running.currentFrame = null;
+  running.pausedBy = job.owner;
+  // Being pushed aside is not a crash, so it must not count toward the
+  // abandonment rule the way an interrupted restart does.
+  running.framesAtResume = countFramesByStatus(running.id).done;
+  saveJob(running);
+
+  renderQueue.push(running.id);
+
+  if (currentWorker) {
+    try {
+      currentWorker.cancel();
+    } catch (error) {
+      console.error('Failed to pause worker:', error.message);
+    }
+  }
+
+  return true;
+}
+
+export function setJobPriority(jobId, priority) {
+  const job = jobs.get(jobId);
+  if (!job) return { success: false, error: 'Job not found' };
+
+  if (job.status !== 'pending' && job.status !== 'rendering') {
+    return { success: false, error: `Cannot reprioritise a ${job.status} job` };
+  }
+
+  job.priority = Number(priority) || 0;
+  saveJob(job);
+
+  if (!preemptFor(job)) sortQueue();
+
+  return { success: true, priority: job.priority };
+}
+
+// Highest priority first, and submission order within a priority.
+function sortQueue() {
+  renderQueue.sort((a, b) => {
+    const byPriority = (jobs.get(b)?.priority ?? 0) - (jobs.get(a)?.priority ?? 0);
+    return byPriority !== 0 ? byPriority : a - b;
+  });
 }
 
 function processQueue() {
@@ -130,7 +226,9 @@ function processQueue() {
     console.log('Queue is empty');
     return;
   }
-  
+
+  sortQueue();
+
   const jobId = renderQueue.shift();
   const job = jobs.get(jobId);
   
@@ -142,6 +240,7 @@ function processQueue() {
   
   job.status = 'rendering';
   job.startedAt = new Date().toISOString();
+  job.pausedBy = null;
   saveJob(job);
   isRendering = true;
   currentJobId = jobId;
@@ -154,10 +253,11 @@ function processQueue() {
   worker
     .renderJob({
       id: jobId,
-      blendPath: job.filePath,
+      blendPath: dataPath(job.filePath),
       outputDir: workerScratchDir(jobId),
-      frameStart: job.frameStart,
-      frameEnd: job.frameEnd,
+      // Only what is left: a resumed job picks up where the last run stopped
+      // rather than rendering the whole range again.
+      frames: getPendingFrames(jobId),
       renderEngine: job.renderEngine
     })
     .then(() => finishRender(jobId))
@@ -175,6 +275,10 @@ function finishRender(jobId) {
 
   if (job?.status === 'cancelled') {
     deleteJobFiles(job);
+    forgetUsage(job.owner);
+  } else if (job?.status === 'pending') {
+    // Paused for something more important; its files stay put for the resume.
+    console.log(`Job ${jobId} stopped cleanly, waiting to resume`);
   } else if (job?.status === 'rendering') {
     failJob(jobId, 'Worker stopped without reporting completion');
     return;
@@ -220,12 +324,31 @@ export function pruneOldJobs(cutoffMs) {
   return pruned;
 }
 
-export function getJob(jobId) {
-  return jobs.get(jobId);
+function asFrameError(row) {
+  return { frame: row.frame, error: row.error, at: row.updatedAt };
 }
 
+export function getJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return undefined;
+
+  return { ...job, frameErrors: getFailedFrames(jobId).map(asFrameError) };
+}
+
+// One query for every job's failures rather than one per job: the dashboard
+// polls this list every couple of seconds while a render is running.
 export function getAllJobs() {
-  return Array.from(jobs.values());
+  const errorsByJob = new Map();
+
+  for (const row of getAllFailedFrames()) {
+    if (!errorsByJob.has(row.jobId)) errorsByJob.set(row.jobId, []);
+    errorsByJob.get(row.jobId).push(asFrameError(row));
+  }
+
+  return Array.from(jobs.values()).map(job => ({
+    ...job,
+    frameErrors: errorsByJob.get(job.id) ?? []
+  }));
 }
 
 export function getQueueStatus() {
@@ -243,13 +366,24 @@ export function getQueueStatus() {
 }
 
 export function getQueuePosition(jobId) {
+  sortQueue();
+
   const index = renderQueue.indexOf(jobId);
   return index === -1 ? null : index + 1;
 }
 
-function computeProgress(job, currentFrame) {
-  const done = currentFrame - job.frameStart + 1;
-  return Math.max(0, Math.min(100, Math.round((done / job.totalFrames) * 100)));
+// Counted from frames actually delivered rather than from how far along the
+// range the worker has reached, so a resumed job reports the progress it kept.
+function syncFrameCounts(job) {
+  const counts = countFramesByStatus(job.id);
+
+  job.completedFrames = counts.done;
+  job.failedFrames = counts.failed;
+  job.progress = job.totalFrames > 0
+    ? Math.max(0, Math.min(100, Math.round((counts.done / job.totalFrames) * 100)))
+    : 0;
+
+  return counts;
 }
 
 // A worker callback for a job that is no longer rendering must not touch it:
@@ -265,7 +399,7 @@ export function updateJobProgress(jobId, currentFrame) {
   if (!job) return null;
 
   job.currentFrame = currentFrame;
-  job.progress = computeProgress(job, currentFrame);
+  syncFrameCounts(job);
   saveJob(job);
 
   return job;
@@ -275,30 +409,25 @@ export function recordFrameUpload(jobId, frameNumber, filename) {
   const job = renderingJob(jobId);
   if (!job) return null;
 
-  if (!job.uploadedFrames.includes(filename)) {
-    job.uploadedFrames.push(filename);
-  }
-  job.completedFrames = job.uploadedFrames.length;
+  markFrameDone(jobId, frameNumber, filename);
   job.currentFrame = frameNumber;
-  job.progress = computeProgress(job, frameNumber);
+  syncFrameCounts(job);
   saveJob(job);
 
   return job;
 }
 
+// Returns the frame's own record too: whether it has attempts left is what
+// tells the worker to try again, so the server stays the one keeping count.
 export function recordFrameFailure(jobId, frameNumber, error) {
   const job = renderingJob(jobId);
   if (!job) return null;
 
-  job.frameErrors.push({
-    frame: frameNumber,
-    error,
-    at: new Date().toISOString()
-  });
-  job.failedFrames = job.frameErrors.length;
+  const frame = markFrameAttemptFailed(jobId, frameNumber, error, MAX_FRAME_ATTEMPTS);
+  syncFrameCounts(job);
   saveJob(job);
 
-  return job;
+  return { job, frame };
 }
 
 export function completeJob(jobId, { successfulFrames, failedFrames }) {
@@ -314,8 +443,9 @@ export function completeJob(jobId, { successfulFrames, failedFrames }) {
   // What actually arrived is authoritative. The worker's tally can disagree
   // with it - an upload whose response was lost counts as failed there and as
   // delivered here - and only the frames on disk are downloadable.
-  const delivered = job.uploadedFrames.length;
-  const failed = job.frameErrors.length;
+  const counts = syncFrameCounts(job);
+  const delivered = counts.done;
+  const failed = counts.failed;
 
   if (delivered !== successfulFrames || failed !== failedFrames) {
     console.warn(
@@ -324,8 +454,6 @@ export function completeJob(jobId, { successfulFrames, failedFrames }) {
     );
   }
 
-  job.completedFrames = delivered;
-  job.failedFrames = failed;
   job.completedAt = new Date().toISOString();
   job.currentFrame = null;
 
@@ -366,6 +494,7 @@ export function cancelJob(jobId) {
     saveJob(job);
 
     deleteJobFiles(job);
+    forgetUsage(job.owner);
 
     console.log(`Job ${jobId} cancelled (was pending)`);
     return { success: true, message: 'Job cancelled successfully' };
@@ -399,6 +528,7 @@ export function cancelJob(jobId) {
     }
 
     deleteJobFiles(job);
+    forgetUsage(job.owner);
     releaseSlot(jobId);
 
     console.log(`Job ${jobId} cancelled (was rendering)`);
@@ -411,13 +541,13 @@ export function cancelJob(jobId) {
 
 function deleteJobFiles(job) {
   try {
-    if (job.filePath && fs.existsSync(job.filePath)) {
-      fs.unlinkSync(job.filePath);
+    if (job.filePath && fs.existsSync(dataPath(job.filePath))) {
+      fs.unlinkSync(dataPath(job.filePath));
       console.log(`Deleted upload: ${job.filePath}`);
     }
 
-    if (job.outputFolder && fs.existsSync(job.outputFolder)) {
-      fs.rmSync(job.outputFolder, { recursive: true, force: true });
+    if (job.outputFolder && fs.existsSync(dataPath(job.outputFolder))) {
+      fs.rmSync(dataPath(job.outputFolder), { recursive: true, force: true });
       console.log(`Deleted renders: ${job.outputFolder}`);
     }
 
@@ -425,6 +555,86 @@ function deleteJobFiles(job) {
   } catch (error) {
     console.error(`Error deleting files:`, error.message);
   }
+}
+
+function sizeOf(target) {
+  let total = 0;
+
+  try {
+    const stats = fs.statSync(target);
+    if (!stats.isDirectory()) return stats.size;
+
+    for (const entry of fs.readdirSync(target)) {
+      total += sizeOf(path.join(target, entry));
+    }
+  } catch {
+    // Gone between listing and measuring, which is only ever an overcount.
+  }
+
+  return total;
+}
+
+// Measured from disk rather than tracked in a counter: a counter drifts the
+// moment anything is removed outside the app, and there are few enough jobs
+// here that walking them costs nothing.
+const usageCache = new Map();
+const USAGE_TTL_MS = 10000;
+
+export function usageFor(username, { fresh = false } = {}) {
+  const cached = usageCache.get(username);
+
+  if (!fresh && cached && Date.now() - cached.at < USAGE_TTL_MS) {
+    return cached.value;
+  }
+
+  let bytes = 0;
+
+  for (const job of jobs.values()) {
+    if (job.owner !== username) continue;
+    if (job.filePath) bytes += sizeOf(dataPath(job.filePath));
+    if (job.outputFolder) bytes += sizeOf(dataPath(job.outputFolder));
+  }
+
+  const value = {
+    bytes,
+    quota: USER_QUOTA_BYTES,
+    remaining: Math.max(0, USER_QUOTA_BYTES - bytes)
+  };
+
+  usageCache.set(username, { at: Date.now(), value });
+
+  return value;
+}
+
+// Deleting, cancelling or uploading is exactly when somebody is watching the
+// number, so those clear the cache rather than making them wait it out.
+function forgetUsage(username) {
+  usageCache.delete(username);
+}
+
+export function usageByOwner() {
+  const owners = new Set(Array.from(jobs.values(), job => job.owner));
+  return Object.fromEntries(Array.from(owners, owner => [owner, usageFor(owner)]));
+}
+
+// Removing a job is the way space is reclaimed, so it takes the files with it.
+// A rendering job has to be cancelled first: its worker is still writing.
+export function deleteJobAndFiles(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return { success: false, error: 'Job not found' };
+
+  if (job.status === 'rendering' || job.status === 'pending') {
+    return { success: false, error: `Cancel the job before deleting it` };
+  }
+
+  deleteJobFiles(job);
+  jobs.delete(jobId);
+  deleteJob(jobId);
+  forgetUsage(job.owner);
+
+  console.log(`Job ${jobId} deleted by request`);
+
+  return { success: true, message: 'Job deleted' };
 }
 
 // Cleanup deletes by age alone, which would otherwise take the .blend out from
@@ -435,9 +645,9 @@ export function getActiveJobPaths() {
   for (const job of jobs.values()) {
     if (job.status !== 'pending' && job.status !== 'rendering') continue;
 
-    if (job.filePath) active.add(path.resolve(job.filePath));
-    if (job.outputFolder) active.add(path.resolve(job.outputFolder));
-    active.add(path.resolve(workerScratchDir(job.id)));
+    if (job.filePath) active.add(dataPath(job.filePath));
+    if (job.outputFolder) active.add(dataPath(job.outputFolder));
+    active.add(workerScratchDir(job.id));
   }
 
   return active;

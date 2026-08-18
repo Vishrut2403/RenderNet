@@ -13,6 +13,7 @@ export function Upload({ onSubmitted, notify }) {
   const [frameStart, setFrameStart] = useState(1);
   const [frameEnd, setFrameEnd] = useState(1);
   const [engine, setEngine] = useState('CYCLES');
+  const [urgent, setUrgent] = useState(false);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -44,7 +45,7 @@ export function Upload({ onSubmitted, notify }) {
     try {
       const result = await api.upload(
         file,
-        { frameStart, frameEnd, renderEngine: engine },
+        { frameStart, frameEnd, renderEngine: engine, priority: urgent },
         setProgress
       );
 
@@ -119,6 +120,17 @@ export function Upload({ onSubmitted, notify }) {
           </select>
         </label>
       </div>
+
+      <label className="check">
+        <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} />
+        <span>
+          <strong>Urgent</strong>
+          <span className="check-hint">
+            Goes ahead of everything queued, and pauses whatever is rendering now.
+            The paused job keeps its finished frames and carries on afterwards.
+          </span>
+        </span>
+      </label>
 
       <p className="hint">
         {frameCount > 0

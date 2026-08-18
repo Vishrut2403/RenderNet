@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
+import { DB_FILE } from './paths.js';
 
-const db = new Database(process.env.DB_PATH || 'rendernet.db');
+const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -47,17 +48,48 @@ db.exec(`
     passwordResetAt TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS frames (
+    jobId INTEGER NOT NULL,
+    frame INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    filename TEXT,
+    error TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    updatedAt TEXT,
+    PRIMARY KEY (jobId, frame)
+  );
+
   CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner);
+  CREATE INDEX IF NOT EXISTS idx_frames_job_status ON frames(jobId, status);
 `);
+
+function addColumnIfMissing(table, column, definition) {
+  const existing = db.prepare(`PRAGMA table_info(${table})`).all();
+
+  if (!existing.some(info => info.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+// How many frames were already done when this job was last resumed, so a
+// restart that made progress can be told apart from one that made none.
+addColumnIfMissing('jobs', 'framesAtResume', 'INTEGER DEFAULT 0');
+
+// Set on an account whose password somebody else has seen - the seeded admin,
+// or one an administrator has just reset.
+addColumnIfMissing('users', 'mustChangePassword', 'INTEGER DEFAULT 0');
+
+// Higher numbers go first. 'pausedBy' records who displaced a job, so nobody
+// gets pushed aside invisibly.
+addColumnIfMissing('jobs', 'priority', 'INTEGER DEFAULT 0');
+addColumnIfMissing('jobs', 'pausedBy', 'TEXT');
 
 const COLUMNS = [
   'id', 'status', 'filePath', 'outputPath', 'outputFolder', 'frameStart', 'frameEnd',
   'renderEngine', 'originalFilename', 'owner', 'createdAt', 'startedAt', 'completedAt',
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
-  'failedFrames', 'interruptions', 'uploadedFrames', 'frameErrors'
+  'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy'
 ];
-
-const JSON_COLUMNS = ['uploadedFrames', 'frameErrors'];
 
 const upsertJob = db.prepare(`
   INSERT OR REPLACE INTO jobs (${COLUMNS.join(', ')})
@@ -68,29 +100,134 @@ export function saveJob(job) {
   const row = {};
 
   for (const column of COLUMNS) {
-    const value = JSON_COLUMNS.includes(column)
-      ? JSON.stringify(job[column] ?? [])
-      : job[column];
-
     // SQLite rejects undefined and booleans.
-    row[column] = value === undefined ? null : value;
+    row[column] = job[column] === undefined ? null : job[column];
   }
 
   upsertJob.run(row);
 }
 
 export function loadJobs() {
-  return db.prepare('SELECT * FROM jobs').all().map(row => {
-    const job = { ...row };
-    for (const column of JSON_COLUMNS) {
-      job[column] = JSON.parse(row[column] || '[]');
-    }
-    return job;
-  });
+  return db.prepare(`SELECT ${COLUMNS.join(', ')} FROM jobs`).all();
 }
 
 export function deleteJob(id) {
+  db.prepare('DELETE FROM frames WHERE jobId = ?').run(id);
   db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
+}
+
+const insertFrame = db.prepare(
+  `INSERT OR IGNORE INTO frames (jobId, frame, status, filename, error, attempts, updatedAt)
+   VALUES (@jobId, @frame, @status, @filename, @error, @attempts, @updatedAt)`
+);
+
+export const createFrames = db.transaction((jobId, frameStart, frameEnd) => {
+  const updatedAt = new Date().toISOString();
+
+  for (let frame = frameStart; frame <= frameEnd; frame++) {
+    insertFrame.run({
+      jobId, frame, status: 'pending', filename: null, error: null, attempts: 0, updatedAt
+    });
+  }
+});
+
+export function getFrames(jobId) {
+  return db.prepare('SELECT * FROM frames WHERE jobId = ? ORDER BY frame').all(jobId);
+}
+
+export function getPendingFrames(jobId) {
+  return db
+    .prepare("SELECT frame FROM frames WHERE jobId = ? AND status = 'pending' ORDER BY frame")
+    .all(jobId)
+    .map(row => row.frame);
+}
+
+export function countFramesByStatus(jobId) {
+  const rows = db
+    .prepare('SELECT status, COUNT(*) AS n FROM frames WHERE jobId = ? GROUP BY status')
+    .all(jobId);
+
+  const counts = { pending: 0, done: 0, failed: 0 };
+  for (const row of rows) counts[row.status] = row.n;
+
+  return counts;
+}
+
+export function markFrameDone(jobId, frame, filename) {
+  return db.prepare(
+    `UPDATE frames SET status = 'done', filename = ?, error = NULL, updatedAt = ?
+     WHERE jobId = ? AND frame = ?`
+  ).run(filename, new Date().toISOString(), jobId, frame).changes;
+}
+
+// A frame only counts as failed once it has used up its attempts; until then it
+// goes back to pending so the worker can have another go.
+export function markFrameAttemptFailed(jobId, frame, error, maxAttempts) {
+  db.prepare(
+    `UPDATE frames
+     SET attempts = attempts + 1,
+         error = @error,
+         status = CASE WHEN attempts + 1 >= @maxAttempts THEN 'failed' ELSE 'pending' END,
+         updatedAt = @updatedAt
+     WHERE jobId = @jobId AND frame = @frame`
+  ).run({ jobId, frame, error, maxAttempts, updatedAt: new Date().toISOString() });
+
+  return db.prepare('SELECT * FROM frames WHERE jobId = ? AND frame = ?').get(jobId, frame);
+}
+
+export function markFramePending(jobId, frame) {
+  db.prepare(
+    `UPDATE frames SET status = 'pending', filename = NULL, updatedAt = ?
+     WHERE jobId = ? AND frame = ?`
+  ).run(new Date().toISOString(), jobId, frame);
+}
+
+export function getFailedFrames(jobId) {
+  return db.prepare(
+    `SELECT frame, error, updatedAt FROM frames
+     WHERE jobId = ? AND status = 'failed' ORDER BY frame`
+  ).all(jobId);
+}
+
+export function getAllFailedFrames() {
+  return db.prepare(
+    `SELECT jobId, frame, error, updatedAt FROM frames
+     WHERE status = 'failed' ORDER BY jobId, frame`
+  ).all();
+}
+
+// Jobs written before frames were tracked individually have no rows at all.
+// Their frame numbers are recoverable from the filenames they recorded.
+const backfillFrames = db.transaction(() => {
+  const stale = db.prepare(`
+    SELECT id, frameStart, frameEnd, uploadedFrames, frameErrors FROM jobs
+    WHERE NOT EXISTS (SELECT 1 FROM frames WHERE frames.jobId = jobs.id)
+  `).all();
+
+  for (const job of stale) {
+    if (!Number.isInteger(job.frameStart) || !Number.isInteger(job.frameEnd)) continue;
+
+    createFrames(job.id, job.frameStart, job.frameEnd);
+
+    for (const filename of JSON.parse(job.uploadedFrames || '[]')) {
+      const frame = Number(String(filename).match(/(\d+)/)?.[1]);
+      if (Number.isInteger(frame)) markFrameDone(job.id, frame, filename);
+    }
+
+    for (const entry of JSON.parse(job.frameErrors || '[]')) {
+      db.prepare(
+        `UPDATE frames SET status = 'failed', error = ?, attempts = 1, updatedAt = ?
+         WHERE jobId = ? AND frame = ?`
+      ).run(entry.error ?? 'Unknown error', entry.at ?? null, job.id, entry.frame);
+    }
+  }
+
+  return stale.length;
+});
+
+if (db.prepare(`PRAGMA table_info(jobs)`).all().some(c => c.name === 'uploadedFrames')) {
+  const migrated = backfillFrames();
+  if (migrated) console.log(`Backfilled per-frame records for ${migrated} existing job(s).`);
 }
 
 const insertSession = db.prepare(
@@ -115,9 +252,11 @@ export function purgeExpiredSessions() {
 
 const upsertUser = db.prepare(`
   INSERT OR REPLACE INTO users
-    (username, passwordHash, hashAlgo, role, createdAt, passwordChangedAt, passwordResetAt)
+    (username, passwordHash, hashAlgo, role, createdAt, passwordChangedAt,
+     passwordResetAt, mustChangePassword)
   VALUES
-    (@username, @passwordHash, @hashAlgo, @role, @createdAt, @passwordChangedAt, @passwordResetAt)
+    (@username, @passwordHash, @hashAlgo, @role, @createdAt, @passwordChangedAt,
+     @passwordResetAt, @mustChangePassword)
 `);
 
 export function saveUser(user) {
@@ -128,7 +267,8 @@ export function saveUser(user) {
     role: user.role || 'user',
     createdAt: user.createdAt ?? null,
     passwordChangedAt: user.passwordChangedAt ?? null,
-    passwordResetAt: user.passwordResetAt ?? null
+    passwordResetAt: user.passwordResetAt ?? null,
+    mustChangePassword: user.mustChangePassword ? 1 : 0
   });
 }
 

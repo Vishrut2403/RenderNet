@@ -52,19 +52,23 @@ export function EmptyState({ title, children }) {
   );
 }
 
-export function Modal({ title, onClose, children }) {
+export function Modal({ title, onClose, children, dismissible = true }) {
   useEffect(() => {
+    if (!dismissible) return;
+
     const onKey = event => event.key === 'Escape' && onClose();
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, dismissible]);
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={dismissible ? onClose : undefined}>
       <div className="modal" role="dialog" aria-modal="true" onClick={e => e.stopPropagation()}>
         <div className="modal-head">
           <h2>{title}</h2>
-          <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
+          {dismissible && (
+            <button className="modal-close" onClick={onClose} aria-label="Close">×</button>
+          )}
         </div>
         <div className="modal-body">{children}</div>
       </div>
@@ -99,6 +103,13 @@ export function useNow(active) {
   }, [active]);
 
   return now;
+}
+
+export function formatBytes(bytes) {
+  if (!Number.isFinite(bytes)) return '—';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(0)} MB`;
+  return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
 export function formatDuration(ms) {

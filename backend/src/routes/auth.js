@@ -1,5 +1,8 @@
 import express from 'express';
-import { login, signup, changePassword, logout, requireAuth, requireAdmin, adminResetPassword, listUsers } from '../auth.js';
+import {
+  login, signup, changePassword, logout, requireAuth, requireSession,
+  requireAdmin, adminResetPassword, listUsers
+} from '../auth.js';
 
 const router = express.Router();
 
@@ -20,9 +23,9 @@ router.post('/login', async (req, res) => {
 });
 
 router.post('/signup', async (req, res) => {
-  const { username, password } = req.body;
-  
-  const result = await signup(username, password);
+  const { username, password, code } = req.body;
+
+  const result = await signup(username, password, code);
   
   if (result.success) {
     res.json(result);
@@ -31,7 +34,7 @@ router.post('/signup', async (req, res) => {
   }
 });
 
-router.post('/change-password', requireAuth, async (req, res) => {
+router.post('/change-password', requireSession, async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   const username = req.user.username;
   
@@ -48,24 +51,19 @@ router.post('/change-password', requireAuth, async (req, res) => {
   }
 });
 
-router.post('/logout', requireAuth, (req, res) => {
+router.post('/logout', requireSession, (req, res) => {
   const token = req.headers.authorization?.replace('Bearer ', '');
   logout(token);
   res.json({ success: true, message: 'Logged out successfully' });
 });
 
-router.get('/verify', (req, res) => {
-  try {
-    requireAuth(req, res, () => {
-      res.json({
-        valid: true,
-        username: req.user.username,
-        role: req.user.role
-      });
-    });
-  } catch {
-    res.json({ valid: false });
-  }
+router.get('/verify', requireSession, (req, res) => {
+  res.json({
+    valid: true,
+    username: req.user.username,
+    role: req.user.role,
+    mustChangePassword: req.user.mustChangePassword
+  });
 });
 
 router.get('/users', requireAuth, requireAdmin, (req, res) => {

@@ -6,6 +6,7 @@ export function Login({ onAuthenticated }) {
   const [mode, setMode] = useState('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [busy, setBusy] = useState(false);
@@ -18,10 +19,11 @@ export function Login({ onAuthenticated }) {
 
     try {
       if (mode === 'signup') {
-        await api.signup(username, password);
+        await api.signup(username, password, code);
         setNotice('Account created — you can sign in now.');
         setMode('login');
         setPassword('');
+        setCode('');
       } else {
         const session = await api.login(username, password);
         setSession(session);
@@ -66,6 +68,16 @@ export function Login({ onAuthenticated }) {
             hint={mode === 'signup' ? 'At least 6 characters' : undefined}
             required
           />
+
+          {mode === 'signup' && (
+            <Field
+              label="Signup code"
+              value={code}
+              onChange={e => setCode(e.target.value)}
+              hint="Ask whoever runs the workstation"
+              required
+            />
+          )}
 
           <Alert>{error}</Alert>
           <Alert kind="success">{notice}</Alert>

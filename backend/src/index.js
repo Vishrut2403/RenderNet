@@ -1,6 +1,6 @@
+import './env.js';
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
 import { ensureDir } from './utils/file-utils.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
 import { cleanupOldFiles } from './cleanup.js';
@@ -12,8 +12,9 @@ import { resumeInterruptedJobs } from './queue.js';
 import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
 import crypto from 'crypto';
-
-dotenv.config();
+import fs from 'fs';
+import path from 'path';
+import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST } from './paths.js';
 
 // Ephemeral rather than a hardcoded default, so an unconfigured deployment
 // never ships a publicly-known credential.
@@ -36,9 +37,9 @@ app.get('/api/test', (req, res) => {
   res.json({ message: 'Backend is working!' });
 });
 
-ensureDir('uploads');
-ensureDir('renders');
-ensureDir('worker-tmp');
+ensureDir(UPLOADS_DIR);
+ensureDir(RENDERS_DIR);
+ensureDir(SCRATCH_DIR);
 
 const blenderPath = findBlenderExecutable();
 if (!blenderPath) {
@@ -68,6 +69,20 @@ app.post('/api/cleanup', requireAuth, requireAdmin, (req, res) => {
   res.json({ message: 'Cleanup triggered' });
 });
 
+// Serving the built frontend from the API means a client needs nothing but a
+// browser: no clone, no Node, and no per-machine configuration to drift.
+if (fs.existsSync(FRONTEND_DIST)) {
+  app.use(express.static(FRONTEND_DIST));
+
+  app.get('*', (req, res, next) => {
+    // An unknown API route is a 404, not the app shell.
+    if (req.path.startsWith('/api/')) return next();
+    res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
+  });
+} else {
+  console.warn('No frontend build found - run "npm run build" in frontend/ to serve the UI.');
+}
+
 cleanupOldFiles();
 resumeInterruptedJobs();
 
@@ -77,5 +92,7 @@ console.log('Auto-cleanup scheduled (runs every 24 hours, deletes files older th
 
 app.listen(PORT, () => {
   console.log(`Render Farm started.
-    Port: ${PORT}  , BlenderPath: ${blenderPath ? 'Found': 'Not Found'} `);
+    Port: ${PORT}  , BlenderPath: ${blenderPath ? 'Found': 'Not Found'}
+    Data:  ${DATA_DIR}
+    UI:    ${fs.existsSync(FRONTEND_DIST) ? `http://localhost:${PORT}` : 'not built'}`);
 });

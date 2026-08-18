@@ -2,10 +2,14 @@ import fs from 'fs';
 import path from 'path';
 import { pruneOldJobs, getActiveJobPaths } from './queue.js';
 import { purgeExpiredSessions } from './db.js';
+import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, RETENTION_DAYS } from './paths.js';
 
 export function cleanupOldFiles() {
   const now = Date.now();
-  const fortyEightHoursAgo = now - (48 * 60 * 60 * 1000);
+  // A backstop for files nobody came back for, not the main limit - people are
+  // expected to delete their own jobs once they have downloaded them, and the
+  // per-user quota is what actually keeps the disk in check.
+  const cutoff = now - (RETENTION_DAYS * 24 * 60 * 60 * 1000);
 
   console.log('Starting cleanup process...');
 
@@ -13,7 +17,7 @@ export function cleanupOldFiles() {
     // A job can sit in the queue for longer than the cutoff; deleting by age
     // alone would take its .blend away before it ever renders.
     const active = getActiveJobPaths();
-    const uploadsDir = 'uploads';
+    const uploadsDir = UPLOADS_DIR;
     if (fs.existsSync(uploadsDir)) {
       const uploadFiles = fs.readdirSync(uploadsDir);
       let deletedUploads = 0;
@@ -24,7 +28,7 @@ export function cleanupOldFiles() {
 
         const stats = fs.statSync(filePath);
 
-        if (stats.mtimeMs < fortyEightHoursAgo) {
+        if (stats.mtimeMs < cutoff) {
           fs.unlinkSync(filePath);
           deletedUploads++;
           console.log(`   🗑️ Deleted old upload: ${file}`);
@@ -35,7 +39,7 @@ export function cleanupOldFiles() {
         console.log(`Cleaned ${deletedUploads} old upload(s)`);
       }
     }
-    ['renders', 'worker-tmp'].forEach(dir => {
+    [RENDERS_DIR, SCRATCH_DIR].forEach(dir => {
       if (!fs.existsSync(dir)) return;
 
       let deleted = 0;
@@ -46,7 +50,7 @@ export function cleanupOldFiles() {
 
         const stats = fs.statSync(folderPath);
 
-        if (stats.mtimeMs < fortyEightHoursAgo) {
+        if (stats.mtimeMs < cutoff) {
           fs.rmSync(folderPath, { recursive: true, force: true });
           deleted++;
           console.log(`   🗑️ Deleted old folder: ${folderPath}`);
@@ -58,7 +62,7 @@ export function cleanupOldFiles() {
       }
     });
     
-    const prunedJobs = pruneOldJobs(fortyEightHoursAgo);
+    const prunedJobs = pruneOldJobs(cutoff);
     const prunedSessions = purgeExpiredSessions();
 
     if (prunedJobs || prunedSessions) {

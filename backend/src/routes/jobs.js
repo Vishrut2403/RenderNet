@@ -1,5 +1,9 @@
 import express from 'express';
-import { cancelJob, getJob, getAllJobs, getQueueStatus, getQueuePosition } from '../queue.js';
+import {
+  cancelJob, getJob, getAllJobs, getQueueStatus, getQueuePosition,
+  deleteJobAndFiles, setJobPriority, usageFor, usageByOwner
+} from '../queue.js';
+import { requireAdmin } from '../auth.js';
 
 const router = express.Router();
 
@@ -31,8 +35,13 @@ router.get('/', (req, res) => {
   const visible = getAllJobs().filter(job => canAccess(job, req.user));
   res.json({
     total: visible.length,
-    jobs: visible
+    jobs: visible,
+    usage: usageFor(req.user.username)
   });
+});
+
+router.get('/usage/all', requireAdmin, (req, res) => {
+  res.json({ usage: usageByOwner() });
 });
 
 router.post('/:id/cancel', (req, res) => {
@@ -54,6 +63,46 @@ router.post('/:id/cancel', (req, res) => {
   } else {
     res.status(400).json(result);
   }
+});
+
+router.delete('/:id', (req, res) => {
+  const jobId = Number(req.params.id);
+  const job = getJob(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (!canAccess(job, req.user)) {
+    return res.status(403).json({ error: 'You can only delete your own jobs' });
+  }
+
+  const result = deleteJobAndFiles(jobId);
+
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+router.post('/:id/priority', (req, res) => {
+  const jobId = Number(req.params.id);
+  const job = getJob(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (!canAccess(job, req.user)) {
+    return res.status(403).json({ error: 'You can only reprioritise your own jobs' });
+  }
+
+  const priority = Number(req.body?.priority);
+
+  if (!Number.isInteger(priority) || priority < 0 || priority > 1) {
+    return res.status(400).json({ error: 'priority must be 0 (normal) or 1 (urgent)' });
+  }
+
+  const result = setJobPriority(jobId, priority);
+
+  res.status(result.success ? 200 : 400).json(result);
 });
 
 router.get('/queue/status', (req, res) => {
