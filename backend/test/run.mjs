@@ -1,8 +1,10 @@
+import processControl from './process-control.test.mjs';
 import workerEndpoints from './worker-endpoints.test.mjs';
 import renderPipeline from './render-pipeline.test.mjs';
 import api from './api.test.mjs';
 
 const suites = [
+  ['Process control', processControl],
   ['Worker callback endpoints', workerEndpoints],
   ['Render pipeline', renderPipeline],
   ['API, rendering and persistence', api]

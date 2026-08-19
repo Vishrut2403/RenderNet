@@ -1,9 +1,9 @@
-import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
 import { findBlenderExecutable } from './utils/blender-check.js';
+import { launch, terminate } from './utils/process-control.js';
 
 const BLENDER_PATH = process.env.BLENDER_PATH || findBlenderExecutable() || 'blender';
 const API_URL = process.env.API_URL || 'http://localhost:5500';
@@ -37,12 +37,12 @@ class RenderWorker {
     const running = this.currentProcess;
     if (!running) return false;
 
-    running.kill('SIGTERM');
-
     // The queue holds the slot until this worker stops, so a Blender that
-    // ignores SIGTERM would keep the whole queue waiting.
-    this.killTimer = setTimeout(() => running.kill('SIGKILL'), KILL_GRACE_MS);
-    this.killTimer.unref();
+    // ignores the stop request would keep the whole queue waiting.
+    if (terminate(running)) {
+      this.killTimer = setTimeout(() => running.kill('SIGKILL'), KILL_GRACE_MS);
+      this.killTimer.unref();
+    }
 
     return true;
   }
@@ -183,7 +183,7 @@ class RenderWorker {
 
       console.log(`   Running: ${BLENDER_PATH} ${args.join(' ')}`);
 
-      const blender = spawn(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      const blender = launch(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
       this.currentProcess = blender;
 
       let stdout = '';

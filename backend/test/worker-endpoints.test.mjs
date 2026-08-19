@@ -8,7 +8,7 @@ import path from 'path';
 import { File } from 'node:buffer';
 import {
   createResults, makeSandbox, removeSandbox, sleep, snapshotEnv,
-  createFakeBlender, createFakeScene, FAKE_BLENDER_SUPPORTED
+  createFakeBlender, createFakeScene
 } from './helpers.mjs';
 
 const PORT = 5591;
@@ -16,11 +16,6 @@ const SECRET = 'test-secret-abc123';
 
 export default async function run() {
   const results = createResults('worker-endpoints');
-
-  if (!FAKE_BLENDER_SUPPORTED) {
-    results.skipped('worker callback suite', 'the Blender stand-in cannot run on Windows');
-    return results;
-  }
 
   const sandbox = makeSandbox('worker');
   const originalCwd = process.cwd();

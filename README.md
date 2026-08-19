@@ -187,18 +187,20 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 165 checks
+cd backend  && npm test        # 186 checks
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 152 of the 165 still meaningful.
+Blender is absent, leaving 173 of the 186 still meaningful.
 
-CI runs the suite on Linux and Windows against Node 22 and 24, which is the only
-place this is exercised on the platform the workstation actually runs. Windows
-covers 49 of those checks: the two suites driving a stand-in for Blender need an
-executable the worker can launch there, so they sit out for now.
+CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
+only place it is exercised on the platform the workstation actually runs. Windows
+differs where it matters most: it has no signals, so cancelling a render means
+killing a process tree with `taskkill` rather than escalating SIGTERM to SIGKILL.
+That path and the quoting that carries a Blender path through `cmd.exe` are also
+checked directly from any OS, so a mistake in either shows up before CI does.
 
 ---
 

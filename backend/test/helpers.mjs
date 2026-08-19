@@ -48,7 +48,13 @@ export function makeSandbox(prefix) {
 }
 
 export function removeSandbox(dir) {
-  fs.rmSync(dir, { recursive: true, force: true });
+  try {
+    // A stand-in left running holds its files open, and Windows refuses to
+    // unlink those. The sandbox is under the temp dir either way.
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  } catch (error) {
+    console.log(`    (could not remove sandbox ${dir}: ${error.code})`);
+  }
 }
 
 export function blenderAvailable() {
@@ -92,21 +98,22 @@ const PNG_1X1 = Buffer.from(
 // keyed off the .blend filename so one server can drive every scenario:
 // 'noisy' floods stdout, 'slow' takes its time per frame, 'hang' stays on one
 // frame long enough to test against a job that is genuinely mid-render,
-// 'stubborn' ignores SIGTERM and stays alive so cancelling it has to escalate
+// 'stubborn' ignores a polite stop and stays alive so cancelling it has to force
 // (wait for stubbornIsUnkillable before cancelling; see below),
 // 'stalls' delivers its first frame and then never finishes another,
 // 'broken' exits non-zero with its complaint on stdout.
-// The stand-in is a Node script made runnable by its shebang. Windows has no
-// shebang, will not execute a bare .js, and since Node 20.12 refuses to spawn a
-// .cmd wrapper without a shell - so the suites that drive it sit out until the
-// worker learns to launch through cmd.exe and kill the process tree it starts.
-export const FAKE_BLENDER_SUPPORTED = process.platform !== 'win32';
+// The behaviour lives in a Node script, reached through a wrapper the platform
+// can actually execute: a shell script on POSIX, a .cmd on Windows. The .cmd
+// also puts the worker's own cmd.exe launch and process-tree kill under test,
+// which is where Windows differs from everything else.
+export function fakeBlenderPath(dir) {
+  return path.join(dir, process.platform === 'win32' ? 'fake-blender.cmd' : 'fake-blender');
+}
 
 export function createFakeBlender(dir) {
-  const blenderPath = path.join(dir, 'fake-blender');
+  const scriptPath = path.join(dir, 'fake-blender.js');
 
-  fs.writeFileSync(blenderPath, `#!/usr/bin/env node
-const fs = require('fs');
+  fs.writeFileSync(scriptPath, `const fs = require('fs');
 const path = require('path');
 
 const args = process.argv.slice(2);
@@ -122,7 +129,7 @@ if (scene.includes('stubborn')) {
   // Until this exists the process is still bootable and a SIGTERM kills it
   // outright, so the caller has to wait for it before cancelling.
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(path.join(path.dirname(target), 'ignoring-sigterm'), '');
+  fs.writeFileSync(path.join(path.dirname(target), 'refusing-to-exit'), '');
 }
 
 if (scene.includes('noisy')) {
@@ -148,7 +155,14 @@ setTimeout(() => {
 }, delay);
 `);
 
-  fs.chmodSync(blenderPath, 0o755);
+  const blenderPath = fakeBlenderPath(dir);
+
+  if (process.platform === 'win32') {
+    fs.writeFileSync(blenderPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`);
+  } else {
+    fs.writeFileSync(blenderPath, `#!/bin/sh\nexec "${process.execPath}" "${scriptPath}" "$@"\n`);
+    fs.chmodSync(blenderPath, 0o755);
+  }
 
   return blenderPath;
 }
@@ -158,10 +172,10 @@ setTimeout(() => {
 // the status flips lands before the stand-in can ignore anything, killing it on
 // the default disposition and leaving the escalation path untested.
 export function stubbornIsUnkillable(sandbox, jobId) {
-  const marker = path.join(sandbox, 'worker-tmp', `job_${jobId}`, 'ignoring-sigterm');
+  const marker = path.join(sandbox, 'worker-tmp', `job_${jobId}`, 'refusing-to-exit');
 
   return waitForCondition(() => fs.existsSync(marker), {
-    label: 'the stubborn Blender to start ignoring SIGTERM'
+    label: 'the stubborn Blender to start refusing to exit'
   });
 }
 
@@ -187,8 +201,26 @@ export async function getJob(base, token, jobId) {
   return (await fetch(`${base}/jobs/${jobId}`, { headers: auth(token) })).json();
 }
 
-export async function startServer({ port, cwd, dataDir = cwd, env = {} }) {
-  const proc = spawn('node', [path.join(BACKEND_ROOT, 'src', 'index.js')], {
+// Windows can refuse to rebind a port whose previous connections are still
+// winding down, and the restart tests reuse one port on purpose.
+const START_ATTEMPTS = 3;
+
+export async function startServer(options) {
+  let lastLog = '';
+
+  for (let attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
+    const { server, log } = await tryStartServer(options);
+    if (server) return server;
+
+    lastLog = log;
+    await sleep(1000);
+  }
+
+  throw new Error(`Server did not start on port ${options.port}:\n${lastLog}`);
+}
+
+async function tryStartServer({ port, cwd, dataDir = cwd, env = {} }) {
+  const proc = spawn(process.execPath, [path.join(BACKEND_ROOT, 'src', 'index.js')], {
     cwd,
     env: {
       ...process.env,
@@ -215,15 +247,19 @@ export async function startServer({ port, cwd, dataDir = cwd, env = {} }) {
   for (let attempt = 0; attempt < 60; attempt++) {
     try {
       const res = await fetch(`${base}/health`);
-      if (res.ok) return { proc, base, getLog: () => log };
+      if (res.ok) return { server: { proc, base, getLog: () => log } };
     } catch {
       // not listening yet
     }
+
+    if (proc.exitCode !== null || proc.signalCode !== null) break;
+
     await sleep(250);
   }
 
   proc.kill('SIGKILL');
-  throw new Error(`Server did not start on port ${port}:\n${log}`);
+
+  return { log };
 }
 
 export async function stopServer(server) {

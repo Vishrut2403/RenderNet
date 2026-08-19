@@ -1,24 +1,19 @@
 // Render pipeline behaviour that a real Blender cannot be made to exhibit on
 // demand: a scene that floods stdout, one that takes long enough to cancel
-// mid-render, and one that refuses to die on SIGTERM. Runs without Blender.
+// mid-render, and one that refuses to stop when asked. Runs without Blender.
 import fs from 'fs';
 import path from 'path';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, getJob, adminSession, signUp,
   createFakeBlender, createFakeScene, waitForCondition, stubbornIsUnkillable,
-  FAKE_BLENDER_SUPPORTED
+  fakeBlenderPath
 } from './helpers.mjs';
 
 const PORT = 5593;
 
 export default async function run() {
   const results = createResults('render-pipeline');
-
-  if (!FAKE_BLENDER_SUPPORTED) {
-    results.skipped('render pipeline suite', 'the Blender stand-in cannot run on Windows');
-    return results;
-  }
 
   const sandbox = makeSandbox('pipeline');
   // Deliberately not the data directory: on the workstation the server is
@@ -105,7 +100,7 @@ export default async function run() {
     const nextJob = await waitForJob(base, token, queuedId, 30000);
     results.check('the queue moves on to the next job', nextJob.status === 'completed', nextJob.status);
 
-    console.log('\n  Cancelling a Blender that ignores SIGTERM');
+    console.log('\n  Cancelling a Blender that refuses to stop');
     const stubborn = await submitJob(base, token, createFakeScene(sandbox, 'stubborn.blend'), {
       frameStart: 1, frameEnd: 2
     });
@@ -120,16 +115,17 @@ export default async function run() {
     const cancelledAt = Date.now();
     await fetch(`${base}/jobs/${stubbornId}/cancel`, { method: 'POST', headers: auth(token) });
 
-    // SIGTERM is ignored, so the queue only moves once the escalation lands.
-    // Left to itself the stand-in exits after 60s, so the bound is what
-    // separates a real escalation from simply outwaiting the process.
+    // A polite stop is ignored, so the queue only moves once the forceful one
+    // lands - SIGKILL on POSIX, taskkill on Windows. Left to itself the
+    // stand-in exits after 60s, so the bound is what separates a real
+    // escalation from simply outwaiting the process.
     const released = await waitForCondition(
       async () => (await getJob(base, token, after.body.jobId)).status === 'completed',
-      { timeoutMs: 25000, label: 'the queue to be released by SIGKILL' }
+      { timeoutMs: 25000, label: 'the queue to be released by a forceful kill' }
     );
     const releasedIn = Date.now() - cancelledAt;
 
-    results.check('SIGKILL escalation releases the queue', released, `after ${releasedIn}ms`);
+    results.check('forceful termination releases the queue', released, `after ${releasedIn}ms`);
     results.check('and does not wait out the process on its own', releasedIn < 25000,
       `${releasedIn}ms`);
 
@@ -218,7 +214,7 @@ export default async function run() {
     // While a paused job's worker winds down, isRendering stays true and
     // currentJobId still points at it. A second urgent job arriving in that
     // window must not queue it twice. The window is milliseconds normally, so
-    // this uses the stand-in that ignores SIGTERM and takes the full escalation.
+    // this uses the stand-in that refuses to stop and has to be killed outright.
     console.log('\n  A second urgent job does not queue the paused one twice');
     const wedged = await submitJob(base, token, createFakeScene(sandbox, 'stubborn.blend'), {
       frameStart: 1, frameEnd: 2
@@ -327,7 +323,7 @@ export default async function run() {
         port: PORT,
         cwd: elsewhere,
         dataDir: sandbox,
-        env: { BLENDER_PATH: path.join(sandbox, 'fake-blender') }
+        env: { BLENDER_PATH: fakeBlenderPath(sandbox) }
       });
 
       return adminSession(server.base);
