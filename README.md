@@ -40,7 +40,7 @@ The frontend build is what lets clients get away with only a browser — the API
 PORT=5500
 WORKER_SECRET=paste-a-long-random-string
 SIGNUP_CODE=what-you-tell-your-team
-BLENDER_PATH=C:\Program Files\Blender Foundation\Blender 4.2\blender.exe
+BLENDER_PATH=C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 CYCLES_DEVICE=CUDA
 ```
 

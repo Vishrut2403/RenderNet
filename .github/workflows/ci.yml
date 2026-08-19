@@ -56,6 +56,12 @@ jobs:
     timeout-minutes: 30
     if: github.event_name != 'pull_request'
 
+    # Pinned rather than taken from apt, which ships whatever the runner image
+    # happens to carry. Tracks the workstation, which is kept on the latest.
+    env:
+      BLENDER_VERSION: '5.2.0'
+      BLENDER_SHA256: '96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48'
+
     steps:
       - uses: actions/checkout@v5
 
@@ -69,9 +75,17 @@ jobs:
 
       - name: Install Blender
         run: |
-          sudo apt-get update
-          sudo apt-get install -y blender
-          blender --version
+          archive="blender-$BLENDER_VERSION-linux-x64.tar.xz"
+          curl -fsSL -O "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/$archive"
+          echo "$BLENDER_SHA256  $archive" | sha256sum -c -
+          mkdir -p "$HOME/blender"
+          tar -xJf "$archive" -C "$HOME/blender" --strip-components=1
+          echo "$HOME/blender" >> "$GITHUB_PATH"
+
+      # Separate so a missing system library fails here, plainly, rather than as
+      # every render-dependent check at once.
+      - name: Check Blender runs
+        run: blender --version
 
       - name: Install backend
         working-directory: backend
