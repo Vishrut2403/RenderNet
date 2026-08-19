@@ -588,5 +588,73 @@ export default async function run() {
     removeSandbox(quotaBox);
   }
 
+  // The workstation is started by Task Scheduler, where stdout goes nowhere.
+  // Its own instance because rotation and pruning need limits nothing else can
+  // work under.
+  const logBox = makeSandbox('logs');
+  let logServer;
+
+  try {
+    console.log('\n  Logging to disk, rotating and pruning');
+
+    const logsDir = path.join(logBox, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+
+    // Named as a log from long ago, then given an mtime to match: only the
+    // sweep at boot should be able to remove it.
+    const stale = path.join(logsDir, 'rendernet-2020-01-01.log');
+    fs.writeFileSync(stale, 'from a previous decade\n');
+    fs.utimesSync(stale, new Date(0), new Date(0));
+
+    logServer = await startServer({
+      port: PORT + 4,
+      cwd: logBox,
+      // Small enough that the server's own startup output overflows it, so
+      // rotation happens without having to manufacture megabytes.
+      env: { BLENDER_PATH: createFakeBlender(logBox), MAX_LOG_BYTES: '400' }
+    });
+
+    const logToken = await adminSession(logServer.base);
+    const named = name => /^rendernet-\d{4}-\d{2}-\d{2}(\.\d+)?\.log$/.test(name);
+    const onDisk = () => fs.readdirSync(logsDir).filter(named).sort();
+
+    results.check('a log file is written', onDisk().length > 0, JSON.stringify(onDisk()));
+    results.check('the stale log was pruned at boot', !fs.existsSync(stale));
+
+    const combined = onDisk().map(name => fs.readFileSync(path.join(logsDir, name), 'utf8')).join('');
+    results.check('it captures what the server printed',
+      combined.includes('Render Farm started'), combined.slice(0, 200));
+    results.check('and stamps each line with a level',
+      /^\d{4}-\d{2}-\d{2}T[\d:.]+Z (INFO|WARN|ERROR) /m.test(combined), combined.slice(0, 200));
+
+    results.check('output past the size limit rotates into a new file',
+      onDisk().length > 1, JSON.stringify(onDisk()));
+
+    const listed = await (await fetch(`${logServer.base}/logs`, { headers: auth(logToken) })).json();
+    results.check('an admin can list the logs',
+      listed.files?.length === onDisk().length, JSON.stringify(listed.files));
+
+    const tail = await fetch(`${logServer.base}/logs/${onDisk()[0]}?lines=2`, {
+      headers: auth(logToken)
+    });
+    results.check('and tail one of them',
+      tail.status === 200 && (await tail.text()).split('\n').length <= 2, `got ${tail.status}`);
+
+    results.check('anonymous log access rejected',
+      await status(`${logServer.base}/logs`) === 401);
+
+    await signUp(logServer.base, 'logpeeker', 'logpeeker123');
+    const peeker = await login(logServer.base, 'logpeeker', 'logpeeker123');
+    results.check('non-admin log access rejected',
+      await status(`${logServer.base}/logs`, { headers: auth(peeker) }) === 403);
+
+    results.check('a name outside the listing is refused',
+      await status(`${logServer.base}/logs/..%2ftest.db`, { headers: auth(logToken) }) === 404);
+
+  } finally {
+    await stopServer(logServer);
+    removeSandbox(logBox);
+  }
+
   return results;
 }

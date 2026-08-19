@@ -33,4 +33,13 @@ export const DB_FILE = process.env.DB_PATH
 export const RETENTION_DAYS = Number(process.env.RETENTION_DAYS) || 14;
 export const USER_QUOTA_BYTES = Number(process.env.USER_QUOTA_BYTES) || 5 * 1024 * 1024 * 1024;
 
+export const LOGS_DIR = dataPath('logs');
+
+// Logs are small next to renders and are the only account of an evening nobody
+// watched, so they outlive the frames they describe.
+export const LOG_RETENTION_DAYS = Number(process.env.LOG_RETENTION_DAYS) || 30;
+// Floored: the rotation search walks upward until it finds a file under the
+// limit, so a nonsensical value here would spin rather than misbehave visibly.
+export const MAX_LOG_BYTES = Math.max(Number(process.env.MAX_LOG_BYTES) || 8 * 1024 * 1024, 100);
+
 export const FRONTEND_DIST = path.resolve(BACKEND_ROOT, '..', 'frontend', 'dist');

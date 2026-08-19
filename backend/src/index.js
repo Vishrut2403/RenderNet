@@ -1,4 +1,7 @@
 import './env.js';
+// Second, for the same reason env.js is first: it patches console on import, so
+// anything the modules below log as they load lands in the file too.
+import './logger.js';
 import express from 'express';
 import cors from 'cors';
 import { ensureDir } from './utils/file-utils.js';
@@ -11,6 +14,7 @@ import jobsRouter from './routes/jobs.js';
 import { resumeInterruptedJobs } from './queue.js';
 import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
+import logsRouter from './routes/logs.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -62,6 +66,8 @@ app.get('/api/health', (req, res) => {
     blenderAvailable: !!blenderPath
   });
 });
+
+app.use('/api/logs', requireAuth, requireAdmin, logsRouter);
 
 app.post('/api/cleanup', requireAuth, requireAdmin, (req, res) => {
   cleanupOldFiles();

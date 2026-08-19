@@ -3,6 +3,7 @@ import path from 'path';
 import { pruneOldJobs, getActiveJobPaths } from './queue.js';
 import { purgeExpiredSessions } from './db.js';
 import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, RETENTION_DAYS } from './paths.js';
+import { pruneOldLogs } from './logger.js';
 
 // Cleanup runs at boot and once a day, and the workstation is switched off
 // nightly - so in practice it gets one pass. A file that disappears between the
@@ -77,9 +78,14 @@ export function cleanupOldFiles() {
     
     const prunedJobs = pruneOldJobs(cutoff);
     const prunedSessions = purgeExpiredSessions();
+    const prunedLogs = pruneOldLogs();
 
     if (prunedJobs || prunedSessions) {
       console.log(`Pruned ${prunedJobs} job record(s) and ${prunedSessions} expired session(s)`);
+    }
+
+    if (prunedLogs) {
+      console.log(`Pruned ${prunedLogs} old log file(s)`);
     }
 
     console.log('Cleanup complete!');

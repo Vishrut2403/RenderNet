@@ -5,6 +5,7 @@ import { deleteFile } from '../utils/file-utils.js';
 import { addToQueue } from '../queue.js';
 import { UPLOADS_DIR, USER_QUOTA_BYTES } from '../paths.js';
 import { usageFor } from '../queue.js';
+import { ENGINES } from '../engines.js';
 
 const router = express.Router();
 
@@ -30,7 +31,6 @@ const upload = multer({
   }
 });
 
-const ENGINES = ['CYCLES', 'BLENDER_EEVEE', 'BLENDER_WORKBENCH'];
 const MAX_FRAMES = 2000;
 
 function gigabytes(bytes) {

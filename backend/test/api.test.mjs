@@ -4,9 +4,11 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
+import { ENGINES } from '../src/engines.js';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
-  login, auth, status, submitJob, waitForJob, blenderAvailable, createFixtureBlend,
+  login, auth, status, submitJob, waitForJob, blenderAvailable, blenderEngines,
+  createFixtureBlend,
   adminSession, signUp, SIGNUP_CODE, ADMIN_PASSWORD
 } from './helpers.mjs';
 
@@ -277,7 +279,9 @@ export default async function run() {
         'download by query token', 'unauthenticated download rejected',
         'cross-user download denied', 'traversal blocked', 'frame listing by header',
         'frame paths carry no token', 'session survives restart', 'job survives restart',
-        'progress survives restart', 'download survives restart']) {
+        'progress survives restart', 'download survives restart',
+        'every offered engine is one this Blender lists',
+        'BLENDER_EEVEE renders', 'BLENDER_WORKBENCH renders']) {
         results.skipped(name, 'Blender not installed');
       }
       return results;
@@ -293,6 +297,27 @@ export default async function run() {
       `${finished.status}: ${finished.error || ''}`);
     results.check('frames written to disk',
       fs.readdirSync(path.join(sandbox, finished.outputFolder)).length === 2);
+
+    // The upload form offers these by name and the worker passes them straight
+    // to -E. Blender keeps renamed identifiers working as aliases for a while,
+    // so drifting from its canonical list is a warning rather than a breakage -
+    // but it is the only notice there is before the alias goes.
+    const accepted = blenderEngines();
+    const unknown = ENGINES.filter(engine => !accepted.includes(engine));
+
+    results.check('every offered engine is one this Blender lists',
+      unknown.length === 0,
+      `${JSON.stringify(unknown)} not in ${JSON.stringify(accepted)}`);
+
+    for (const engine of ENGINES.filter(name => name !== 'CYCLES')) {
+      const job = await submitJob(base, adminToken, blend, {
+        frameStart: 1, frameEnd: 1, engine
+      });
+      const done = await waitForJob(base, adminToken, job.body.jobId);
+
+      results.check(`${engine} renders`, done.status === 'completed',
+        `${done.status}: ${done.error || ''}`);
+    }
 
     console.log('\n  Downloads');
     results.check('download by header',

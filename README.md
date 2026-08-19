@@ -119,6 +119,11 @@ interactive session, where GPU rendering behaves as it does when Blender is
 launched by hand. The working directory does not matter: data paths and `.env` are
 resolved from the source tree, not from wherever the task starts.
 
+Nothing reads that window, so everything printed also goes to a dated file in
+`logs/` under the data directory, kept for a month. An admin can read them
+without visiting the machine: `GET /api/logs` lists them, `GET /api/logs/<name>`
+returns the last 200 lines, or `?lines=1000` for more.
+
 ---
 
 ## Setting up a client
@@ -178,6 +183,8 @@ tree, so it is found however the server is started.
 | `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |
 | `USER_QUOTA_BYTES` | `5368709120` (5 GB) | Disk each user may hold in uploads and rendered frames |
 | `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |
+| `LOG_RETENTION_DAYS` | `30` | How long dated logs in `logs/` are kept |
+| `MAX_LOG_BYTES` | `8388608` (8 MB) | Size at which the day's log rotates to a new file |
 | `DB_PATH` | `rendernet.db` inside `DATA_DIR` | SQLite database file |
 | `API_URL` | `http://localhost:5500` | Base URL the worker posts results back to |
 
@@ -187,13 +194,13 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 186 checks
+cd backend  && npm test        # 199 checks
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 173 of the 186 still meaningful.
+Blender is absent, leaving 183 of the 199 still meaningful.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
 only place it is exercised on the platform the workstation actually runs. Windows

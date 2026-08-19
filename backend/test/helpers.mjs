@@ -62,6 +62,20 @@ export function blenderAvailable() {
   return probe.status === 0;
 }
 
+// Blender renamed EEVEE's identifier twice across 4.x and 5.x, and an engine the
+// installed Blender does not recognise fails every frame of the job. Asking it
+// rather than hardcoding a list is the whole point.
+export function blenderEngines() {
+  const probe = spawnSync('blender', ['-b', '--factory-startup', '-E', 'help'], { encoding: 'utf8' });
+
+  if (probe.status !== 0) return [];
+
+  return probe.stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => /^[A-Z][A-Z_]+$/.test(line));
+}
+
 // Renders fast: 64x64, one Cycles sample, no denoising.
 export function createFixtureBlend(dir) {
   const blendPath = path.join(dir, 'fixture.blend');
