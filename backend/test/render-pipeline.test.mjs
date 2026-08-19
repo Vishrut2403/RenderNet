@@ -659,35 +659,47 @@ export default async function run() {
 
     const logged = () => onDisk().map(name => fs.readFileSync(path.join(logsDir, name), 'utf8')).join('');
 
+    // The server is another process and writes its line when the response
+    // finishes, which is not ordered against the client's fetch resolving here.
+    const appears = (pattern, label) =>
+      waitForCondition(() => pattern.test(logged()), { timeoutMs: 10000, label });
+
     const scene = createFakeScene(logBox, 'audited.blend');
     const audited = await submitJob(logServer.base, logToken, scene, { frameStart: 1, frameEnd: 1 });
     await waitForJob(logServer.base, logToken, audited.body.jobId, 30000);
 
     results.check('an upload is recorded against the person who made it',
-      /POST \/api\/upload 200 \d+ms user=admin/.test(logged()), 'no matching line');
+      await appears(/POST \/api\/upload 200 \d+ms user=admin/, 'the upload line'));
 
     await fetch(`${logServer.base}/jobs/${audited.body.jobId}`, {
       method: 'DELETE', headers: auth(logToken)
     });
     results.check('and so is a deletion',
-      new RegExp(`DELETE /api/jobs/${audited.body.jobId} 200 \\d+ms user=admin`).test(logged()),
-      'no matching line');
+      await appears(new RegExp(`DELETE /api/jobs/${audited.body.jobId} 200 \\d+ms user=admin`),
+        'the delete line'));
 
-    await status(`${logServer.base}/jobs/999999`, { headers: auth(peeker) });
+    const missing = await status(`${logServer.base}/jobs/999999`, { headers: auth(peeker) });
     results.check('a failed request is recorded even though it is a GET',
-      /GET \/api\/jobs\/999999 404 \d+ms user=logpeeker/.test(logged()), 'no matching line');
+      await appears(/GET \/api\/jobs\/999999 404 \d+ms user=logpeeker/, 'the 404 line'),
+      `the request itself returned ${missing}`);
 
     // Counted rather than measured by file size: the queue logs on a timer of
     // its own, and a byte comparison would catch that instead.
     const polls = () => (logged().match(/(GET \/api\/jobs|GET \/api\/jobs\/queue\/status) 200/g) ?? []).length;
 
-    const beforePolling = polls();
     for (let poll = 0; poll < 5; poll++) {
       await fetch(`${logServer.base}/jobs`, { headers: auth(logToken) });
       await fetch(`${logServer.base}/jobs/queue/status`, { headers: auth(logToken) });
     }
+
+    // Issued after the polls and recorded, so seeing it means the server has
+    // dealt with them too - otherwise this asserts an absence that has simply
+    // not been written yet.
+    await fetch(`${logServer.base}/logs`, { headers: auth(logToken) });
+    await appears(/GET \/api\/logs 200/, 'the barrier line');
+
     results.check('the dashboard polling the job list writes nothing',
-      polls() === beforePolling && polls() === 0, `${polls()} polling lines recorded`);
+      polls() === 0, `${polls()} polling lines recorded`);
 
     // A download authenticates by query string, so the URL carries a live
     // session token. Writing that down would put credentials in a file an

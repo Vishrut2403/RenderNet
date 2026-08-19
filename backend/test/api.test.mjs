@@ -8,7 +8,7 @@ import { ENGINES } from '../src/engines.js';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, blenderAvailable, blenderEngines,
-  createFixtureBlend,
+  engineRenders, createFixtureBlend,
   adminSession, signUp, SIGNUP_CODE, ADMIN_PASSWORD
 } from './helpers.mjs';
 
@@ -310,13 +310,18 @@ export default async function run() {
       `${JSON.stringify(unknown)} not in ${JSON.stringify(accepted)}`);
 
     for (const engine of ENGINES.filter(name => name !== 'CYCLES')) {
+      if (!engineRenders(engine, blend, sandbox)) {
+        results.skipped(`${engine} renders`, 'this machine cannot render with it headless');
+        continue;
+      }
+
       const job = await submitJob(base, adminToken, blend, {
         frameStart: 1, frameEnd: 1, engine
       });
       const done = await waitForJob(base, adminToken, job.body.jobId);
 
       results.check(`${engine} renders`, done.status === 'completed',
-        `${done.status}: ${done.error || ''}`);
+        `${done.status}: ${done.error || ''} ${JSON.stringify(done.frameErrors ?? [])}`);
     }
 
     console.log('\n  Downloads');

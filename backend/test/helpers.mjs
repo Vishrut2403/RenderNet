@@ -76,6 +76,22 @@ export function blenderEngines() {
     .filter(line => /^[A-Z][A-Z_]+$/.test(line));
 }
 
+// EEVEE and Workbench rasterise, so they want a GL context that a headless
+// machine with no GPU may not be able to give them. Cycles does not, which is
+// why it is the one the rest of the suite renders with.
+export function engineRenders(engine, blendPath, dir) {
+  const pattern = path.join(dir, `probe_${engine}_####`);
+  const produced = path.join(dir, `probe_${engine}_0001.png`);
+
+  spawnSync('blender', ['-b', blendPath, '-E', engine, '-F', 'PNG', '-o', pattern, '-f', '1'],
+    { encoding: 'utf8', timeout: 120000 });
+
+  const rendered = fs.existsSync(produced);
+  if (rendered) fs.rmSync(produced, { force: true });
+
+  return rendered;
+}
+
 // Renders fast: 64x64, one Cycles sample, no denoising.
 export function createFixtureBlend(dir) {
   const blendPath = path.join(dir, 'fixture.blend');
