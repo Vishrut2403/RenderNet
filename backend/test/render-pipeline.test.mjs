@@ -630,9 +630,13 @@ export default async function run() {
     results.check('output past the size limit rotates into a new file',
       onDisk().length > 1, JSON.stringify(onDisk()));
 
+    // A subset rather than an equal count: the server is still logging, and at
+    // this size limit it can rotate a new file into existence between the two
+    // reads. Files are only ever added, so everything listed is still there.
     const listed = await (await fetch(`${logServer.base}/logs`, { headers: auth(logToken) })).json();
     results.check('an admin can list the logs',
-      listed.files?.length === onDisk().length, JSON.stringify(listed.files));
+      listed.files?.length > 0 && listed.files.every(file => onDisk().includes(file.name)),
+      JSON.stringify(listed.files));
 
     const tail = await fetch(`${logServer.base}/logs/${onDisk()[0]}?lines=2`, {
       headers: auth(logToken)
@@ -650,6 +654,47 @@ export default async function run() {
 
     results.check('a name outside the listing is refused',
       await status(`${logServer.base}/logs/..%2ftest.db`, { headers: auth(logToken) }) === 404);
+
+    console.log('\n  Recording who asked for what');
+
+    const logged = () => onDisk().map(name => fs.readFileSync(path.join(logsDir, name), 'utf8')).join('');
+
+    const scene = createFakeScene(logBox, 'audited.blend');
+    const audited = await submitJob(logServer.base, logToken, scene, { frameStart: 1, frameEnd: 1 });
+    await waitForJob(logServer.base, logToken, audited.body.jobId, 30000);
+
+    results.check('an upload is recorded against the person who made it',
+      /POST \/api\/upload 200 \d+ms user=admin/.test(logged()), 'no matching line');
+
+    await fetch(`${logServer.base}/jobs/${audited.body.jobId}`, {
+      method: 'DELETE', headers: auth(logToken)
+    });
+    results.check('and so is a deletion',
+      new RegExp(`DELETE /api/jobs/${audited.body.jobId} 200 \\d+ms user=admin`).test(logged()),
+      'no matching line');
+
+    await status(`${logServer.base}/jobs/999999`, { headers: auth(peeker) });
+    results.check('a failed request is recorded even though it is a GET',
+      /GET \/api\/jobs\/999999 404 \d+ms user=logpeeker/.test(logged()), 'no matching line');
+
+    // Counted rather than measured by file size: the queue logs on a timer of
+    // its own, and a byte comparison would catch that instead.
+    const polls = () => (logged().match(/(GET \/api\/jobs|GET \/api\/jobs\/queue\/status) 200/g) ?? []).length;
+
+    const beforePolling = polls();
+    for (let poll = 0; poll < 5; poll++) {
+      await fetch(`${logServer.base}/jobs`, { headers: auth(logToken) });
+      await fetch(`${logServer.base}/jobs/queue/status`, { headers: auth(logToken) });
+    }
+    results.check('the dashboard polling the job list writes nothing',
+      polls() === beforePolling && polls() === 0, `${polls()} polling lines recorded`);
+
+    // A download authenticates by query string, so the URL carries a live
+    // session token. Writing that down would put credentials in a file an
+    // admin can fetch over HTTP.
+    await status(`${logServer.base}/download/files/render_1/frame_0001.png?token=${logToken}`);
+    results.check('a download token never reaches the log',
+      !logged().includes(logToken), 'the session token was written to the log');
 
   } finally {
     await stopServer(logServer);

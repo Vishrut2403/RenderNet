@@ -1,7 +1,7 @@
 import './env.js';
 // Second, for the same reason env.js is first: it patches console on import, so
 // anything the modules below log as they load lands in the file too.
-import './logger.js';
+import { requestLogger } from './logger.js';
 import express from 'express';
 import cors from 'cors';
 import { ensureDir } from './utils/file-utils.js';
@@ -35,6 +35,7 @@ const PORT = process.env.PORT || 5500;
 // credentialed request to a wildcard origin anyway.
 app.use(cors({ origin: '*' }));
 app.use(express.json());
+app.use(requestLogger);
 
 app.get('/api/test', (req, res) => {
   res.json({ message: 'Backend is working!' });

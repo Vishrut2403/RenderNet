@@ -120,9 +120,11 @@ launched by hand. The working directory does not matter: data paths and `.env` a
 resolved from the source tree, not from wherever the task starts.
 
 Nothing reads that window, so everything printed also goes to a dated file in
-`logs/` under the data directory, kept for a month. An admin can read them
-without visiting the machine: `GET /api/logs` lists them, `GET /api/logs/<name>`
-returns the last 200 lines, or `?lines=1000` for more.
+`logs/` under the data directory, kept for a month, along with a line per
+request recording who did what. The job list the dashboard polls is left out, or
+it would be the whole file. An admin can read the logs without visiting the
+machine: `GET /api/logs` lists them, `GET /api/logs/<name>` returns the last 200
+lines, or `?lines=1000` for more.
 
 ---
 
@@ -194,13 +196,13 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 199 checks
+cd backend  && npm test        # 204 checks
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 183 of the 199 still meaningful.
+Blender is absent, leaving 188 of the 204 still meaningful.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
 only place it is exercised on the platform the workstation actually runs. Windows

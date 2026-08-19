@@ -90,6 +90,46 @@ export function listLogs() {
   }
 }
 
+// The dashboard polls these every couple of seconds for every person watching
+// it, which at that rate would be the whole file. Anything else is logged, so a
+// new route is recorded until someone decides otherwise.
+const POLLED = [
+  /^\/api\/health$/,
+  /^\/api\/jobs$/,
+  /^\/api\/jobs\/\d+$/,
+  /^\/api\/jobs\/queue\/status$/
+];
+
+function worthRecording(method, requestPath, status) {
+  if (status >= 400) return true;
+  if (method !== 'GET') return true;
+
+  return !POLLED.some(pattern => pattern.test(requestPath));
+}
+
+// One machine is shared, and people can cancel and reprioritise each other's
+// work. Who did what is the record that makes that workable.
+export function requestLogger(req, res, next) {
+  const started = Date.now();
+  const { method } = req;
+
+  // Read now, not when the response finishes: routers rewrite req.url as they
+  // dispatch, so by then req.path has been stripped to whatever was left after
+  // the mount point. Taken from req.path rather than req.originalUrl because a
+  // download authenticates by query string and that token must not be written
+  // down.
+  const requestPath = req.path;
+
+  res.on('finish', () => {
+    if (!worthRecording(method, requestPath, res.statusCode)) return;
+
+    console.log(`${method} ${requestPath} ${res.statusCode} ${Date.now() - started}ms `
+      + `user=${req.user?.username ?? 'anonymous'} ip=${req.ip ?? '?'}`);
+  });
+
+  next();
+}
+
 // Console rather than a logging call of its own: the server already says what
 // it is doing in eighty-odd places, and on the workstation those go to a
 // Task Scheduler window nobody sees.
