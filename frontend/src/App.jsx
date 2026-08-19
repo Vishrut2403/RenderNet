@@ -7,7 +7,7 @@ import { Login } from './pages/Login';
 import { Upload } from './pages/Upload';
 import { Jobs } from './pages/Jobs';
 import { Dashboard } from './pages/Dashboard';
-import { ChangePasswordModal, AdminModal } from './pages/AccountModals';
+import { ChangePasswordModal, AdminModal, LogsModal } from './pages/AccountModals';
 import { Toast } from './components/ui';
 
 const TABS = [
@@ -133,9 +133,14 @@ export default function App() {
                   Change password
                 </button>
                 {user.role === 'admin' && (
-                  <button onClick={() => { setModal('admin'); setMenuOpen(false); }}>
-                    Admin
-                  </button>
+                  <>
+                    <button onClick={() => { setModal('admin'); setMenuOpen(false); }}>
+                      Admin
+                    </button>
+                    <button onClick={() => { setModal('logs'); setMenuOpen(false); }}>
+                      Logs
+                    </button>
+                  </>
                 )}
                 <button className="danger" onClick={handleSignOut}>Sign out</button>
               </div>
@@ -158,6 +163,8 @@ export default function App() {
       {modal === 'password' && (
         <ChangePasswordModal onClose={() => setModal(null)} notify={notify} />
       )}
+      {modal === 'logs' && <LogsModal onClose={() => setModal(null)} />}
+
       {modal === 'admin' && (
         <AdminModal onClose={() => setModal(null)} notify={notify} />
       )}

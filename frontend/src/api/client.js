@@ -42,6 +42,14 @@ function authorizedUrl(path) {
   return `${BASE}${path}?token=${encodeURIComponent(getToken())}`;
 }
 
+function parseOrEmpty(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
 class ApiError extends Error {
   constructor(message, status) {
     super(message);
@@ -49,7 +57,7 @@ class ApiError extends Error {
   }
 }
 
-async function request(path, { method = 'GET', body, headers = {}, auth = true } = {}) {
+async function request(path, { method = 'GET', body, headers = {}, auth = true, expect = 'json' } = {}) {
   const token = getToken();
   const config = { method, headers: { ...headers } };
 
@@ -72,7 +80,10 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true }
     throw new ApiError('Session expired', 401);
   }
 
-  const payload = await response.json().catch(() => ({}));
+  // Log tails come back as plain text; everything else is JSON.
+  const payload = expect === 'text'
+    ? { text: await response.text().catch(() => '') }
+    : await response.json().catch(() => ({}));
 
   // An account whose password must change can reach almost nothing until it
   // does, so the app has to switch to that screen wherever the call came from.
@@ -81,10 +92,12 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true }
   }
 
   if (!response.ok) {
-    throw new ApiError(payload.error || `Request failed (${response.status})`, response.status);
+    // A failed text request still answers with the usual JSON error body.
+    const detail = expect === 'text' ? parseOrEmpty(payload.text) : payload;
+    throw new ApiError(detail.error || `Request failed (${response.status})`, response.status);
   }
 
-  return payload;
+  return expect === 'text' ? payload.text : payload;
 }
 
 export const api = {
@@ -103,6 +116,11 @@ export const api = {
 
   listUsers: () => request('/auth/users'),
 
+  logs: () => request('/logs'),
+
+  logTail: (name, lines = 300) =>
+    request(`/logs/${encodeURIComponent(name)}?lines=${lines}`, { expect: 'text' }),
+
   resetPassword: (targetUsername, newPassword) =>
     request('/auth/admin/reset-password', { method: 'POST', body: { targetUsername, newPassword } }),
 
@@ -119,7 +137,11 @@ export const api = {
   setPriority: (id, priority) =>
     request(`/jobs/${id}/priority`, { method: 'POST', body: { priority } }),
 
+  rerunJob: id => request(`/jobs/${id}/rerun`, { method: 'POST' }),
+
   allUsage: () => request('/jobs/usage/all'),
+
+  engines: () => request('/engines'),
 
   // The frame URLs are built here rather than server-side: only the browser
   // knows which API origin it is talking to, and a token belongs in the URL
@@ -139,7 +161,7 @@ export const api = {
   // rather than being served from cache, and an unchanged count still 304s.
   previewUrl: (id, delivered) => `${authorizedUrl(`/download/${id}/preview`)}&v=${delivered}`,
 
-  upload(file, { frameStart, frameEnd, renderEngine, priority }, onProgress) {
+  upload(file, { frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples }, onProgress) {
     // XHR rather than fetch: upload progress events have no fetch equivalent.
     return new Promise((resolve, reject) => {
       const form = new FormData();
@@ -147,6 +169,8 @@ export const api = {
       form.append('frameStart', frameStart);
       form.append('frameEnd', frameEnd);
       form.append('renderEngine', renderEngine);
+      form.append('resolutionPercent', resolutionPercent);
+      if (samples) form.append('samples', samples);
       form.append('priority', priority ? 1 : 0);
 
       const xhr = new XMLHttpRequest();

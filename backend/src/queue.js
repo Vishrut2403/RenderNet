@@ -1,12 +1,12 @@
 import fs from 'fs';
 import path from 'path';
 import RenderWorker from './render-worker.js';
-import { ensureDir } from './utils/file-utils.js';
-import { dataPath, SCRATCH_DIR, USER_QUOTA_BYTES } from './paths.js';
+import { ensureDir, freeBytes } from './utils/file-utils.js';
+import { dataPath, DATA_DIR, SCRATCH_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from './paths.js';
 import {
   saveJob, loadJobs, deleteJob,
   createFrames, getFrames, getPendingFrames, countFramesByStatus,
-  markFrameDone, markFramePending, markFrameAttemptFailed,
+  markFrameDone, markFramePending, markFrameAttemptFailed, resetFailedFrames,
   getFailedFrames, getAllFailedFrames
 } from './db.js';
 
@@ -16,11 +16,18 @@ import {
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
 
+// Rechecked rather than failed outright: somebody deleting a finished job is
+// all it takes to free the disk, and the queue should pick up by itself when
+// they do rather than needing every held job resubmitted.
+const DISK_RECHECK_MS = 60 * 1000;
+
 const jobs = new Map();
 const renderQueue = [];
 let isRendering = false;
 let currentJobId = null;
 let currentWorker = null;
+let heldForDisk = null;
+let diskTimer = null;
 
 // Separate from 'renders' so a worker never streams a frame out of the same
 // file the upload route is writing into.
@@ -141,7 +148,9 @@ export function addToQueue(jobData) {
     interruptions: 0,
     framesAtResume: 0,
     priority: Number(jobData.priority) || 0,
-    pausedBy: null
+    pausedBy: null,
+    resolutionPercent: jobData.resolutionPercent ?? 100,
+    samples: jobData.samples ?? null
   };
 
   jobs.set(jobId, job);
@@ -192,6 +201,56 @@ function preemptFor(job) {
   return true;
 }
 
+// Retries the frames that did not make it, keeping the ones that did. A job
+// whose scene was at fault is usually fixed by re-uploading, but a frame lost
+// to a full GPU or a missing texture is worth asking for again on its own.
+export function rerunJob(jobId) {
+  const job = jobs.get(jobId);
+  if (!job) return { success: false, error: 'Job not found' };
+
+  if (job.status !== 'failed' && job.status !== 'completed') {
+    return { success: false, error: `Cannot rerun a ${job.status} job` };
+  }
+
+  if (!job.filePath || !fs.existsSync(dataPath(job.filePath))) {
+    return { success: false, error: 'The uploaded .blend is no longer on the workstation' };
+  }
+
+  // reconcileFrames first: a frame counted as done whose file has since been
+  // swept has to go back in the queue with the ones that failed.
+  const delivered = reconcileFrames(job);
+
+  resetFailedFrames(jobId);
+  const retried = countFramesByStatus(jobId).pending;
+
+  if (retried === 0) {
+    return { success: false, error: 'Every frame rendered; there is nothing to rerun' };
+  }
+
+  ensureDir(dataPath(job.outputFolder));
+
+  Object.assign(job, {
+    status: 'pending',
+    startedAt: null,
+    completedAt: null,
+    currentFrame: null,
+    error: null,
+    interruptions: 0,
+    framesAtResume: delivered,
+    pausedBy: null
+  });
+
+  syncFrameCounts(job);
+  saveJob(job);
+
+  renderQueue.push(jobId);
+  console.log(`Job ${jobId} queued again for ${retried} frame(s)`);
+
+  processQueue();
+
+  return { success: true, jobId, frames: retried };
+}
+
 export function setJobPriority(jobId, priority) {
   const job = jobs.get(jobId);
   if (!job) return { success: false, error: 'Job not found' };
@@ -227,6 +286,22 @@ function processQueue() {
     return;
   }
 
+  const free = freeBytes(DATA_DIR);
+
+  if (free !== null && free < MIN_FREE_BYTES) {
+    heldForDisk = `Only ${(free / 1024 ** 3).toFixed(1)} GB of disk left; `
+      + 'renders are held until finished jobs are deleted';
+
+    console.warn(`Queue held: ${heldForDisk}`);
+
+    clearTimeout(diskTimer);
+    diskTimer = setTimeout(processQueue, DISK_RECHECK_MS);
+    diskTimer.unref?.();
+    return;
+  }
+
+  heldForDisk = null;
+
   sortQueue();
 
   const jobId = renderQueue.shift();
@@ -258,7 +333,9 @@ function processQueue() {
       // Only what is left: a resumed job picks up where the last run stopped
       // rather than rendering the whole range again.
       frames: getPendingFrames(jobId),
-      renderEngine: job.renderEngine
+      renderEngine: job.renderEngine,
+      resolutionPercent: job.resolutionPercent,
+      samples: job.samples
     })
     .then(() => finishRender(jobId))
     .catch((error) => {
@@ -366,6 +443,7 @@ export function getAllJobs() {
 export function getQueueStatus() {
   return {
     isRendering,
+    heldForDisk,
     currentJobId,
     queueLength: renderQueue.length,
     totalJobs: jobs.size,

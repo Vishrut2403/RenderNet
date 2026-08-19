@@ -44,6 +44,9 @@ BLENDER_PATH=C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 CYCLES_DEVICE=CUDA
 ```
 
+`backend/.env.example` is the same file with every option and its default in
+it; copy that rather than typing this out.
+
 Generate the secret with:
 
 ```bash
@@ -119,12 +122,15 @@ interactive session, where GPU rendering behaves as it does when Blender is
 launched by hand. The working directory does not matter: data paths and `.env` are
 resolved from the source tree, not from wherever the task starts.
 
+The database is snapshotted to `backups/` on every start, keeping the last
+seven.
+
 Nothing reads that window, so everything printed also goes to a dated file in
 `logs/` under the data directory, kept for a month, along with a line per
 request recording who did what. The job list the dashboard polls is left out, or
-it would be the whole file. An admin can read the logs without visiting the
-machine: `GET /api/logs` lists them, `GET /api/logs/<name>` returns the last 200
-lines, or `?lines=1000` for more.
+it would be the whole file. An admin can read them from the
+Logs entry in the account menu, or over the API: `GET /api/logs` lists them,
+`GET /api/logs/<name>` returns the last 200 lines, `?lines=1000` for more.
 
 ---
 
@@ -164,6 +170,16 @@ Things that would otherwise surprise you.
   say what happened — visible rather than restricted.
 - **A job card shows the last frame rendered while it is still rendering**, so a
   scene that came out wrong is caught at frame 30 rather than at frame 500.
+- **Rerunning a job retries only the frames that failed**, keeping the ones that
+  worked. The uploaded `.blend` is reused, so nothing is uploaded twice.
+- **Resolution and Cycles samples can be overridden at submit time**, for a
+  cheap test pass without editing the scene. Blender has no flag for either, so
+  they are applied to the loaded scene before the frame is rendered.
+- **The disk itself is guarded, not just each person's share.** Below
+  `MIN_FREE_BYTES` uploads are refused and queued work is held rather than
+  failed, because deleting one finished job is all it takes to free it.
+- **The browser can notify you when a job lands**, since people submit in the
+  evening and rarely watch the tab. It asks the first time you queue something.
 - **Cancelling deletes that job's files.** Uploads are capped at 500MB and 2000
   frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`.
 
@@ -187,6 +203,8 @@ tree, so it is found however the server is started.
 | `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |
 | `USER_QUOTA_BYTES` | `5368709120` (5 GB) | Disk each user may hold in uploads and rendered frames |
 | `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |
+| `MIN_FREE_BYTES` | `5368709120` (5 GB) | Disk kept spare; below it uploads are refused and the queue holds |
+| `DB_BACKUPS_KEPT` | `7` | Database snapshots kept in `backups/`, one taken per start |
 | `LOG_RETENTION_DAYS` | `30` | How long dated logs in `logs/` are kept |
 | `MAX_LOG_BYTES` | `8388608` (8 MB) | Size at which the day's log rotates to a new file |
 | `DB_PATH` | `rendernet.db` inside `DATA_DIR` | SQLite database file |
@@ -198,13 +216,14 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 212 checks
+cd backend  && npm test        # 244 checks
+npm run lint                   # from the root, covers both packages
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 196 of the 212 still meaningful.
+Blender is absent, leaving 227 of the 244 still meaningful.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
 only place it is exercised on the platform the workstation actually runs. Windows

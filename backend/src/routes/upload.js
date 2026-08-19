@@ -1,11 +1,11 @@
 import express from 'express';
 import multer from 'multer';
 import path from 'path';
-import { deleteFile } from '../utils/file-utils.js';
+import { deleteFile, freeBytes } from '../utils/file-utils.js';
 import { addToQueue } from '../queue.js';
-import { UPLOADS_DIR, USER_QUOTA_BYTES } from '../paths.js';
+import { DATA_DIR, UPLOADS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
 import { usageFor } from '../queue.js';
-import { ENGINES } from '../engines.js';
+import { ENGINE_IDS } from '../engines.js';
 
 const router = express.Router();
 
@@ -32,13 +32,27 @@ const upload = multer({
 });
 
 const MAX_FRAMES = 2000;
+const MAX_SAMPLES = 16384;
+
+// Absent means "whatever the scene says", which is not the same as a value.
+function optionalInteger(raw, { min, max }) {
+  if (raw === undefined || raw === '') return { ok: true, value: null };
+
+  const value = Number(raw);
+
+  if (!Number.isInteger(value) || value < min || value > max) {
+    return { ok: false };
+  }
+
+  return { ok: true, value };
+}
 
 function gigabytes(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-// Checked before multer so somebody already at their limit is told so instead
-// of waiting out a 500MB upload that will be rejected on arrival.
+// Both checked before multer so somebody who cannot be served is told now
+// rather than after waiting out a 500MB upload.
 function withinQuota(req, res, next) {
   const { bytes } = usageFor(req.user.username, { fresh: true });
 
@@ -52,7 +66,21 @@ function withinQuota(req, res, next) {
   next();
 }
 
-router.post('/', withinQuota, upload.single('blend'), (req, res) => {
+function roomOnDisk(req, res, next) {
+  const free = freeBytes(DATA_DIR);
+
+  if (free !== null && free < MIN_FREE_BYTES) {
+    return res.status(507).json({
+      error: `The workstation has only ${gigabytes(free)} of disk left, below the `
+        + `${gigabytes(MIN_FREE_BYTES)} it keeps spare. Nothing can be uploaded or `
+        + 'rendered until somebody deletes finished jobs.'
+    });
+  }
+
+  next();
+}
+
+router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -75,7 +103,7 @@ router.post('/', withinQuota, upload.single('blend'), (req, res) => {
 
     const renderEngine = req.body.renderEngine || 'CYCLES';
 
-    if (!ENGINES.includes(renderEngine)) {
+    if (!ENGINE_IDS.includes(renderEngine)) {
       return res.status(400).json({ error: `Unsupported render engine: ${renderEngine}` });
     }
 
@@ -89,6 +117,20 @@ router.post('/', withinQuota, upload.single('blend'), (req, res) => {
       });
     }
 
+    const resolution = optionalInteger(req.body.resolutionPercent, { min: 1, max: 100 });
+
+    if (!resolution.ok) {
+      deleteFile(req.file.path);
+      return res.status(400).json({ error: 'resolutionPercent must be a whole number from 1 to 100' });
+    }
+
+    const samples = optionalInteger(req.body.samples, { min: 1, max: MAX_SAMPLES });
+
+    if (!samples.ok) {
+      deleteFile(req.file.path);
+      return res.status(400).json({ error: `samples must be a whole number from 1 to ${MAX_SAMPLES}` });
+    }
+
     const jobId = addToQueue({
       filePath: path.join('uploads', req.file.filename),
       frameStart: start,
@@ -96,7 +138,9 @@ router.post('/', withinQuota, upload.single('blend'), (req, res) => {
       renderEngine,
       owner: req.user.username,
       originalFilename: path.basename(req.file.originalname),
-      priority: Number(req.body.priority) === 1 ? 1 : 0
+      priority: Number(req.body.priority) === 1 ? 1 : 0,
+      resolutionPercent: resolution.value ?? 100,
+      samples: samples.value
     });
 
     res.json({
@@ -112,8 +156,10 @@ router.post('/', withinQuota, upload.single('blend'), (req, res) => {
   }
 });
 
-// Multer rejects (wrong type, too large) surface here, not in the handler above.
-router.use((error, req, res, next) => {
+// Multer rejects (wrong type, too large) surface here, not in the handler
+// above. The fourth parameter is unused but required: Express decides this is
+// error-handling middleware by counting them.
+router.use((error, req, res, _next) => {
   deleteFile(req.file?.path);
 
   if (error.code === 'LIMIT_FILE_SIZE') {

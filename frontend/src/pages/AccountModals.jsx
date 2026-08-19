@@ -129,3 +129,69 @@ export function AdminModal({ onClose, notify }) {
     </Modal>
   );
 }
+
+
+// The workstation is started by Task Scheduler, where its output goes nowhere
+// anyone can read. This is the only way to see it without standing at it.
+export function LogsModal({ onClose }) {
+  const [files, setFiles] = useState(null);
+  const [selected, setSelected] = useState('');
+  const [tail, setTail] = useState('');
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [reloads, setReloads] = useState(0);
+
+  useEffect(() => {
+    api.logs()
+      .then(result => {
+        setFiles(result.files);
+        setSelected(result.files[0]?.name ?? '');
+      })
+      .catch(err => setError(err.message));
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+
+    let current = true;
+    setBusy(true);
+
+    api.logTail(selected)
+      .then(text => current && setTail(text))
+      .catch(err => current && setError(err.message))
+      .finally(() => current && setBusy(false));
+
+    return () => { current = false; };
+  }, [selected, reloads]);
+
+  return (
+    <Modal title="Logs" onClose={onClose}>
+      <Alert>{error}</Alert>
+
+      {files === null ? (
+        <p className="idle">Loading…</p>
+      ) : files.length === 0 ? (
+        <p className="idle">Nothing logged yet.</p>
+      ) : (
+        <>
+          <label className="field">
+            <span className="field-label">File</span>
+            <select value={selected} onChange={e => setSelected(e.target.value)}>
+              {files.map(file => (
+                <option key={file.name} value={file.name}>
+                  {file.name} — {formatBytes(file.bytes)}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <pre className="log-tail">{busy ? 'Loading…' : tail}</pre>
+
+          <Button busy={busy} onClick={() => setReloads(n => n + 1)}>
+            Reload
+          </Button>
+        </>
+      )}
+    </Modal>
+  );
+}

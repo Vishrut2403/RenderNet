@@ -15,6 +15,8 @@ import { resumeInterruptedJobs } from './queue.js';
 import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
 import logsRouter from './routes/logs.js';
+import { ENGINES } from './engines.js';
+import { backupDatabase } from './db.js';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -68,6 +70,12 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// Served rather than duplicated in the frontend: the upload form must offer
+// exactly what the upload route will accept.
+app.get('/api/engines', requireAuth, (req, res) => {
+  res.json({ engines: ENGINES });
+});
+
 app.use('/api/logs', requireAuth, requireAdmin, logsRouter);
 
 app.post('/api/cleanup', requireAuth, requireAdmin, (req, res) => {
@@ -88,6 +96,9 @@ if (fs.existsSync(FRONTEND_DIST)) {
 } else {
   console.warn('No frontend build found - run "npm run build" in frontend/ to serve the UI.');
 }
+
+const backup = backupDatabase();
+if (backup) console.log(`Database backed up to ${backup}`);
 
 cleanupOldFiles();
 resumeInterruptedJobs();

@@ -17,6 +17,25 @@ const FAILFAST_FRAMES = 3;
 // misbehaving one from looping the worker forever.
 const ATTEMPT_CEILING = 10;
 
+// Applied to the scene after it loads and before the render is triggered.
+// Returns nothing when there is nothing to change, so the ordinary case keeps
+// the command line it has always had.
+function sceneOverrides(renderEngine, { resolutionPercent, samples } = {}) {
+  const assignments = [];
+
+  if (Number.isInteger(resolutionPercent) && resolutionPercent !== 100) {
+    assignments.push(`s.render.resolution_percentage=${resolutionPercent}`);
+  }
+
+  if (renderEngine === 'CYCLES' && Number.isInteger(samples)) {
+    assignments.push(`s.cycles.samples=${samples}`);
+  }
+
+  if (assignments.length === 0) return null;
+
+  return `import bpy; s=bpy.context.scene; ${assignments.join('; ')}`;
+}
+
 // Read lazily: the server may generate the secret at boot, after this import.
 function workerHeaders(extra = {}) {
   return { 'x-worker-secret': process.env.WORKER_SECRET || '', ...extra };
@@ -49,6 +68,7 @@ class RenderWorker {
 
   async renderJob(job) {
     const { id, blendPath, outputDir, frames, renderEngine } = job;
+    const overrides = { resolutionPercent: job.resolutionPercent, samples: job.samples };
 
     console.log(`\n🎬 Worker ${this.workerId}: Starting job ${id}`);
     console.log(`📁 Blend file: ${blendPath}`);
@@ -70,7 +90,7 @@ class RenderWorker {
 
       console.log(`\n🎬 Rendering frame ${frame} (${index + 1} of ${frames.length})`);
 
-      const outcome = await this.renderFrame(id, frame, blendPath, outputDir, renderEngine);
+      const outcome = await this.renderFrame(id, frame, blendPath, outputDir, renderEngine, overrides);
 
       if (outcome === 'cancelled') break;
 
@@ -121,12 +141,12 @@ class RenderWorker {
 
   // Retries are driven by the server's answer rather than a local count, so
   // there is one place that decides when a frame has had enough attempts.
-  async renderFrame(jobId, frame, blendPath, outputDir, renderEngine) {
+  async renderFrame(jobId, frame, blendPath, outputDir, renderEngine, overrides) {
     for (let attempt = 1; attempt <= ATTEMPT_CEILING; attempt++) {
       if (this.cancelled) return 'cancelled';
 
       try {
-        const framePath = await this.renderSingleFrame(blendPath, frame, outputDir, renderEngine);
+        const framePath = await this.renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides);
         console.log(`✅ Frame ${frame} rendered: ${framePath}`);
 
         if (await this.uploadFrame(jobId, frame, framePath)) {
@@ -156,7 +176,7 @@ class RenderWorker {
     return 'failed';
   }
 
-  renderSingleFrame(blendPath, frame, outputDir, renderEngine) {
+  renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides = {}) {
     return new Promise((resolve, reject) => {
       // '####' pads the frame number to four digits; a single '#' does not pad
       // at all, so the written and expected names never agree.
@@ -171,9 +191,18 @@ class RenderWorker {
         '-E', renderEngine,
         // Forced so the extension is predictable whatever the .blend specifies.
         '-F', 'PNG',
-        '-o', outputPattern,
-        '-f', frame.toString()
+        '-o', outputPattern
       ];
+
+      // Blender has no flag for resolution or sample count, so they are set on
+      // the loaded scene instead. One line with no newlines: on Windows this
+      // whole command may travel through cmd.exe, which cannot carry them.
+      const expression = sceneOverrides(renderEngine, overrides);
+      if (expression) args.push('--python-expr', expression);
+
+      // Last, because Blender renders when it reaches this and ignores what
+      // follows.
+      args.push('-f', frame.toString());
 
       if (renderEngine === 'CYCLES') {
         // Add-on options are only recognised after '--'; earlier, Blender

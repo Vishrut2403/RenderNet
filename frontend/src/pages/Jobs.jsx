@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { usePolling, jobsInterval } from '../hooks/usePolling';
+import { useJobFinished } from '../hooks/useJobFinished';
 import { JobCard } from '../components/JobCard';
 import { Alert, EmptyState } from '../components/ui';
 
@@ -18,6 +19,8 @@ export function Jobs({ notify }) {
     () => [...(data?.jobs || [])].sort((a, b) => b.id - a.id),
     [data]
   );
+
+  useJobFinished(data?.jobs);
 
   const counts = useMemo(() => {
     const tally = { all: jobs.length };

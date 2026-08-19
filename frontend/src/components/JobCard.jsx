@@ -86,6 +86,18 @@ export function JobCard({ job, onChanged, onError }) {
     }
   }
 
+  async function rerun() {
+    setBusy(true);
+    try {
+      await api.rerunJob(job.id);
+      onChanged?.();
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleFrames() {
     if (frames) return setFrames(null);
 
@@ -106,6 +118,9 @@ export function JobCard({ job, onChanged, onError }) {
   const label = active
     ? `Rendering frame ${inFlight} of ${job.frameEnd}`
     : `${job.completedFrames} of ${job.totalFrames} frames`;
+
+  // Only the frames that failed are retried, so there has to be one.
+  const retryable = (done || job.status === 'failed') && job.frameErrors?.length > 0;
 
   // Hidden once the full grid is open, which shows the same frames and more.
   const showPreview = job.completedFrames > 0 && !frames
@@ -209,6 +224,12 @@ export function JobCard({ job, onChanged, onError }) {
             </Button>
             <Button variant="danger" busy={busy} onClick={cancel}>Cancel</Button>
           </>
+        )}
+
+        {retryable && (
+          <Button busy={busy} onClick={rerun}>
+            Rerun {job.frameErrors.length} failed frame{job.frameErrors.length === 1 ? '' : 's'}
+          </Button>
         )}
 
         {(done || job.status === 'failed' || job.status === 'cancelled') && (

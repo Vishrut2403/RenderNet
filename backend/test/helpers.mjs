@@ -131,7 +131,8 @@ const PNG_1X1 = Buffer.from(
 // 'stubborn' ignores a polite stop and stays alive so cancelling it has to force
 // (wait for stubbornIsUnkillable before cancelling; see below),
 // 'stalls' delivers its first frame and then never finishes another,
-// 'broken' exits non-zero with its complaint on stdout.
+// 'broken' exits non-zero with its complaint on stdout, 'flaky' does so for
+// one frame until a marker file says otherwise.
 // The behaviour lives in a Node script, reached through a wrapper the platform
 // can actually execute: a shell script on POSIX, a .cmd on Windows. The .cmd
 // also puts the worker's own cmd.exe launch and process-tree kill under test,
@@ -153,6 +154,10 @@ const scene = path.basename(valueOf('-b') || '');
 const frame = Number(valueOf('-f'));
 const target = valueOf('-o').replace('####', String(frame).padStart(4, '0')) + '.png';
 
+// Recorded so a test can assert on the command line the worker built, which is
+// the only place render settings become visible.
+fs.writeFileSync(path.join(path.dirname(valueOf('-b')), 'last-args.txt'), args.join(' '));
+
 if (scene.includes('stubborn')) {
   process.on('SIGTERM', () => {});
   setInterval(() => {}, 1000);
@@ -166,6 +171,14 @@ if (scene.includes('noisy')) {
   // Written synchronously, the way Blender writes its progress log.
   const line = 'x'.repeat(99) + '\\n';
   for (let i = 0; i < 4096; i++) fs.writeSync(1, line);
+}
+
+// 'flaky' fails its second frame until a 'fixed' marker appears beside the
+// scene, so a job can fail for a reason somebody then puts right.
+if (scene.includes('flaky') && frame === 2
+    && !fs.existsSync(path.join(path.dirname(valueOf('-b')), 'fixed'))) {
+  fs.writeSync(1, 'Error: frame 2 cannot be rendered yet\\n');
+  process.exit(1);
 }
 
 if (scene.includes('broken')) {
@@ -361,13 +374,17 @@ export async function status(url, options) {
   return res.status;
 }
 
-export async function submitJob(base, token, blendPath, { frameStart, frameEnd, engine = 'CYCLES', priority = 0 }) {
+export async function submitJob(base, token, blendPath, {
+  frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples
+}) {
   const form = new FormData();
   form.set('blend', new Blob([fs.readFileSync(blendPath)]), path.basename(blendPath));
   form.set('frameStart', String(frameStart));
   form.set('frameEnd', String(frameEnd));
   form.set('renderEngine', engine);
   form.set('priority', String(priority));
+  if (resolutionPercent !== undefined) form.set('resolutionPercent', String(resolutionPercent));
+  if (samples !== undefined) form.set('samples', String(samples));
 
   const res = await fetch(`${base}/upload`, { method: 'POST', headers: auth(token), body: form });
   return { status: res.status, body: await res.json() };

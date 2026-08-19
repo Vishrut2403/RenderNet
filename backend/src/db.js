@@ -1,5 +1,7 @@
+import fs from 'fs';
+import path from 'path';
 import Database from 'better-sqlite3';
-import { DB_FILE } from './paths.js';
+import { DB_FILE, BACKUPS_DIR, DB_BACKUPS_KEPT } from './paths.js';
 
 const db = new Database(DB_FILE);
 db.pragma('journal_mode = WAL');
@@ -84,11 +86,17 @@ addColumnIfMissing('users', 'mustChangePassword', 'INTEGER DEFAULT 0');
 addColumnIfMissing('jobs', 'priority', 'INTEGER DEFAULT 0');
 addColumnIfMissing('jobs', 'pausedBy', 'TEXT');
 
+// Overrides applied to the scene at render time, so a cheap test pass does not
+// mean editing and re-uploading the .blend.
+addColumnIfMissing('jobs', 'resolutionPercent', 'INTEGER DEFAULT 100');
+addColumnIfMissing('jobs', 'samples', 'INTEGER');
+
 const COLUMNS = [
   'id', 'status', 'filePath', 'outputPath', 'outputFolder', 'frameStart', 'frameEnd',
   'renderEngine', 'originalFilename', 'owner', 'createdAt', 'startedAt', 'completedAt',
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
-  'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy'
+  'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
+  'resolutionPercent', 'samples'
 ];
 
 const upsertJob = db.prepare(`
@@ -148,6 +156,15 @@ export function getPendingFrames(jobId) {
     .prepare("SELECT frame FROM frames WHERE jobId = ? AND status = 'pending' ORDER BY frame")
     .all(jobId)
     .map(row => row.frame);
+}
+
+// Attempts go back to zero as well: a frame that exhausted its three tries is
+// being asked to try again, not being given a fourth.
+export function resetFailedFrames(jobId) {
+  return db.prepare(
+    `UPDATE frames SET status = 'pending', error = NULL, attempts = 0, updatedAt = ?
+     WHERE jobId = ? AND status = 'failed'`
+  ).run(new Date().toISOString(), jobId).changes;
 }
 
 export function countFramesByStatus(jobId) {
@@ -293,3 +310,45 @@ export function countUsers() {
 }
 
 export default db;
+
+// VACUUM INTO rather than copying the file: it takes a consistent snapshot of a
+// live database, where copying one in WAL mode can catch it mid-write and
+// silently leave the newest jobs out.
+export function backupDatabase(now = new Date()) {
+  if (DB_BACKUPS_KEPT < 1) return null;
+
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+
+  // Milliseconds kept: two starts in the same second are ordinary when a
+  // service restarts, and the name has to stay unique and still sort by time.
+  const stamp = now.toISOString().replace(/[:.]/g, '-');
+  const target = path.join(BACKUPS_DIR, `rendernet-${stamp}.db`);
+
+  try {
+    if (fs.existsSync(target)) fs.rmSync(target);
+
+    db.prepare('VACUUM INTO ?').run(target);
+    pruneBackups();
+
+    return target;
+  } catch (error) {
+    // A backup that fails must not stop the farm starting.
+    console.error('Database backup failed:', error.message);
+    return null;
+  }
+}
+
+function pruneBackups() {
+  const kept = fs.readdirSync(BACKUPS_DIR)
+    .filter(name => /^rendernet-.+\.db$/.test(name))
+    .sort()
+    .reverse();
+
+  for (const name of kept.slice(DB_BACKUPS_KEPT)) {
+    try {
+      fs.rmSync(path.join(BACKUPS_DIR, name));
+    } catch {
+      // Next boot gets it.
+    }
+  }
+}

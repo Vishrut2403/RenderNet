@@ -35,6 +35,9 @@ Thumbs.db
 *.log
 logs/
 
+# Database snapshots taken at each start
+backups/
+
 # Database
 *.db
 *.db-wal

@@ -33,6 +33,16 @@ export const DB_FILE = process.env.DB_PATH
 export const RETENTION_DAYS = Number(process.env.RETENTION_DAYS) || 14;
 export const USER_QUOTA_BYTES = Number(process.env.USER_QUOTA_BYTES) || 5 * 1024 * 1024 * 1024;
 
+// Quotas divide the disk between people; this is what stops the disk itself
+// running out. A full disk fails every frame of every job rather than one.
+export const MIN_FREE_BYTES = Number(process.env.MIN_FREE_BYTES) || 5 * 1024 * 1024 * 1024;
+
+export const BACKUPS_DIR = dataPath('backups');
+
+// The database is the only record of who owns which frames, and it is one file
+// on a machine that gets switched off by hand every night.
+export const DB_BACKUPS_KEPT = Number(process.env.DB_BACKUPS_KEPT) || 7;
+
 export const LOGS_DIR = dataPath('logs');
 
 // Logs are small next to renders and are the only account of an evening nobody

@@ -1,7 +1,7 @@
 import express from 'express';
 import {
   cancelJob, getJob, getAllJobs, getQueueStatus, getQueuePosition,
-  deleteJobAndFiles, setJobPriority, usageFor, usageByOwner
+  deleteJobAndFiles, setJobPriority, rerunJob, usageFor, usageByOwner
 } from '../queue.js';
 import { requireAdmin } from '../auth.js';
 
@@ -80,6 +80,27 @@ router.delete('/:id', (req, res) => {
   const result = deleteJobAndFiles(jobId);
 
   res.status(result.success ? 200 : 400).json(result);
+});
+
+router.post('/:id/rerun', (req, res) => {
+  const jobId = Number(req.params.id);
+  const job = getJob(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (!canAccess(job, req.user)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const result = rerunJob(jobId);
+
+  if (!result.success) {
+    return res.status(400).json({ error: result.error });
+  }
+
+  res.json(result);
 });
 
 router.post('/:id/priority', (req, res) => {

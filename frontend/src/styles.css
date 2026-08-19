@@ -383,6 +383,19 @@ button, input, select { font: inherit; color: inherit; }
 .frame-no { color: var(--bad); }
 .frame-errors code { color: var(--text-3); word-break: break-word; font-size: 12px; }
 
+.log-tail {
+  margin: 14px 0;
+  padding: 12px;
+  max-height: 340px;
+  overflow: auto;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: 3px;
+  font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: var(--text-2);
+  white-space: pre;
+}
+
 .preview {
   margin: 14px 0 0;
   display: flex;

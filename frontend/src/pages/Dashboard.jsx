@@ -1,5 +1,6 @@
 import { api } from '../api/client';
 import { usePolling, jobsInterval } from '../hooks/usePolling';
+import { useJobFinished } from '../hooks/useJobFinished';
 import { JobCard } from '../components/JobCard';
 import { EmptyState, ProgressBar, StatusBadge, Metrics, formatDuration, formatBytes, useNow } from '../components/ui';
 
@@ -18,6 +19,8 @@ export function Dashboard({ notify }) {
 
   const jobs = jobsPoll.data?.jobs || [];
   const queue = queuePoll.data;
+
+  useJobFinished(jobsPoll.data?.jobs);
   const usage = jobsPoll.data?.usage;
 
   const tally = jobs.reduce((acc, job) => {
@@ -73,6 +76,8 @@ export function Dashboard({ notify }) {
 
       <section className="panel">
         <h2 className="panel-title">Worker</h2>
+
+        {queue?.heldForDisk && <p className="job-error">{queue.heldForDisk}</p>}
 
         {rendering ? (
           <>

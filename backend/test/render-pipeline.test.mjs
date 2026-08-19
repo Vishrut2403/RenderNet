@@ -2,6 +2,7 @@
 // demand: a scene that floods stdout, one that takes long enough to cancel
 // mid-render, and one that refuses to stop when asked. Runs without Blender.
 import fs from 'fs';
+import Database from 'better-sqlite3';
 import path from 'path';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
@@ -631,6 +632,280 @@ export default async function run() {
   } finally {
     await stopServer(quotaServer);
     removeSandbox(quotaBox);
+  }
+
+  // Blender has no flag for either, so they are only visible in the command
+  // line the worker builds.
+  const settingsBox = makeSandbox('settings');
+  let settingsServer;
+
+  try {
+    console.log('\n  Render settings reach Blender');
+
+    settingsServer = await startServer({
+      port: PORT + 8,
+      cwd: settingsBox,
+      env: { BLENDER_PATH: createFakeBlender(settingsBox) }
+    });
+
+    const settingsToken = await adminSession(settingsServer.base);
+    const lastArgs = () => fs.readFileSync(path.join(settingsBox, 'uploads', 'last-args.txt'), 'utf8');
+
+    const plain = await submitJob(
+      settingsServer.base, settingsToken, createFakeScene(settingsBox, 'plain.blend'),
+      { frameStart: 1, frameEnd: 1 }
+    );
+    await waitForJob(settingsServer.base, settingsToken, plain.body.jobId, 30000);
+
+    results.check('a job with no overrides keeps the plain command line',
+      !lastArgs().includes('--python-expr'), lastArgs());
+
+    const tuned = await submitJob(
+      settingsServer.base, settingsToken, createFakeScene(settingsBox, 'tuned.blend'),
+      { frameStart: 1, frameEnd: 1, resolutionPercent: 25, samples: 8 }
+    );
+    const tunedJob = await waitForJob(settingsServer.base, settingsToken, tuned.body.jobId, 30000);
+
+    results.check('the render finishes with the overrides applied',
+      tunedJob.status === 'completed', tunedJob.status);
+    results.check('resolution is set on the scene',
+      lastArgs().includes('s.render.resolution_percentage=25'), lastArgs());
+    results.check('samples are set on the scene',
+      lastArgs().includes('s.cycles.samples=8'), lastArgs());
+    results.check('and the expression carries no newline, which cmd.exe could not',
+      !lastArgs().split('--python-expr')[1]?.startsWith('\n'), lastArgs());
+    results.check('the settings are remembered on the job',
+      tunedJob.resolutionPercent === 25 && tunedJob.samples === 8,
+      `${tunedJob.resolutionPercent}% / ${tunedJob.samples}`);
+
+    // EEVEE has no sample count of the kind Cycles means, so asking for one
+    // must not put an attribute on the scene that does not exist.
+    const eevee = await submitJob(
+      settingsServer.base, settingsToken, createFakeScene(settingsBox, 'eevee.blend'),
+      { frameStart: 1, frameEnd: 1, engine: 'BLENDER_EEVEE', resolutionPercent: 50, samples: 8 }
+    );
+    await waitForJob(settingsServer.base, settingsToken, eevee.body.jobId, 30000);
+
+    results.check('samples are left alone for engines that have no cycles settings',
+      lastArgs().includes('resolution_percentage=50') && !lastArgs().includes('cycles.samples'),
+      lastArgs());
+
+  } finally {
+    await stopServer(settingsServer);
+    removeSandbox(settingsBox);
+  }
+
+  // Retrying a frame that failed for a reason since put right, without paying
+  // again for the frames that were fine.
+  const rerunBox = makeSandbox('rerun');
+  let rerunServer;
+
+  try {
+    console.log('\n  Rerunning only the frames that failed');
+
+    rerunServer = await startServer({
+      port: PORT + 7,
+      cwd: rerunBox,
+      env: { BLENDER_PATH: createFakeBlender(rerunBox) }
+    });
+
+    const rerunToken = await adminSession(rerunServer.base);
+    const flaky = await submitJob(
+      rerunServer.base, rerunToken, createFakeScene(rerunBox, 'flaky.blend'),
+      { frameStart: 1, frameEnd: 2 }
+    );
+    const flakyId = flaky.body.jobId;
+
+    const settled = await waitForJob(rerunServer.base, rerunToken, flakyId, 60000);
+    results.check('the job stops with one frame delivered and one failed',
+      settled.completedFrames === 1 && settled.failedFrames === 1,
+      `${settled.completedFrames} done, ${settled.failedFrames} failed`);
+
+    const folder = path.join(rerunBox, settled.outputFolder);
+    const firstStamp = fs.statSync(path.join(folder, 'frame_0001.png')).mtimeMs;
+
+    const tooSoon = await fetch(`${rerunServer.base}/jobs/${flakyId}/rerun`, {
+      method: 'POST', headers: auth(rerunToken)
+    });
+    const tooSoonBody = await tooSoon.json();
+    results.check('rerunning before the cause is fixed is allowed but fails again',
+      tooSoon.status === 200 && tooSoonBody.frames === 1, JSON.stringify(tooSoonBody));
+
+    await waitForJob(rerunServer.base, rerunToken, flakyId, 60000);
+
+    // What the user would have gone away and put right.
+    fs.writeFileSync(path.join(rerunBox, 'uploads', 'fixed'), '');
+
+    const again = await fetch(`${rerunServer.base}/jobs/${flakyId}/rerun`, {
+      method: 'POST', headers: auth(rerunToken)
+    });
+    results.check('the fixed job can be rerun', again.status === 200, `got ${again.status}`);
+
+    const repaired = await waitForJob(rerunServer.base, rerunToken, flakyId, 60000);
+    results.check('and finishes with every frame',
+      repaired.completedFrames === 2 && repaired.failedFrames === 0,
+      `${repaired.completedFrames} done, ${repaired.failedFrames} failed`);
+    results.check('the frame that already worked was never re-rendered',
+      fs.statSync(path.join(folder, 'frame_0001.png')).mtimeMs === firstStamp);
+    results.check('and its earlier error is cleared',
+      (repaired.frameErrors ?? []).length === 0, JSON.stringify(repaired.frameErrors));
+
+    const nothingLeft = await fetch(`${rerunServer.base}/jobs/${flakyId}/rerun`, {
+      method: 'POST', headers: auth(rerunToken)
+    });
+    results.check('a job with nothing left to retry is refused',
+      nothingLeft.status === 400, `got ${nothingLeft.status}`);
+
+    await signUp(rerunServer.base, 'notmine', 'notminepass123');
+    const strangerToken = await login(rerunServer.base, 'notmine', 'notminepass123');
+    results.check('somebody else cannot rerun it',
+      await status(`${rerunServer.base}/jobs/${flakyId}/rerun`,
+        { method: 'POST', headers: auth(strangerToken) }) === 403);
+
+  } finally {
+    await stopServer(rerunServer);
+    removeSandbox(rerunBox);
+  }
+
+  // The database is the only record of who owns which frames. Its own instance
+  // so the backup count can be pushed low enough to see rotation.
+  const backupBox = makeSandbox('backup');
+  let backupServer;
+
+  try {
+    console.log('\n  The database is backed up when the machine starts');
+
+    const backupsDir = path.join(backupBox, 'backups');
+    const backups = () => (fs.existsSync(backupsDir) ? fs.readdirSync(backupsDir) : []).sort();
+    const bootBackupServer = () => startServer({
+      port: PORT + 6,
+      cwd: backupBox,
+      env: { BLENDER_PATH: createFakeBlender(backupBox), DB_BACKUPS_KEPT: '2' }
+    });
+
+    backupServer = await bootBackupServer();
+
+    const backupToken = await adminSession(backupServer.base);
+    const recorded = await submitJob(
+      backupServer.base, backupToken, createFakeScene(backupBox, 'backed-up.blend'),
+      { frameStart: 1, frameEnd: 1 }
+    );
+    await waitForJob(backupServer.base, backupToken, recorded.body.jobId, 30000);
+
+    results.check('a backup is written at boot', backups().length === 1, JSON.stringify(backups()));
+
+    // Opened on its own, the snapshot has to be a working database rather than
+    // a half-written file - which is what copying one in WAL mode can produce.
+    const snapshot = new Database(path.join(backupsDir, backups()[0]), { readonly: true });
+    const users = snapshot.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+    snapshot.close();
+
+    results.check('and it opens as a database with the accounts in it', users > 0, `${users} users`);
+
+    for (let restart = 0; restart < 3; restart++) {
+      await stopServer(backupServer);
+      backupServer = await bootBackupServer();
+    }
+
+    results.check('older ones are pruned to the number kept',
+      backups().length === 2, JSON.stringify(backups()));
+
+    const survivor = new Database(path.join(backupsDir, backups().at(-1)), { readonly: true });
+    const jobRows = survivor.prepare('SELECT COUNT(*) AS n FROM jobs').get().n;
+    survivor.close();
+
+    results.check('and the job records are in the snapshot too', jobRows > 0, `${jobRows} jobs`);
+
+  } finally {
+    await stopServer(backupServer);
+    removeSandbox(backupBox);
+  }
+
+  // A disk with no room fails every frame of every job rather than one, and
+  // burns three retries on each. Its own instance because the threshold has to
+  // be higher than the free space on whatever machine this runs on.
+  const fullBox = makeSandbox('full-disk');
+  let fullServer;
+
+  try {
+    console.log('\n  A disk with no room left refuses work rather than failing it');
+
+    fullServer = await startServer({
+      port: PORT + 5,
+      cwd: fullBox,
+      // Larger than any real disk, so the check always reads as full.
+      env: { BLENDER_PATH: createFakeBlender(fullBox), MIN_FREE_BYTES: String(2 ** 60) }
+    });
+
+    const fullToken = await adminSession(fullServer.base);
+    const rejected = await submitJob(
+      fullServer.base, fullToken, createFakeScene(fullBox, 'nospace.blend'),
+      { frameStart: 1, frameEnd: 1 }
+    );
+
+    results.check('the upload is refused with 507', rejected.status === 507, `got ${rejected.status}`);
+    results.check('and the message says what to do',
+      /delete/i.test(rejected.body?.error || ''), rejected.body?.error);
+
+  } finally {
+    await stopServer(fullServer);
+  }
+
+  // Work already queued when the disk fills is the case the upload gate cannot
+  // cover: it is held and rechecked, not failed, because deleting one finished
+  // job is all it takes to let it run.
+  let heldServer;
+
+  try {
+    console.log('\n  Work already queued is held rather than failed');
+
+    heldServer = await startServer({
+      port: PORT + 5,
+      cwd: fullBox,
+      env: { BLENDER_PATH: createFakeBlender(fullBox) }
+    });
+
+    let heldToken = await adminSession(heldServer.base);
+    const queued = await submitJob(
+      heldServer.base, heldToken, createFakeScene(fullBox, 'hang.blend'),
+      { frameStart: 1, frameEnd: 2 }
+    );
+
+    await waitForCondition(
+      async () => (await getJob(heldServer.base, heldToken, queued.body.jobId)).status === 'rendering',
+      { label: 'the job to start' }
+    );
+
+    // Switched off with work outstanding, and the disk full by morning.
+    heldServer.proc.kill('SIGKILL');
+    await waitForCondition(
+      () => heldServer.proc.exitCode !== null || heldServer.proc.signalCode !== null,
+      { label: 'the server to die' }
+    );
+
+    heldServer = await startServer({
+      port: PORT + 5,
+      cwd: fullBox,
+      env: { BLENDER_PATH: createFakeBlender(fullBox), MIN_FREE_BYTES: String(2 ** 60) }
+    });
+
+    heldToken = await adminSession(heldServer.base);
+
+    const held = await (await fetch(`${heldServer.base}/jobs/queue/status`, {
+      headers: auth(heldToken)
+    })).json();
+
+    results.check('the queue says why it is holding back',
+      /disk/i.test(held.heldForDisk || ''), JSON.stringify(held.heldForDisk));
+    results.check('and starts nothing', held.isRendering === false, JSON.stringify(held.isRendering));
+
+    const waiting = await getJob(heldServer.base, heldToken, queued.body.jobId);
+    results.check('the job is still queued rather than failed',
+      waiting.status === 'pending', waiting.status);
+
+  } finally {
+    await stopServer(heldServer);
+    removeSandbox(fullBox);
   }
 
   // The workstation is started by Task Scheduler, where stdout goes nowhere.

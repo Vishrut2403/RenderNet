@@ -1,18 +1,19 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { Alert, Button, Field, ProgressBar } from '../components/ui';
-
-const ENGINES = [
-  ['CYCLES', 'Cycles — physically based, slower'],
-  ['BLENDER_EEVEE', 'EEVEE — real-time, much faster'],
-  ['BLENDER_WORKBENCH', 'Workbench — preview quality']
-];
+import { askToNotify } from '../hooks/useJobFinished';
 
 export function Upload({ onSubmitted, notify }) {
   const [file, setFile] = useState(null);
   const [frameStart, setFrameStart] = useState(1);
   const [frameEnd, setFrameEnd] = useState(1);
-  const [engine, setEngine] = useState('CYCLES');
+  // Asked for rather than hardcoded, so the form cannot offer an engine the
+  // server would refuse or miss one it has gained.
+  const [engines, setEngines] = useState([]);
+  const [engine, setEngine] = useState('');
+  const [resolutionPercent, setResolutionPercent] = useState(100);
+  // Blank means whatever the scene already specifies.
+  const [samples, setSamples] = useState('');
   const [urgent, setUrgent] = useState(false);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
@@ -20,6 +21,20 @@ export function Upload({ onSubmitted, notify }) {
   const inputRef = useRef(null);
 
   const frameCount = Math.max(0, Number(frameEnd) - Number(frameStart) + 1);
+
+  useEffect(() => {
+    let current = true;
+
+    api.engines()
+      .then(({ engines: available }) => {
+        if (!current) return;
+        setEngines(available);
+        setEngine(available[0]?.id ?? '');
+      })
+      .catch(err => current && setError(err.message));
+
+    return () => { current = false; };
+  }, []);
 
   function pick(selected) {
     if (!selected) return;
@@ -45,11 +60,12 @@ export function Upload({ onSubmitted, notify }) {
     try {
       const result = await api.upload(
         file,
-        { frameStart, frameEnd, renderEngine: engine, priority: urgent },
+        { frameStart, frameEnd, renderEngine: engine, priority: urgent, resolutionPercent, samples },
         setProgress
       );
 
       notify(`Job ${result.jobId} queued`, 'success');
+      askToNotify();
       setFile(null);
       if (inputRef.current) inputRef.current.value = '';
       onSubmitted?.();
@@ -113,12 +129,37 @@ export function Upload({ onSubmitted, notify }) {
         />
         <label className="field">
           <span className="field-label">Render engine</span>
-          <select value={engine} onChange={e => setEngine(e.target.value)}>
-            {ENGINES.map(([value, text]) => (
-              <option key={value} value={value}>{text}</option>
+          <select
+            value={engine}
+            onChange={e => setEngine(e.target.value)}
+            disabled={engines.length === 0}
+          >
+            {engines.map(({ id, label }) => (
+              <option key={id} value={id}>{label}</option>
             ))}
           </select>
         </label>
+      </div>
+
+      <div className="row">
+        <Field
+          label="Resolution %"
+          type="number"
+          min="1"
+          max="100"
+          value={resolutionPercent}
+          onChange={e => setResolutionPercent(e.target.value)}
+          required
+        />
+        <Field
+          label="Samples"
+          type="number"
+          min="1"
+          placeholder="scene default"
+          value={samples}
+          onChange={e => setSamples(e.target.value)}
+          disabled={engine !== 'CYCLES'}
+        />
       </div>
 
       <label className="check">
@@ -136,6 +177,8 @@ export function Upload({ onSubmitted, notify }) {
         {frameCount > 0
           ? `${frameCount} frame${frameCount === 1 ? '' : 's'} will be rendered`
           : 'Invalid frame range'}
+        {Number(resolutionPercent) !== 100 && ` at ${resolutionPercent}% resolution`}
+        {engine === 'CYCLES' && samples && ` with ${samples} samples`}
       </p>
 
       <Alert>{error}</Alert>
@@ -144,7 +187,7 @@ export function Upload({ onSubmitted, notify }) {
         <ProgressBar value={progress} label="Uploading" />
       )}
 
-      <Button type="submit" variant="primary" busy={progress !== null} disabled={!file}>
+      <Button type="submit" variant="primary" busy={progress !== null} disabled={!file || !engine}>
         Queue render
       </Button>
     </form>

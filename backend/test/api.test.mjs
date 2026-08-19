@@ -4,7 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
-import { ENGINES } from '../src/engines.js';
+import { ENGINE_IDS } from '../src/engines.js';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, blenderAvailable, blenderEngines,
@@ -205,6 +205,30 @@ export default async function run() {
     results.check('an untouched account is unaffected',
       !!(await login(base, 'tester', 'newpass456')));
 
+    console.log('\n  The engine list is served, not duplicated');
+    results.check('anonymous callers get nothing',
+      await status(`${base}/engines`) === 401);
+
+    const offered = await (await fetch(`${base}/engines`, { headers: auth(adminToken) })).json();
+
+    results.check('every engine carries an id and a label',
+      offered.engines?.length > 0
+        && offered.engines.every(entry => entry.id && entry.label),
+      JSON.stringify(offered.engines));
+
+    // The form offers exactly these, so anything here the upload route would
+    // refuse is an option that fails only once somebody picks it.
+    const refused = [];
+    for (const { id } of offered.engines ?? []) {
+      const attempt = await submitJob(base, adminToken, stubBlend, {
+        frameStart: 1, frameEnd: 1, engine: id
+      });
+      if (attempt.status !== 200) refused.push(`${id} -> ${attempt.status}`);
+    }
+
+    results.check('and upload accepts every one of them',
+      refused.length === 0, refused.join(', '));
+
     console.log('\n  Upload validation');
     const bad = async opts => (await submitJob(base, adminToken, stubBlend, opts)).status;
     results.check('end before start rejected', await bad({ frameStart: 5, frameEnd: 1 }) === 400);
@@ -212,6 +236,15 @@ export default async function run() {
     results.check('negative start rejected', await bad({ frameStart: -2, frameEnd: 3 }) === 400);
     results.check('oversized range rejected', await bad({ frameStart: 1, frameEnd: 99999 }) === 400);
     results.check('unknown engine rejected', await bad({ frameStart: 1, frameEnd: 2, engine: 'EVIL' }) === 400);
+
+    results.check('zero resolution rejected',
+      await bad({ frameStart: 1, frameEnd: 1, resolutionPercent: 0 }) === 400);
+    results.check('resolution above 100 rejected',
+      await bad({ frameStart: 1, frameEnd: 1, resolutionPercent: 101 }) === 400);
+    results.check('fractional resolution rejected',
+      await bad({ frameStart: 1, frameEnd: 1, resolutionPercent: 12.5 }) === 400);
+    results.check('zero samples rejected',
+      await bad({ frameStart: 1, frameEnd: 1, samples: 0 }) === 400);
 
     const notBlend = path.join(sandbox, 'notablend.txt');
     fs.writeFileSync(notBlend, 'nope');
@@ -303,13 +336,24 @@ export default async function run() {
     // so drifting from its canonical list is a warning rather than a breakage -
     // but it is the only notice there is before the alias goes.
     const accepted = blenderEngines();
-    const unknown = ENGINES.filter(engine => !accepted.includes(engine));
+    const unknown = ENGINE_IDS.filter(engine => !accepted.includes(engine));
 
     results.check('every offered engine is one this Blender lists',
       unknown.length === 0,
       `${JSON.stringify(unknown)} not in ${JSON.stringify(accepted)}`);
 
-    for (const engine of ENGINES.filter(name => name !== 'CYCLES')) {
+    // The expression is built by hand and handed to Blender's own interpreter,
+    // so the only proof it is valid Python against a real scene is running it.
+    const tuned = await submitJob(base, adminToken, blend, {
+      frameStart: 1, frameEnd: 1, resolutionPercent: 25, samples: 2
+    });
+    const tunedJob = await waitForJob(base, adminToken, tuned.body.jobId);
+
+    results.check('Blender accepts the overrides expression',
+      tunedJob.status === 'completed',
+      `${tunedJob.status}: ${JSON.stringify(tunedJob.frameErrors ?? [])}`);
+
+    for (const engine of ENGINE_IDS.filter(name => name !== 'CYCLES')) {
       if (!engineRenders(engine, blend, sandbox)) {
         results.skipped(`${engine} renders`, 'this machine cannot render with it headless');
         continue;
