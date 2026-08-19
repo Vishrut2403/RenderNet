@@ -135,6 +135,10 @@ export const api = {
 
   zipUrl: id => authorizedUrl(`/download/${id}/zip`),
 
+  // Versioned by the frame count so a finished frame replaces the last one
+  // rather than being served from cache, and an unchanged count still 304s.
+  previewUrl: (id, delivered) => `${authorizedUrl(`/download/${id}/preview`)}&v=${delivered}`,
+
   upload(file, { frameStart, frameEnd, renderEngine, priority }, onProgress) {
     // XHR rather than fetch: upload progress events have no fetch equivalent.
     return new Promise((resolve, reject) => {

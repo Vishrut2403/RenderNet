@@ -8,6 +8,9 @@ export function JobCard({ job, onChanged, onError }) {
   const [busy, setBusy] = useState(false);
   const [frames, setFrames] = useState(null);
   const [showErrors, setShowErrors] = useState(false);
+  // Recorded per frame count, so a frame swept off disk hides the preview only
+  // until the next one lands.
+  const [previewFailedAt, setPreviewFailedAt] = useState(null);
 
   const active = job.status === 'rendering';
   const done = job.status === 'completed';
@@ -104,6 +107,11 @@ export function JobCard({ job, onChanged, onError }) {
     ? `Rendering frame ${inFlight} of ${job.frameEnd}`
     : `${job.completedFrames} of ${job.totalFrames} frames`;
 
+  // Hidden once the full grid is open, which shows the same frames and more.
+  const showPreview = job.completedFrames > 0 && !frames
+    && previewFailedAt !== job.completedFrames;
+  const previewSrc = api.previewUrl(job.id, job.completedFrames);
+
   return (
     <article className={`job job-${job.status}`}>
       <header className="job-head">
@@ -121,6 +129,21 @@ export function JobCard({ job, onChanged, onError }) {
 
       {(active || done || job.completedFrames > 0) && (
         <ProgressBar value={job.progress} label={label} tone={TONE[job.status] || 'active'} />
+      )}
+
+      {showPreview && (
+        <figure className="preview">
+          <a href={previewSrc} target="_blank" rel="noreferrer">
+            <img
+              src={previewSrc}
+              alt={`Most recent frame rendered for job ${job.id}`}
+              onError={() => setPreviewFailedAt(job.completedFrames)}
+            />
+          </a>
+          <figcaption>
+            {active ? `Frame ${job.currentFrame ?? job.completedFrames}, rendering` : 'Last frame rendered'}
+          </figcaption>
+        </figure>
       )}
 
       {job.status === 'pending' && (

@@ -162,6 +162,8 @@ Things that would otherwise surprise you.
 - **Any user can mark a job urgent**, which pauses whatever is rendering. The
   paused job keeps its finished frames and carries on afterwards, and both cards
   say what happened — visible rather than restricted.
+- **A job card shows the last frame rendered while it is still rendering**, so a
+  scene that came out wrong is caught at frame 30 rather than at frame 500.
 - **Cancelling deletes that job's files.** Uploads are capped at 500MB and 2000
   frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`.
 
@@ -196,13 +198,13 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 204 checks
+cd backend  && npm test        # 212 checks
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 188 of the 204 still meaningful.
+Blender is absent, leaving 196 of the 212 still meaningful.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
 only place it is exercised on the platform the workstation actually runs. Windows

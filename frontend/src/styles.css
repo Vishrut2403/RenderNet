@@ -383,6 +383,33 @@ button, input, select { font: inherit; color: inherit; }
 .frame-no { color: var(--bad); }
 .frame-errors code { color: var(--text-3); word-break: break-word; font-size: 12px; }
 
+.preview {
+  margin: 14px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.preview img {
+  width: 144px;
+  aspect-ratio: 16 / 9;
+  /* Contained, not cropped: the point is judging the frame, and a render is
+     whatever shape the scene is. */
+  object-fit: contain;
+  display: block;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  transition: border-color .12s;
+}
+
+.preview a:hover img { border-color: var(--accent-dim); }
+
+.preview figcaption {
+  font-size: 13px;
+  color: var(--text-3);
+}
+
 .frame-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));

@@ -5,6 +5,7 @@ import path from 'path';
 import { getJob } from '../queue.js';
 import { getFilesInDirectory } from '../utils/file-utils.js';
 import { verifyToken, mustChangePassword } from '../auth.js';
+import { getLatestDoneFrame } from '../db.js';
 import { dataPath, RETENTION_DAYS } from '../paths.js';
 
 const router = express.Router();
@@ -75,6 +76,37 @@ router.get('/files/render_:id/:filename', authenticateDownload, (req, res) => {
     return res.status(404).json({ error: 'File not found' });
   }
 
+  res.sendFile(filePath);
+});
+
+// Serves while the job is still running, unlike the listing and the ZIP below.
+// The point is to catch a render going wrong at frame 30 rather than at 500,
+// which is no use once it has already stopped.
+router.get('/:id/preview', authenticateDownload, (req, res) => {
+  const job = getJob(Number(req.params.id));
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (!canAccess(job, req.user)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const latest = getLatestDoneFrame(job.id);
+
+  if (!latest) {
+    return res.status(404).json({ error: 'No frame rendered yet' });
+  }
+
+  const outputFolder = dataPath(job.outputFolder);
+  const filePath = path.resolve(outputFolder, path.basename(latest.filename));
+
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({ error: 'Frame is no longer on disk' });
+  }
+
+  res.setHeader('X-Frame-Number', String(latest.frame));
   res.sendFile(filePath);
 });
 

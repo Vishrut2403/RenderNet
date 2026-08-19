@@ -129,6 +129,51 @@ export default async function run() {
     results.check('and does not wait out the process on its own', releasedIn < 25000,
       `${releasedIn}ms`);
 
+    console.log('\n  Previewing a frame while the render is still going');
+    const previewing = await submitJob(base, token, createFakeScene(sandbox, 'slow.blend'), {
+      frameStart: 1, frameEnd: 4
+    });
+    const previewId = previewing.body.jobId;
+
+    const previewUrl = `${base}/download/${previewId}/preview`;
+
+    results.check('nothing to preview before the first frame lands',
+      await status(previewUrl, { headers: auth(token) }) === 404);
+
+    await waitForCondition(
+      async () => (await getJob(base, token, previewId)).completedFrames > 0,
+      { label: 'the first frame of the previewed job' }
+    );
+
+    const midRender = await getJob(base, token, previewId);
+    results.check('the job is still rendering', midRender.status === 'rendering', midRender.status);
+
+    const preview = await fetch(previewUrl, { headers: auth(token) });
+    const image = Buffer.from(await preview.arrayBuffer());
+
+    results.check('a frame is served while the job runs', preview.status === 200, `got ${preview.status}`);
+    results.check('and it really is a PNG',
+      image.subarray(1, 4).toString() === 'PNG', image.subarray(0, 8).toString('hex'));
+    results.check('the frame it came from is named',
+      Number(preview.headers.get('x-frame-number')) > 0, preview.headers.get('x-frame-number'));
+
+    results.check('the listing still refuses until the job stops',
+      await status(`${base}/download/${previewId}/files`, { headers: auth(token) }) === 400);
+
+    await signUp(base, 'peeper', 'peeperpass123');
+    const peeperToken = await login(base, 'peeper', 'peeperpass123');
+
+    results.check('another user cannot preview it',
+      await status(previewUrl, { headers: auth(peeperToken) }) === 403);
+    results.check('and an anonymous request cannot either',
+      await status(previewUrl) === 401);
+
+    await fetch(`${base}/jobs/${previewId}/cancel`, { method: 'POST', headers: auth(token) });
+    await waitForCondition(
+      async () => (await getJob(base, token, previewId)).status === 'cancelled',
+      { label: 'the previewed job to be cancelled' }
+    );
+
     console.log('\n  Cleanup endpoint');
     results.check('anonymous cleanup rejected',
       await status(`http://127.0.0.1:${PORT}/api/cleanup`, { method: 'POST' }) === 401);

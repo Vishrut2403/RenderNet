@@ -135,6 +135,14 @@ export function getFrames(jobId) {
   return db.prepare('SELECT * FROM frames WHERE jobId = ? ORDER BY frame').all(jobId);
 }
 
+export function getLatestDoneFrame(jobId) {
+  return db.prepare(
+    `SELECT frame, filename FROM frames
+     WHERE jobId = ? AND status = 'done' AND filename IS NOT NULL
+     ORDER BY updatedAt DESC, frame DESC LIMIT 1`
+  ).get(jobId);
+}
+
 export function getPendingFrames(jobId) {
   return db
     .prepare("SELECT frame FROM frames WHERE jobId = ? AND status = 'pending' ORDER BY frame")
