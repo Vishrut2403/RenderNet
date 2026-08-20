@@ -342,6 +342,28 @@ export default async function run() {
       unknown.length === 0,
       `${JSON.stringify(unknown)} not in ${JSON.stringify(accepted)}`);
 
+    // The stand-in can only mimic the render_post handler. This is the one
+    // place the script itself runs inside a real Blender.
+    const multi = await submitJob(base, adminToken, blend, {
+      frameStart: 1, frameEnd: 1, formats: ['PNG', 'JPEG', 'OPEN_EXR']
+    });
+    const multiJob = await waitForJob(base, adminToken, multi.body.jobId);
+
+    results.check('Blender writes every chosen format from one render',
+      multiJob.status === 'completed',
+      `${multiJob.status}: ${JSON.stringify(multiJob.frameErrors ?? [])}`);
+
+    const produced = fs.readdirSync(path.join(sandbox, multiJob.outputFolder)).sort();
+    results.check('all three files are there',
+      produced.join(',') === 'frame_0001.exr,frame_0001.jpg,frame_0001.png', produced.join(','));
+
+    // Each format has to be its own encoding, not the same bytes renamed.
+    const bytes = name => fs.readFileSync(path.join(sandbox, multiJob.outputFolder, name));
+    results.check('the PNG is a PNG', bytes('frame_0001.png').subarray(1, 4).toString() === 'PNG');
+    results.check('the JPEG is a JPEG', bytes('frame_0001.jpg').subarray(0, 2).toString('hex') === 'ffd8');
+    results.check('the EXR is an EXR',
+      bytes('frame_0001.exr').subarray(0, 4).toString('hex') === '762f3101');
+
     // The expression is built by hand and handed to Blender's own interpreter,
     // so the only proof it is valid Python against a real scene is running it.
     const tuned = await submitJob(base, adminToken, blend, {

@@ -7,7 +7,7 @@ import {
   saveJob, loadJobs, deleteJob,
   createFrames, getFrames, getPendingFrames, countFramesByStatus,
   markFrameDone, markFramePending, markFrameAttemptFailed, resetFailedFrames,
-  getFailedFrames, getAllFailedFrames
+  getFailedFrames, getAllFailedFrames, doneFrameTimes
 } from './db.js';
 
 // A frame gets three goes before it counts as failed. Transient causes - a
@@ -150,7 +150,8 @@ export function addToQueue(jobData) {
     priority: Number(jobData.priority) || 0,
     pausedBy: null,
     resolutionPercent: jobData.resolutionPercent ?? 100,
-    samples: jobData.samples ?? null
+    samples: jobData.samples ?? null,
+    formats: jobData.formats || 'PNG'
   };
 
   jobs.set(jobId, job);
@@ -335,7 +336,8 @@ function processQueue() {
       frames: getPendingFrames(jobId),
       renderEngine: job.renderEngine,
       resolutionPercent: job.resolutionPercent,
-      samples: job.samples
+      samples: job.samples,
+      formats: job.formats
     })
     .then(() => finishRender(jobId))
     .catch((error) => {
@@ -421,7 +423,11 @@ export function getJob(jobId) {
   const job = jobs.get(jobId);
   if (!job) return undefined;
 
-  return { ...job, frameErrors: getFailedFrames(jobId).map(asFrameError) };
+  return {
+    ...job,
+    frameErrors: getFailedFrames(jobId).map(asFrameError),
+    startsIn: queueWaits().get(jobId) ?? null
+  };
 }
 
 // One query for every job's failures rather than one per job: the dashboard
@@ -434,13 +440,20 @@ export function getAllJobs() {
     errorsByJob.get(row.jobId).push(asFrameError(row));
   }
 
+  const waits = queueWaits();
+
   return Array.from(jobs.values()).map(job => ({
     ...job,
-    frameErrors: errorsByJob.get(job.id) ?? []
+    frameErrors: errorsByJob.get(job.id) ?? [],
+    startsIn: waits.get(job.id) ?? null
   }));
 }
 
 export function getQueueStatus() {
+  // Sorted first: the queue is only ordered when it is about to be read from,
+  // so an unsorted read hands back an order the queue will not actually run in.
+  sortQueue();
+
   return {
     isRendering,
     heldForDisk,
@@ -453,6 +466,82 @@ export function getQueueStatus() {
       filename: jobs.get(id)?.originalFilename
     }))
   };
+}
+
+const RATE_TTL_MS = 10 * 1000;
+let frameRate = { at: 0, value: null };
+
+// Taken from when frames were delivered rather than from a job's startedAt,
+// which is cleared whenever a job is paused or resumed. The median rather than
+// the mean: gaps spanning a pause, a rerun, or a night with the machine off are
+// wildly longer than a frame takes, and would drag an average with them.
+function typicalFrameMs() {
+  if (Date.now() - frameRate.at < RATE_TTL_MS) return frameRate.value;
+
+  const gaps = [];
+  let previous = null;
+
+  for (const row of doneFrameTimes()) {
+    const at = new Date(row.updatedAt).getTime();
+
+    if (previous && previous.jobId === row.jobId) {
+      const gap = at - previous.at;
+      if (gap > 0) gaps.push(gap);
+    }
+
+    previous = { jobId: row.jobId, at };
+  }
+
+  gaps.sort((a, b) => a - b);
+
+  if (gaps.length === 0) {
+    // Not cached: before the first two frames land there is nothing to read,
+    // and holding that answer would outlast the frames arriving. The query is
+    // cheap while there is nothing for it to find.
+    return null;
+  }
+
+  const value = gaps[Math.floor(gaps.length / 2)];
+  frameRate = { at: Date.now(), value };
+
+  return value;
+}
+
+function framesLeft(job) {
+  return Math.max(0, job.totalFrames - job.completedFrames);
+}
+
+// One pass over the queue in order, accumulating the work ahead of each job, so
+// the whole list can be answered without walking the queue once per job.
+export function queueWaits() {
+  const waits = new Map();
+  const typical = typicalFrameMs();
+
+  if (typical === null) return waits;
+
+  const running = jobs.get(currentJobId);
+  let ahead = 0;
+
+  if (running && running.status === 'rendering' && running.startedAt) {
+    // The job in flight has a rate of its own, which beats the general one for
+    // the estimate that dominates a short queue.
+    const observed = running.completedFrames > 0
+      ? (Date.now() - new Date(running.startedAt).getTime()) / running.completedFrames
+      : typical;
+
+    ahead += framesLeft(running) * observed;
+  }
+
+  sortQueue();
+
+  for (const id of renderQueue) {
+    waits.set(id, Math.round(ahead));
+
+    const job = jobs.get(id);
+    if (job) ahead += framesLeft(job) * typical;
+  }
+
+  return waits;
 }
 
 export function getQueuePosition(jobId) {

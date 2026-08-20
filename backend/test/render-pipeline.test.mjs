@@ -634,6 +634,199 @@ export default async function run() {
     removeSandbox(quotaBox);
   }
 
+  // One render, several files, all of them in the one ZIP.
+  const formatBox = makeSandbox('formats');
+  let formatServer;
+
+  try {
+    console.log('\n  Every chosen output format ends up in the download');
+
+    formatServer = await startServer({
+      port: PORT + 10,
+      cwd: formatBox,
+      env: { BLENDER_PATH: createFakeBlender(formatBox) }
+    });
+
+    const formatToken = await adminSession(formatServer.base);
+    const many = await submitJob(
+      formatServer.base, formatToken, createFakeScene(formatBox, 'many.blend'),
+      { frameStart: 1, frameEnd: 2, formats: ['PNG', 'JPEG', 'OPEN_EXR'] }
+    );
+    const manyJob = await waitForJob(formatServer.base, formatToken, many.body.jobId, 30000);
+
+    results.check('the job completes', manyJob.status === 'completed',
+      `${manyJob.status}: ${manyJob.error || ''}`);
+    results.check('progress is not counted once per format',
+      manyJob.completedFrames === 2, `${manyJob.completedFrames} of 2`);
+
+    const written = fs.readdirSync(path.join(formatBox, manyJob.outputFolder)).sort();
+    results.check('every frame is written in every format',
+      written.join(',') === 'frame_0001.exr,frame_0001.jpg,frame_0001.png,'
+        + 'frame_0002.exr,frame_0002.jpg,frame_0002.png',
+      written.join(','));
+
+    const listing = await (await fetch(`${formatServer.base}/download/${many.body.jobId}/files`, {
+      headers: auth(formatToken)
+    })).json();
+
+    results.check('the listing says which files a browser can show',
+      listing.files.filter(file => file.previewable).length === 4
+        && listing.files.filter(file => !file.previewable).length === 2,
+      JSON.stringify(listing.files.map(file => [file.filename, file.previewable])));
+
+    const zip = await fetch(`${formatServer.base}/download/${many.body.jobId}/zip`, {
+      headers: auth(formatToken)
+    });
+    const archive = Buffer.from(await zip.arrayBuffer());
+
+    results.check('the ZIP downloads', zip.status === 200, `got ${zip.status}`);
+    results.check('and holds all six files',
+      [...archive.toString('latin1').matchAll(/frame_000\d\.(png|jpg|exr)/g)]
+        .map(match => match[0])
+        .filter((name, index, all) => all.indexOf(name) === index).length === 6,
+      'names found in the archive');
+
+    // The preview is served from whatever the frame record points at, so the
+    // record has to point at the primary rather than the last file uploaded.
+    const preview = await fetch(`${formatServer.base}/download/${many.body.jobId}/preview`, {
+      headers: auth(formatToken)
+    });
+    const previewBytes = Buffer.from(await preview.arrayBuffer());
+
+    results.check('the preview serves a format a browser can draw',
+      preview.status === 200 && previewBytes.subarray(1, 4).toString() === 'PNG',
+      `${preview.status}, starts ${previewBytes.subarray(0, 4).toString('hex')}`);
+
+    const exrOnly = await submitJob(
+      formatServer.base, formatToken, createFakeScene(formatBox, 'exr-only.blend'),
+      { frameStart: 1, frameEnd: 1, formats: ['OPEN_EXR'] }
+    );
+    const exrJob = await waitForJob(formatServer.base, formatToken, exrOnly.body.jobId, 30000);
+
+    results.check('a job asking only for EXR renders it as the primary',
+      exrJob.status === 'completed'
+        && fs.readdirSync(path.join(formatBox, exrJob.outputFolder)).join(',') === 'frame_0001.exr',
+      `${exrJob.status}: ${fs.readdirSync(path.join(formatBox, exrJob.outputFolder)).join(',')}`);
+
+    const noFormats = await submitJob(
+      formatServer.base, formatToken, createFakeScene(formatBox, 'none.blend'),
+      { frameStart: 1, frameEnd: 1, formats: [] }
+    );
+    results.check('choosing no format at all is refused', noFormats.status === 400,
+      `got ${noFormats.status}`);
+
+    const madeUp = await submitJob(
+      formatServer.base, formatToken, createFakeScene(formatBox, 'bogus.blend'),
+      { frameStart: 1, frameEnd: 1, formats: ['PNG', 'GIF'] }
+    );
+    results.check('an unknown format is refused', madeUp.status === 400, `got ${madeUp.status}`);
+
+  } finally {
+    await stopServer(formatServer);
+    removeSandbox(formatBox);
+  }
+
+  // Somebody deciding whether to wait around wants a time, not a position.
+  const waitBox = makeSandbox('wait');
+  let waitServer;
+
+  try {
+    console.log('\n  Telling people when their job will start');
+
+    waitServer = await startServer({
+      port: PORT + 9,
+      cwd: waitBox,
+      env: { BLENDER_PATH: createFakeBlender(waitBox) }
+    });
+
+    const waitToken = await adminSession(waitServer.base);
+
+    // Nothing has rendered yet, so there is no rate to estimate from.
+    const first = await submitJob(
+      waitServer.base, waitToken, createFakeScene(waitBox, 'slow.blend'),
+      { frameStart: 1, frameEnd: 4 }
+    );
+    results.check('the first job ever submitted promises nothing',
+      first.body.startsIn === null, JSON.stringify(first.body.startsIn));
+
+    await waitForCondition(
+      async () => (await getJob(waitServer.base, waitToken, first.body.jobId)).completedFrames > 1,
+      { label: 'two frames, so there is a gap between them to measure' }
+    );
+
+    const second = await submitJob(
+      waitServer.base, waitToken, createFakeScene(waitBox, 'queued-one.blend'),
+      { frameStart: 1, frameEnd: 2 }
+    );
+    const third = await submitJob(
+      waitServer.base, waitToken, createFakeScene(waitBox, 'queued-two.blend'),
+      { frameStart: 1, frameEnd: 2 }
+    );
+
+    const secondJob = await getJob(waitServer.base, waitToken, second.body.jobId);
+    const thirdJob = await getJob(waitServer.base, waitToken, third.body.jobId);
+
+    results.check('a queued job is told how long until it starts',
+      secondJob.startsIn > 0, JSON.stringify(secondJob.startsIn));
+    results.check('and the one behind it waits longer',
+      thirdJob.startsIn > secondJob.startsIn,
+      `${secondJob.startsIn} then ${thirdJob.startsIn}`);
+
+    // slow.blend takes two seconds a frame and has three left, so the estimate
+    // has to be in that neighbourhood rather than an arbitrary number.
+    results.check('the estimate is near the work actually outstanding',
+      secondJob.startsIn > 2000 && secondJob.startsIn < 30000,
+      `${secondJob.startsIn}ms for ~3 frames at ~2s`);
+
+    // Urgency reorders the queue, so it has to reorder the estimates too.
+    await fetch(`${waitServer.base}/jobs/${third.body.jobId}/priority`, {
+      method: 'POST',
+      headers: { ...auth(waitToken), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ priority: 1 })
+    });
+
+    const reordered = await (await fetch(`${waitServer.base}/jobs/queue/status`, {
+      headers: auth(waitToken)
+    })).json();
+
+    results.check('the queue is reported in the order it will actually run',
+      reordered.queue[0]?.id === third.body.jobId,
+      JSON.stringify(reordered.queue.map(entry => entry.id)));
+
+    const jumped = await getJob(waitServer.base, waitToken, third.body.jobId);
+    const displaced = await getJob(waitServer.base, waitToken, second.body.jobId);
+
+    results.check('an urgent job is promised a shorter wait than the one it passed',
+      (jumped.startsIn ?? 0) < displaced.startsIn,
+      `urgent ${jumped.startsIn} vs ${displaced.startsIn}`);
+
+    // Preemption takes a moment: the job it displaced has to stop before the
+    // urgent one starts, and in between nothing is rendering at all.
+    const listJobs = async () =>
+      (await (await fetch(`${waitServer.base}/jobs`, { headers: auth(waitToken) })).json()).jobs;
+
+    await waitForCondition(
+      async () => (await listJobs()).some(job => job.status === 'rendering'),
+      { label: 'the urgent job to take over' }
+    );
+
+    const all = await listJobs();
+    const inFlight = all.find(job => job.status === 'rendering');
+
+    results.check('the job being rendered is promised nothing',
+      inFlight !== undefined && inFlight.startsIn === null,
+      JSON.stringify(all.map(job => [job.status, job.startsIn])));
+
+    const pushedAside = all.find(job => job.id === first.body.jobId);
+    results.check('and a job pushed aside is given a wait like any other queued one',
+      pushedAside?.status === 'pending' && pushedAside.startsIn > 0,
+      `${pushedAside?.status} ${pushedAside?.startsIn}`);
+
+  } finally {
+    await stopServer(waitServer);
+    removeSandbox(waitBox);
+  }
+
   // Blender has no flag for either, so they are only visible in the command
   // line the worker builds.
   const settingsBox = makeSandbox('settings');

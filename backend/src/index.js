@@ -16,6 +16,7 @@ import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
 import logsRouter from './routes/logs.js';
 import { ENGINES } from './engines.js';
+import { FORMATS } from './formats.js';
 import { backupDatabase } from './db.js';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -73,7 +74,7 @@ app.get('/api/health', (req, res) => {
 // Served rather than duplicated in the frontend: the upload form must offer
 // exactly what the upload route will accept.
 app.get('/api/engines', requireAuth, (req, res) => {
-  res.json({ engines: ENGINES });
+  res.json({ engines: ENGINES, formats: FORMATS });
 });
 
 app.use('/api/logs', requireAuth, requireAdmin, logsRouter);

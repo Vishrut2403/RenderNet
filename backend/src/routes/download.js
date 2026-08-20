@@ -6,6 +6,7 @@ import { getJob } from '../queue.js';
 import { getFilesInDirectory } from '../utils/file-utils.js';
 import { verifyToken, mustChangePassword } from '../auth.js';
 import { getLatestDoneFrame } from '../db.js';
+import { PREVIEWABLE_EXTENSIONS } from '../formats.js';
 import { dataPath, RETENTION_DAYS } from '../paths.js';
 
 const router = express.Router();
@@ -152,6 +153,9 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
       // and only it knows whether the token belongs in the URL at all.
       files: files.map(filename => ({
         filename,
+        // A browser cannot show an EXR, so the caller needs to know before it
+        // puts the file in an <img>.
+        previewable: PREVIEWABLE_EXTENSIONS.includes(path.extname(filename).toLowerCase()),
         path: `/download/files/render_${jobId}/${encodeURIComponent(filename)}`
       }))
     });

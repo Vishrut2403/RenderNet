@@ -4,6 +4,7 @@ import FormData from 'form-data';
 import fetch from 'node-fetch';
 import { findBlenderExecutable } from './utils/blender-check.js';
 import { launch, terminate } from './utils/process-control.js';
+import { primaryOf, extrasOf, extensionOf } from './formats.js';
 
 const BLENDER_PATH = process.env.BLENDER_PATH || findBlenderExecutable() || 'blender';
 const API_URL = process.env.API_URL || 'http://localhost:5500';
@@ -16,6 +17,38 @@ const FAILFAST_FRAMES = 3;
 // The server decides when a frame has had enough attempts; this only stops a
 // misbehaving one from looping the worker forever.
 const ATTEMPT_CEILING = 10;
+
+// Blender writes one format per render. Saving the others from the finished
+// Render Result costs nothing extra, where rendering again would cost the whole
+// frame. A file rather than --python-expr: this needs real statements, and a
+// command line cannot carry newlines through cmd.exe on Windows.
+const EXTRAS_SCRIPT = `import bpy, os
+
+FORMATS = [pair.split(':') for pair in os.environ.get('RENDERNET_EXTRA_FORMATS', '').split(',') if pair]
+
+
+def save_extras(scene, _depsgraph=None):
+    result = bpy.data.images.get('Render Result')
+
+    if result is None:
+        return
+
+    base = os.environ['RENDERNET_FRAME_BASE']
+    settings = scene.render.image_settings
+    original = settings.file_format
+
+    try:
+        for name, extension in FORMATS:
+            settings.file_format = name
+            result.save_render(base + extension, scene=scene)
+    finally:
+        # Blender has already written the primary by now, but the setting is
+        # part of the scene and the next frame reuses it.
+        settings.file_format = original
+
+
+bpy.app.handlers.render_post.append(save_extras)
+`;
 
 // Applied to the scene after it loads and before the render is triggered.
 // Returns nothing when there is nothing to change, so the ordinary case keeps
@@ -69,6 +102,8 @@ class RenderWorker {
   async renderJob(job) {
     const { id, blendPath, outputDir, frames, renderEngine } = job;
     const overrides = { resolutionPercent: job.resolutionPercent, samples: job.samples };
+    const primary = primaryOf(job.formats);
+    const extras = extrasOf(job.formats);
 
     console.log(`\n🎬 Worker ${this.workerId}: Starting job ${id}`);
     console.log(`📁 Blend file: ${blendPath}`);
@@ -78,6 +113,9 @@ class RenderWorker {
     this.currentJob = job;
 
     fs.mkdirSync(outputDir, { recursive: true });
+
+    const extrasScript = extras.length > 0 ? path.join(outputDir, 'save-extras.py') : null;
+    if (extrasScript) fs.writeFileSync(extrasScript, EXTRAS_SCRIPT);
 
     let successfulFrames = 0;
     let failedFrames = 0;
@@ -90,7 +128,8 @@ class RenderWorker {
 
       console.log(`\n🎬 Rendering frame ${frame} (${index + 1} of ${frames.length})`);
 
-      const outcome = await this.renderFrame(id, frame, blendPath, outputDir, renderEngine, overrides);
+      const outcome = await this.renderFrame(id, frame, blendPath, outputDir, renderEngine, overrides,
+        { primary, extras, extrasScript });
 
       if (outcome === 'cancelled') break;
 
@@ -110,6 +149,8 @@ class RenderWorker {
         break;
       }
     }
+
+    if (extrasScript) fs.rmSync(extrasScript, { force: true });
 
     // Succeeds only when every frame was uploaded and removed.
     try {
@@ -141,17 +182,26 @@ class RenderWorker {
 
   // Retries are driven by the server's answer rather than a local count, so
   // there is one place that decides when a frame has had enough attempts.
-  async renderFrame(jobId, frame, blendPath, outputDir, renderEngine, overrides) {
+  async renderFrame(jobId, frame, blendPath, outputDir, renderEngine, overrides, output) {
     for (let attempt = 1; attempt <= ATTEMPT_CEILING; attempt++) {
       if (this.cancelled) return 'cancelled';
 
       try {
-        const framePath = await this.renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides);
-        console.log(`✅ Frame ${frame} rendered: ${framePath}`);
+        const produced = await this.renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides, output);
+        console.log(`✅ Frame ${frame} rendered: ${produced.join(', ')}`);
 
-        if (await this.uploadFrame(jobId, frame, framePath)) {
+        // Every format has to arrive, or the ZIP would be missing one for this
+        // frame alone. Delivered first so the frame counts as done as early as
+        // possible; the rest follow.
+        const delivered = [];
+        for (const file of produced) {
+          if (!await this.uploadFrame(jobId, frame, file)) break;
+          delivered.push(file);
+        }
+
+        if (delivered.length === produced.length) {
           console.log(`📤 Frame ${frame} uploaded successfully`);
-          fs.rmSync(framePath, { force: true });
+          for (const file of produced) fs.rmSync(file, { force: true });
           return 'done';
         }
 
@@ -176,21 +226,20 @@ class RenderWorker {
     return 'failed';
   }
 
-  renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides = {}) {
+  renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides = {}, output = {}) {
     return new Promise((resolve, reject) => {
       // '####' pads the frame number to four digits; a single '#' does not pad
       // at all, so the written and expected names never agree.
       const outputPattern = path.join(outputDir, 'frame_####');
-      const expectedFile = path.join(
-        outputDir,
-        `frame_${frame.toString().padStart(4, '0')}.png`
-      );
+      const { primary = 'PNG', extras = [], extrasScript = null } = output;
+      const stem = path.join(outputDir, `frame_${frame.toString().padStart(4, '0')}`);
+      const expectedFile = stem + extensionOf(primary);
 
       const args = [
         '-b', blendPath,
         '-E', renderEngine,
         // Forced so the extension is predictable whatever the .blend specifies.
-        '-F', 'PNG',
+        '-F', primary,
         '-o', outputPattern
       ];
 
@@ -199,6 +248,8 @@ class RenderWorker {
       // whole command may travel through cmd.exe, which cannot carry them.
       const expression = sceneOverrides(renderEngine, overrides);
       if (expression) args.push('--python-expr', expression);
+
+      if (extrasScript) args.push('-P', extrasScript);
 
       // Last, because Blender renders when it reaches this and ignores what
       // follows.
@@ -212,7 +263,18 @@ class RenderWorker {
 
       console.log(`   Running: ${BLENDER_PATH} ${args.join(' ')}`);
 
-      const blender = launch(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+      // Passed as environment rather than script arguments: Blender hands its
+      // own leftovers to the script and the quoting is one less thing to get
+      // wrong on Windows.
+      const env = extrasScript
+        ? {
+            ...process.env,
+            RENDERNET_FRAME_BASE: stem,
+            RENDERNET_EXTRA_FORMATS: extras.map(id => `${id}:${extensionOf(id)}`).join(',')
+          }
+        : process.env;
+
+      const blender = launch(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
       this.currentProcess = blender;
 
       let stdout = '';
@@ -245,7 +307,15 @@ class RenderWorker {
         }
 
         if (fs.existsSync(expectedFile)) {
-          resolve(expectedFile);
+          const written = [expectedFile];
+
+          for (const id of extras) {
+            const extra = stem + extensionOf(id);
+            if (fs.existsSync(extra)) written.push(extra);
+            else console.warn(`⚠️  Frame ${frame}: Blender wrote no ${id} file`);
+          }
+
+          resolve(written);
         } else {
           reject(new Error(`Rendered frame not found: ${expectedFile}`));
         }
@@ -262,7 +332,11 @@ class RenderWorker {
   async uploadFrame(jobId, frameNumber, framePath) {
     try {
       const formData = new FormData();
-      formData.append('frame', fs.createReadStream(framePath));
+      // Named explicitly rather than left to the stream's path: the extension
+      // is how the server knows which format arrived.
+      formData.append('frame', fs.createReadStream(framePath), {
+        filename: path.basename(framePath)
+      });
 
       const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/frames/${frameNumber}`, {
         method: 'POST',

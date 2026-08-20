@@ -119,6 +119,11 @@ export function JobCard({ job, onChanged, onError }) {
     ? `Rendering frame ${inFlight} of ${job.frameEnd}`
     : `${job.completedFrames} of ${job.totalFrames} frames`;
 
+  // Absent until the machine has rendered something to average over, and zero
+  // once the job is next up, where "starts in 0 seconds" reads worse than
+  // nothing at all.
+  const waitsFor = job.status === 'pending' && job.startsIn > 0;
+
   // Only the frames that failed are retried, so there has to be one.
   const retryable = (done || job.status === 'failed') && job.frameErrors?.length > 0;
 
@@ -166,6 +171,7 @@ export function JobCard({ job, onChanged, onError }) {
           {job.pausedBy
             ? `Paused for ${job.pausedBy}'s urgent job — resumes with ${job.completedFrames} frame${job.completedFrames === 1 ? '' : 's'} already done`
             : job.queuePosition ? `Queued — position ${job.queuePosition}` : 'Queued'}
+          {waitsFor && <> · starts in about {formatDuration(job.startsIn)}</>}
         </p>
       )}
 
@@ -197,7 +203,10 @@ export function JobCard({ job, onChanged, onError }) {
         <div className="frame-grid">
           {frames.map(file => (
             <a key={file.filename} href={file.url} target="_blank" rel="noreferrer" title={file.filename}>
-              <img src={file.url} alt={file.filename} loading="lazy" />
+              {/* An EXR has nothing a browser can draw, so it is offered by name. */}
+              {file.previewable
+                ? <img src={file.url} alt={file.filename} loading="lazy" />
+                : <span className="frame-file">{file.filename.split('.').pop().toUpperCase()}</span>}
             </a>
           ))}
         </div>

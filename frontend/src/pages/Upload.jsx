@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../api/client';
-import { Alert, Button, Field, ProgressBar } from '../components/ui';
+import { Alert, Button, Field, ProgressBar, formatDuration } from '../components/ui';
 import { askToNotify } from '../hooks/useJobFinished';
 
 export function Upload({ onSubmitted, notify }) {
@@ -11,6 +11,8 @@ export function Upload({ onSubmitted, notify }) {
   // server would refuse or miss one it has gained.
   const [engines, setEngines] = useState([]);
   const [engine, setEngine] = useState('');
+  const [formats, setFormats] = useState([]);
+  const [chosen, setChosen] = useState(['PNG']);
   const [resolutionPercent, setResolutionPercent] = useState(100);
   // Blank means whatever the scene already specifies.
   const [samples, setSamples] = useState('');
@@ -26,10 +28,11 @@ export function Upload({ onSubmitted, notify }) {
     let current = true;
 
     api.engines()
-      .then(({ engines: available }) => {
+      .then(({ engines: available, formats: offered }) => {
         if (!current) return;
         setEngines(available);
         setEngine(available[0]?.id ?? '');
+        setFormats(offered);
       })
       .catch(err => current && setError(err.message));
 
@@ -54,17 +57,26 @@ export function Upload({ onSubmitted, notify }) {
 
     if (!file) return setError('Choose a .blend file first');
     if (frameCount < 1) return setError('End frame must not precede start frame');
+    if (chosen.length === 0) return setError('Choose at least one output format');
 
     setProgress(0);
 
     try {
       const result = await api.upload(
         file,
-        { frameStart, frameEnd, renderEngine: engine, priority: urgent, resolutionPercent, samples },
+        {
+          frameStart, frameEnd, renderEngine: engine, priority: urgent,
+          resolutionPercent, samples, formats: chosen
+        },
         setProgress
       );
 
-      notify(`Job ${result.jobId} queued`, 'success');
+      notify(
+        result.startsIn > 0
+          ? `Job ${result.jobId} queued — starts in about ${formatDuration(result.startsIn)}`
+          : `Job ${result.jobId} queued`,
+        'success'
+      );
       askToNotify();
       setFile(null);
       if (inputRef.current) inputRef.current.value = '';
@@ -162,6 +174,22 @@ export function Upload({ onSubmitted, notify }) {
         />
       </div>
 
+      <fieldset className="formats">
+        <legend className="field-label">Output formats</legend>
+        {formats.map(({ id, label }) => (
+          <label key={id} className="check check-inline">
+            <input
+              type="checkbox"
+              checked={chosen.includes(id)}
+              onChange={e => setChosen(current => (
+                e.target.checked ? [...current, id] : current.filter(name => name !== id)
+              ))}
+            />
+            <span>{label}</span>
+          </label>
+        ))}
+      </fieldset>
+
       <label className="check">
         <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} />
         <span>
@@ -187,7 +215,8 @@ export function Upload({ onSubmitted, notify }) {
         <ProgressBar value={progress} label="Uploading" />
       )}
 
-      <Button type="submit" variant="primary" busy={progress !== null} disabled={!file || !engine}>
+      <Button type="submit" variant="primary" busy={progress !== null}
+        disabled={!file || !engine || chosen.length === 0}>
         Queue render
       </Button>
     </form>

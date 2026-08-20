@@ -2,10 +2,11 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import { deleteFile, freeBytes } from '../utils/file-utils.js';
-import { addToQueue } from '../queue.js';
+import { addToQueue, getJob } from '../queue.js';
 import { DATA_DIR, UPLOADS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
 import { usageFor } from '../queue.js';
 import { ENGINE_IDS } from '../engines.js';
+import { FORMAT_IDS, normaliseFormats } from '../formats.js';
 
 const router = express.Router();
 
@@ -131,6 +132,19 @@ router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => 
       return res.status(400).json({ error: `samples must be a whole number from 1 to ${MAX_SAMPLES}` });
     }
 
+    // Sent as one comma-separated field: a repeated field arrives as a string
+    // when one box is ticked and an array when several are, and that is a
+    // needless difference to handle.
+    const chosen = (req.body.formats ?? 'PNG').split(',').map(id => id.trim()).filter(Boolean);
+    const formats = normaliseFormats(chosen);
+
+    if (formats.length === 0 || chosen.some(id => !FORMAT_IDS.includes(id))) {
+      deleteFile(req.file.path);
+      return res.status(400).json({
+        error: `Pick at least one output format from ${FORMAT_IDS.join(', ')}`
+      });
+    }
+
     const jobId = addToQueue({
       filePath: path.join('uploads', req.file.filename),
       frameStart: start,
@@ -140,13 +154,17 @@ router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => 
       originalFilename: path.basename(req.file.originalname),
       priority: Number(req.body.priority) === 1 ? 1 : 0,
       resolutionPercent: resolution.value ?? 100,
-      samples: samples.value
+      samples: samples.value,
+      formats: formats.join(',')
     });
 
     res.json({
       success: true,
       message: 'Job added to render queue',
-      jobId
+      jobId,
+      // Null when it started straight away, or when nothing has been rendered
+      // yet to work an estimate from.
+      startsIn: getJob(jobId)?.startsIn ?? null
     });
 
   } catch (error) {

@@ -170,6 +170,12 @@ Things that would otherwise surprise you.
   say what happened — visible rather than restricted.
 - **A job card shows the last frame rendered while it is still rendering**, so a
   scene that came out wrong is caught at frame 30 rather than at frame 500.
+- **A queued job is told roughly when it will start**, not just its position,
+  worked out from how long frames have actually been taking on this machine.
+- **Several output formats can be ticked at once.** Blender renders the frame
+  once and writes each one, so a second format costs disk rather than time, and
+  they all arrive in the same ZIP. The first of them is what previews show,
+  which is why a browser-friendly one sorts ahead of OpenEXR.
 - **Rerunning a job retries only the frames that failed**, keeping the ones that
   worked. The uploaded `.blend` is reused, so nothing is uploaded twice.
 - **Resolution and Cycles samples can be overridden at submit time**, for a
@@ -181,7 +187,8 @@ Things that would otherwise surprise you.
 - **The browser can notify you when a job lands**, since people submit in the
   evening and rarely watch the tab. It asks the first time you queue something.
 - **Cancelling deletes that job's files.** Uploads are capped at 500MB and 2000
-  frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`.
+  frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`, and
+  output formats are PNG, JPEG and OpenEXR.
 
 Two things it does not do: renders run strictly one at a time, and the frontend
 has no automated tests in the repo.
@@ -216,14 +223,14 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 244 checks
+cd backend  && npm test        # 267 checks
 npm run lint                   # from the root, covers both packages
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 227 of the 244 still meaningful.
+Blender is absent, leaving 245 of the 267 still meaningful.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
 only place it is exercised on the platform the workstation actually runs. Windows

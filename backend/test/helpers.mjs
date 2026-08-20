@@ -152,7 +152,9 @@ const valueOf = flag => args[args.indexOf(flag) + 1];
 
 const scene = path.basename(valueOf('-b') || '');
 const frame = Number(valueOf('-f'));
-const target = valueOf('-o').replace('####', String(frame).padStart(4, '0')) + '.png';
+const EXTENSIONS = { PNG: '.png', JPEG: '.jpg', OPEN_EXR: '.exr' };
+const target = valueOf('-o').replace('####', String(frame).padStart(4, '0'))
+  + (EXTENSIONS[valueOf('-F')] || '.png');
 
 // Recorded so a test can assert on the command line the worker built, which is
 // the only place render settings become visible.
@@ -191,9 +193,32 @@ const delay = scene.includes('hang') || scene.includes('stubborn') ? 60000
   : scene.includes('slow') ? 2000
   : 0;
 
+// Each format gets its own leading bytes. Writing the same image into every
+// extension would hide a file being served or recorded as the wrong format,
+// which is the mistake worth catching.
+const CONTENT = {
+  '.png': Buffer.from('${PNG_1X1.toString('base64')}', 'base64'),
+  '.jpg': Buffer.from('ffd8ffe000104a46494600010100000100010000', 'hex'),
+  '.exr': Buffer.from('762f3101020000006368616e6e656c7300', 'hex')
+};
+
+function write(file) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, CONTENT[path.extname(file)] || CONTENT['.png']);
+}
+
 setTimeout(() => {
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(target, Buffer.from('${PNG_1X1.toString('base64')}', 'base64'));
+  write(target);
+
+  // Stands in for the render_post handler: the extras are written from the one
+  // render, beside the primary, exactly as Blender does it.
+  const base = process.env.RENDERNET_FRAME_BASE;
+  const extras = process.env.RENDERNET_EXTRA_FORMATS;
+
+  if (base && extras) {
+    for (const pair of extras.split(',')) write(base + pair.split(':')[1]);
+  }
+
   process.exit(0);
 }, delay);
 `);
@@ -375,7 +400,7 @@ export async function status(url, options) {
 }
 
 export async function submitJob(base, token, blendPath, {
-  frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples
+  frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples, formats
 }) {
   const form = new FormData();
   form.set('blend', new Blob([fs.readFileSync(blendPath)]), path.basename(blendPath));
@@ -385,6 +410,7 @@ export async function submitJob(base, token, blendPath, {
   form.set('priority', String(priority));
   if (resolutionPercent !== undefined) form.set('resolutionPercent', String(resolutionPercent));
   if (samples !== undefined) form.set('samples', String(samples));
+  if (formats !== undefined) form.set('formats', formats.join(','));
 
   const res = await fetch(`${base}/upload`, { method: 'POST', headers: auth(token), body: form });
   return { status: res.status, body: await res.json() };

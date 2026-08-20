@@ -91,12 +91,16 @@ addColumnIfMissing('jobs', 'pausedBy', 'TEXT');
 addColumnIfMissing('jobs', 'resolutionPercent', 'INTEGER DEFAULT 100');
 addColumnIfMissing('jobs', 'samples', 'INTEGER');
 
+// Comma-separated Blender format ids. One render writes all of them, and the
+// first is the one the frame record and the preview point at.
+addColumnIfMissing('jobs', 'formats', "TEXT DEFAULT 'PNG'");
+
 const COLUMNS = [
   'id', 'status', 'filePath', 'outputPath', 'outputFolder', 'frameStart', 'frameEnd',
   'renderEngine', 'originalFilename', 'owner', 'createdAt', 'startedAt', 'completedAt',
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
-  'resolutionPercent', 'samples'
+  'resolutionPercent', 'samples', 'formats'
 ];
 
 const upsertJob = db.prepare(`
@@ -165,6 +169,14 @@ export function resetFailedFrames(jobId) {
     `UPDATE frames SET status = 'pending', error = NULL, attempts = 0, updatedAt = ?
      WHERE jobId = ? AND status = 'failed'`
   ).run(new Date().toISOString(), jobId).changes;
+}
+
+export function doneFrameTimes() {
+  return db.prepare(
+    `SELECT jobId, frame, updatedAt FROM frames
+     WHERE status = 'done' AND updatedAt IS NOT NULL
+     ORDER BY jobId, frame`
+  ).all();
 }
 
 export function countFramesByStatus(jobId) {

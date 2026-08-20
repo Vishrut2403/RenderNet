@@ -9,7 +9,9 @@ import {
   recordFrameFailure,
   completeJob
 } from '../queue.js';
+import path from 'path';
 import { dataPath } from '../paths.js';
+import { parseFormats, primaryOf, extensionOf } from '../formats.js';
 
 const router = express.Router();
 
@@ -78,10 +80,18 @@ const storage = multer.diskStorage({
     }
   },
   filename: (req, file, cb) => {
-    // From the URL, not the body: multer only exposes text fields sent before
-    // the file, which is a fragile ordering to depend on.
+    // From the URL and the filename, not the body: multer only exposes text
+    // fields sent before the file, which is a fragile ordering to depend on.
     const frame = Number(req.params.frame);
-    cb(null, `frame_${String(frame).padStart(4, '0')}.png`);
+    const extension = path.extname(file.originalname).toLowerCase();
+    const allowed = parseFormats(req.job.formats).map(extensionOf);
+
+    if (!allowed.includes(extension)) {
+      cb(new Error(`Job ${req.jobId} did not ask for a ${extension || 'nameless'} file`));
+      return;
+    }
+
+    cb(null, `frame_${String(frame).padStart(4, '0')}${extension}`);
   }
 });
 
@@ -110,15 +120,24 @@ router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, up
   }
 
   const frame = Number(req.params.frame);
-  const job = recordFrameUpload(req.jobId, frame, req.file.filename);
+  const isPrimary = path.extname(req.file.filename).toLowerCase()
+    === extensionOf(primaryOf(req.job.formats));
+
+  // Only the primary marks the frame done. The others are the same image in
+  // another format, and counting them would put progress past 100%.
+  const job = isPrimary
+    ? recordFrameUpload(req.jobId, frame, req.file.filename)
+    : getJob(req.jobId);
 
   // Cancellation can land while the frame is still streaming in.
-  if (!job) {
+  if (!job || job.status !== 'rendering') {
     fs.rmSync(req.file.path, { force: true });
     return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
   }
 
-  console.log(`Frame ${frame} received for job ${req.jobId} (${job.progress}%)`);
+  if (isPrimary) {
+    console.log(`Frame ${frame} received for job ${req.jobId} (${job.progress}%)`);
+  }
 
   res.json({
     success: true,
@@ -127,6 +146,7 @@ router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, up
     progress: job.progress
   });
 });
+
 
 router.post('/jobs/:id/frames/:frame/failed', loadJob, requireRendering, validFrame, (req, res) => {
   const frame = Number(req.params.frame);
@@ -177,6 +197,14 @@ router.post('/jobs/:id/complete', loadJob, (req, res) => {
     completedFrames: job.completedFrames,
     failedFrames: job.failedFrames
   });
+});
+
+// Multer rejects (an unexpected format, an oversized frame) surface here.
+router.use((error, req, res, _next) => {
+  if (req.file?.path) fs.rmSync(req.file.path, { force: true });
+
+  console.warn(`Worker upload rejected: ${error.message}`);
+  res.status(400).json({ error: error.message });
 });
 
 export default router;
