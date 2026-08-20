@@ -1,3 +1,4 @@
+import os from 'os';
 import path from 'path';
 import fs from 'fs';
 import FormData from 'form-data';
@@ -13,15 +14,14 @@ const WORKER_BASE = `${API_URL}/api/worker`;
 const CYCLES_DEVICE = process.env.CYCLES_DEVICE || 'CPU';
 const OUTPUT_TAIL = 4000;
 const KILL_GRACE_MS = 5000;
-const FAILFAST_FRAMES = 3;
-// The server decides when a frame has had enough attempts; this only stops a
-// misbehaving one from looping the worker forever.
-const ATTEMPT_CEILING = 10;
+const RENEW_EVERY_MS = 5000;
 
-// Blender writes one format per render. Saving the others from the finished
-// Render Result costs nothing extra, where rendering again would cost the whole
-// frame. A file rather than --python-expr: this needs real statements, and a
-// command line cannot carry newlines through cmd.exe on Windows.
+const SCRATCH_DIR = process.env.WORKER_SCRATCH_DIR
+  || path.join(os.tmpdir(), 'rendernet-worker');
+
+// Blender writes one format per render; the rest are saved from the finished
+// Render Result. A file rather than --python-expr because a command line cannot
+// carry newlines through cmd.exe on Windows.
 const EXTRAS_SCRIPT = `import bpy, os
 
 FORMATS = [pair.split(':') for pair in os.environ.get('RENDERNET_EXTRA_FORMATS', '').split(',') if pair]
@@ -50,9 +50,7 @@ def save_extras(scene, _depsgraph=None):
 bpy.app.handlers.render_post.append(save_extras)
 `;
 
-// Applied to the scene after it loads and before the render is triggered.
-// Returns nothing when there is nothing to change, so the ordinary case keeps
-// the command line it has always had.
+// Blender has no flag for either, so they are set on the loaded scene.
 function sceneOverrides(renderEngine, { resolutionPercent, samples } = {}) {
   const assignments = [];
 
@@ -77,20 +75,26 @@ function workerHeaders(extra = {}) {
 class RenderWorker {
   constructor(workerId = 'local-worker') {
     this.workerId = workerId;
-    this.currentJob = null;
     this.currentProcess = null;
-    this.cancelled = false;
+    // A cancelled job ends the frame, not the worker.
+    this.abandoned = false;
+    this.stopping = false;
     this.killTimer = null;
+    this.renewTimer = null;
+  }
+
+  stop() {
+    this.stopping = true;
+    this.cancel();
   }
 
   cancel() {
-    this.cancelled = true;
+    this.abandoned = true;
 
     const running = this.currentProcess;
     if (!running) return false;
 
-    // The queue holds the slot until this worker stops, so a Blender that
-    // ignores the stop request would keep the whole queue waiting.
+    // A Blender that ignores the stop request keeps the queue waiting behind it.
     if (terminate(running)) {
       this.killTimer = setTimeout(() => running.kill('SIGKILL'), KILL_GRACE_MS);
       this.killTimer.unref();
@@ -99,131 +103,166 @@ class RenderWorker {
     return true;
   }
 
-  async renderJob(job) {
-    const { id, blendPath, outputDir, frames, renderEngine } = job;
-    const overrides = { resolutionPercent: job.resolutionPercent, samples: job.samples };
-    const primary = primaryOf(job.formats);
-    const extras = extrasOf(job.formats);
+  // Kept, so a hundred frames of one scene cost one transfer.
+  async fetchBlend(jobId) {
+    const cached = path.join(SCRATCH_DIR, `job_${jobId}.blend`);
 
-    console.log(`\n🎬 Worker ${this.workerId}: Starting job ${id}`);
-    console.log(`📁 Blend file: ${blendPath}`);
-    console.log(`🎞️  Frames left to render: ${frames.length}`);
-    console.log(`⚙️  Engine: ${renderEngine}`);
+    if (fs.existsSync(cached)) return cached;
 
-    this.currentJob = job;
+    fs.mkdirSync(SCRATCH_DIR, { recursive: true });
+
+    const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/blend`, {
+      headers: workerHeaders()
+    });
+
+    if (!response.ok) throw new Error(`the server answered ${response.status}`);
+
+    // Moved into place so an interrupted download is never mistaken for a scene.
+    const partial = `${cached}.part`;
+    fs.writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
+    fs.renameSync(partial, cached);
+
+    console.log(`Fetched the scene for job ${jobId}`);
+
+    return cached;
+  }
+
+  // Resolves to whether there was anything to do.
+  async claimAndRender() {
+    if (this.stopping) return false;
+
+    const lease = await this.requestLease();
+
+    if (!lease) return false;
+
+    this.abandoned = false;
+    await this.renderLeasedFrame(lease);
+
+    return true;
+  }
+
+  async requestLease() {
+    try {
+      const response = await fetch(`${WORKER_BASE}/lease`, {
+        method: 'POST',
+        headers: workerHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ workerId: this.workerId })
+      });
+
+      // 204 is the ordinary "nothing for you" answer.
+      if (!response.ok || response.status === 204) return null;
+
+      return (await response.json()).lease;
+    } catch (error) {
+      console.error(`Could not ask for a frame: ${error.message}`);
+      return null;
+    }
+  }
+
+  async renderLeasedFrame(lease) {
+    const { leaseId, jobId, frame, renderEngine, formats } = lease;
+    const primary = primaryOf(formats);
+    const extras = extrasOf(formats);
+
+    // A worker elsewhere has neither the uploaded scene nor the server's scratch
+    // space, so it fetches the one and uses its own for the other.
+    const remote = process.env.WORKER_REMOTE === '1' || !fs.existsSync(lease.blendPath);
+
+    let blendPath = lease.blendPath;
+    const outputDir = remote ? path.join(SCRATCH_DIR, `job_${jobId}`) : lease.outputDir;
 
     fs.mkdirSync(outputDir, { recursive: true });
+
+    if (remote) {
+      try {
+        blendPath = await this.fetchBlend(jobId);
+      } catch (error) {
+        console.error(`Could not fetch the scene for job ${jobId}: ${error.message}`);
+        await this.reportFrameFailure(jobId, frame, `Worker could not fetch the scene: ${error.message}`, leaseId);
+        await this.releaseLease(leaseId);
+        return;
+      }
+    }
 
     const extrasScript = extras.length > 0 ? path.join(outputDir, 'save-extras.py') : null;
     if (extrasScript) fs.writeFileSync(extrasScript, EXTRAS_SCRIPT);
 
-    let successfulFrames = 0;
-    let failedFrames = 0;
+    console.log(`\n🎬 Job ${jobId}, frame ${frame} (${renderEngine})`);
 
-    for (const [index, frame] of frames.entries()) {
-      if (this.cancelled) {
-        console.log(`Worker ${this.workerId}: job ${id} cancelled, stopping at frame ${frame}`);
-        break;
-      }
+    this.startRenewing(lease);
 
-      console.log(`\n🎬 Rendering frame ${frame} (${index + 1} of ${frames.length})`);
-
-      const outcome = await this.renderFrame(id, frame, blendPath, outputDir, renderEngine, overrides,
-        { primary, extras, extrasScript });
-
-      if (outcome === 'cancelled') break;
-
-      if (outcome === 'done') {
-        successfulFrames++;
-        await this.reportProgress(id, frame);
-        continue;
-      }
-
-      failedFrames++;
-
-      // A scene that cannot render its opening frames will not render the rest
-      // either, and on a workstation shared for a few hours that is an evening
-      // spent producing nothing.
-      if (successfulFrames === 0 && failedFrames >= FAILFAST_FRAMES) {
-        console.error(`❌ Job ${id}: first ${failedFrames} frames all failed, abandoning the job`);
-        break;
-      }
-    }
-
-    if (extrasScript) fs.rmSync(extrasScript, { force: true });
-
-    // Succeeds only when every frame was uploaded and removed.
     try {
-      fs.rmdirSync(outputDir);
-    } catch {
-      console.warn(`⚠️  Scratch dir retained (unuploaded frames): ${outputDir}`);
+      const produced = await this.renderSingleFrame(
+        blendPath, frame, outputDir, renderEngine,
+        { resolutionPercent: lease.resolutionPercent, samples: lease.samples },
+        { primary, extras, extrasScript }
+      );
+
+      console.log(`✅ Frame ${frame} rendered: ${produced.join(', ')}`);
+
+      // Every format has to arrive or the ZIP is missing one for this frame alone.
+      for (const file of produced) {
+        if (!await this.uploadFrame(jobId, frame, file, leaseId)) {
+          throw new Error('Frame rendered but upload failed');
+        }
+      }
+
+      for (const file of produced) fs.rmSync(file, { force: true });
+
+      await this.reportProgress(jobId, frame);
+    } catch (error) {
+      // A frame killed by cancellation is not a render failure.
+      if (!this.abandoned) {
+        console.error(`❌ Frame ${frame} failed: ${error.message}`);
+
+        // The server decides whether the frame has attempts left.
+        await this.reportFrameFailure(jobId, frame, error.message, leaseId);
+      }
+    } finally {
+      this.stopRenewing();
+
+      // However the frame ended: a job being cancelled waits for exactly this,
+      // and a frame that finished before the first renewal never heard about it.
+      await this.releaseLease(leaseId);
+
+      if (extrasScript) fs.rmSync(extrasScript, { force: true });
     }
-
-    if (this.cancelled) {
-      console.log(`Job ${id} stopped after cancellation`);
-      this.currentJob = null;
-      return { success: false, cancelled: true, successfulFrames, failedFrames };
-    }
-
-    console.log(`\n🎉 Job ${id} completed!`);
-    console.log(`✅ Successful: ${successfulFrames} frames`);
-    console.log(`❌ Failed: ${failedFrames} frames`);
-
-    await this.reportJobComplete(id, successfulFrames, failedFrames);
-    
-    this.currentJob = null;
-    
-    return {
-      success: failedFrames === 0,
-      successfulFrames,
-      failedFrames
-    };
   }
 
-  // Retries are driven by the server's answer rather than a local count, so
-  // there is one place that decides when a frame has had enough attempts.
-  async renderFrame(jobId, frame, blendPath, outputDir, renderEngine, overrides, output) {
-    for (let attempt = 1; attempt <= ATTEMPT_CEILING; attempt++) {
-      if (this.cancelled) return 'cancelled';
+  startRenewing(lease) {
+    // Far more often than the term needs, because a refused renewal is also how
+    // a cancelled job reaches a worker the server cannot call into. Renewing is
+    // one small request; waiting a third of a lease term to notice is not.
+    const every = Math.min(Math.max(Math.floor(lease.ttlMs / 3), 1000), RENEW_EVERY_MS);
 
-      try {
-        const produced = await this.renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides, output);
-        console.log(`✅ Frame ${frame} rendered: ${produced.join(', ')}`);
+    this.renewTimer = setInterval(async () => {
+      const response = await fetch(`${WORKER_BASE}/leases/${lease.leaseId}/renew`, {
+        method: 'POST',
+        headers: workerHeaders()
+      }).catch(() => null);
 
-        // Every format has to arrive, or the ZIP would be missing one for this
-        // frame alone. Delivered first so the frame counts as done as early as
-        // possible; the rest follow.
-        const delivered = [];
-        for (const file of produced) {
-          if (!await this.uploadFrame(jobId, frame, file)) break;
-          delivered.push(file);
-        }
+      if (!response || response.ok) return;
 
-        if (delivered.length === produced.length) {
-          console.log(`📤 Frame ${frame} uploaded successfully`);
-          for (const file of produced) fs.rmSync(file, { force: true });
-          return 'done';
-        }
+      // The job has stopped - cancelled, or paused for something more urgent.
+      // A refused renewal is how a worker finds that out without the server
+      // having to reach into it.
+      console.warn(`Claim on frame ${lease.frame} refused, abandoning it`);
+      this.cancel();
+    }, every);
 
-        // Rendered but undelivered is still a frame the user cannot download.
-        console.warn(`⚠️  Frame ${frame} upload failed, keeping local copy`);
+    this.renewTimer.unref?.();
+  }
 
-        if (!await this.reportFrameFailure(jobId, frame, 'Frame rendered but upload failed')) {
-          return 'failed';
-        }
-      } catch (error) {
-        // A frame killed by cancellation is not a render failure.
-        if (this.cancelled) return 'cancelled';
+  stopRenewing() {
+    clearInterval(this.renewTimer);
+    this.renewTimer = null;
+  }
 
-        console.error(`❌ Frame ${frame} failed:`, error.message);
-
-        if (!await this.reportFrameFailure(jobId, frame, error.message)) return 'failed';
-      }
-
-      console.log(`↻ Retrying frame ${frame}`);
-    }
-
-    return 'failed';
+  async releaseLease(leaseId) {
+    await fetch(`${WORKER_BASE}/leases/${leaseId}/release`, {
+      method: 'POST',
+      headers: workerHeaders()
+    }).catch(error => console.error(`Could not let go of the frame: ${error.message}`));
   }
 
   renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides = {}, output = {}) {
@@ -329,7 +368,7 @@ class RenderWorker {
     });
   }
 
-  async uploadFrame(jobId, frameNumber, framePath) {
+  async uploadFrame(jobId, frameNumber, framePath, leaseId) {
     try {
       const formData = new FormData();
       // Named explicitly rather than left to the stream's path: the extension
@@ -341,7 +380,7 @@ class RenderWorker {
       const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/frames/${frameNumber}`, {
         method: 'POST',
         body: formData,
-        headers: workerHeaders(formData.getHeaders())
+        headers: workerHeaders({ ...formData.getHeaders(), 'x-lease-id': leaseId })
       });
       
       if (!response.ok) {
@@ -371,11 +410,11 @@ class RenderWorker {
   }
 
   // Resolves to whether the frame still has attempts left.
-  async reportFrameFailure(jobId, frameNumber, error) {
+  async reportFrameFailure(jobId, frameNumber, error, leaseId) {
     try {
       const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/frames/${frameNumber}/failed`, {
         method: 'POST',
-        headers: workerHeaders({ 'Content-Type': 'application/json' }),
+        headers: workerHeaders({ 'Content-Type': 'application/json', 'x-lease-id': leaseId }),
         body: JSON.stringify({ error })
       });
 
@@ -386,18 +425,6 @@ class RenderWorker {
       // Retrying against a server we cannot reach would just spin.
       console.error(`Failed to report frame failure: ${err.message}`);
       return false;
-    }
-  }
-  
-  async reportJobComplete(jobId, successfulFrames, failedFrames) {
-    try {
-      await fetch(`${WORKER_BASE}/jobs/${jobId}/complete`, {
-        method: 'POST',
-        headers: workerHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ successfulFrames, failedFrames })
-      });
-    } catch (error) {
-      console.error(`Failed to report job completion: ${error.message}`);
     }
   }
 }

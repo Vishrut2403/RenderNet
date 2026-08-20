@@ -629,3 +629,7 @@ button, input, select { font: inherit; color: inherit; }
   .metrics > div:nth-child(3) { padding-left: 0; border-top: 1px solid var(--line-soft); }
   .metrics > div:nth-child(4) { border-top: 1px solid var(--line-soft); }
 }
+
+.problems { border-color: var(--bad); }
+.problems ul { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 14px; }
+.problems li { margin-top: 6px; line-height: 1.5; }

@@ -36,8 +36,8 @@ export function clearSession() {
   localStorage.removeItem('rendernet.user');
 }
 
-// For URLs the browser fetches on its own - <img> sources and download links -
-// which cannot carry an Authorization header.
+// For URLs the browser fetches itself, which cannot carry an Authorization
+// header.
 function authorizedUrl(path) {
   return `${BASE}${path}?token=${encodeURIComponent(getToken())}`;
 }
@@ -72,8 +72,7 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true, 
 
   const response = await fetch(`${BASE}${path}`, config);
 
-  // An expired session should drop the user back to the login screen rather
-  // than leaving every panel showing a stale error.
+  // Drops the user back to the login screen rather than leaving stale errors.
   if (response.status === 401 && auth) {
     clearSession();
     onUnauthorized();
@@ -85,8 +84,8 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true, 
     ? { text: await response.text().catch(() => '') }
     : await response.json().catch(() => ({}));
 
-  // An account whose password must change can reach almost nothing until it
-  // does, so the app has to switch to that screen wherever the call came from.
+  // Reachable from any call, so the app switches to that screen wherever it came
+  // from.
   if (response.status === 403 && payload.mustChangePassword) {
     onPasswordChangeRequired();
   }
@@ -116,6 +115,8 @@ export const api = {
 
   listUsers: () => request('/auth/users'),
 
+  health: () => request('/health'),
+
   logs: () => request('/logs'),
 
   logTail: (name, lines = 300) =>
@@ -143,9 +144,7 @@ export const api = {
 
   engines: () => request('/engines'),
 
-  // The frame URLs are built here rather than server-side: only the browser
-  // knows which API origin it is talking to, and a token belongs in the URL
-  // solely because <img> cannot carry an Authorization header.
+  // Built here because only the browser knows which API origin it is talking to.
   async jobFiles(id) {
     const result = await request(`/download/${id}/files`);
 
@@ -157,8 +156,7 @@ export const api = {
 
   zipUrl: id => authorizedUrl(`/download/${id}/zip`),
 
-  // Versioned by the frame count so a finished frame replaces the last one
-  // rather than being served from cache, and an unchanged count still 304s.
+  // Versioned by frame count so a new frame is not served from cache.
   previewUrl: (id, delivered) => `${authorizedUrl(`/download/${id}/preview`)}&v=${delivered}`,
 
   upload(file, { frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats }, onProgress) {

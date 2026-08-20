@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "test": "node test/run.mjs"
+    "test": "node test/run.mjs",
+    "worker": "node src/worker-main.js"
   },
   "dependencies": {
     "archiver": "^7.0.1",

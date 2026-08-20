@@ -16,9 +16,11 @@ function Stat({ label, value, tone }) {
 export function Dashboard({ notify }) {
   const jobsPoll = usePolling(api.jobs, result => jobsInterval(result?.jobs));
   const queuePoll = usePolling(api.queueStatus, result => (result?.isRendering ? 2000 : 10000));
+  const healthPoll = usePolling(api.health, () => 15000);
 
   const jobs = jobsPoll.data?.jobs || [];
   const queue = queuePoll.data;
+  const problems = healthPoll.data?.problems ?? [];
 
   useJobFinished(jobsPoll.data?.jobs);
   const usage = jobsPoll.data?.usage;
@@ -48,6 +50,15 @@ export function Dashboard({ notify }) {
 
   return (
     <div className="stack">
+      {problems.length > 0 && (
+        <section className="panel problems">
+          <h2 className="panel-title">The farm is not fully working</h2>
+          <ul>
+            {problems.map(problem => <li key={problem}>{problem}</li>)}
+          </ul>
+        </section>
+      )}
+
       <div className="stats">
         <Stat label="Total jobs" value={jobs.length} />
         <Stat label="Rendering" value={tally.rendering || 0} tone="active" />
@@ -76,8 +87,6 @@ export function Dashboard({ notify }) {
 
       <section className="panel">
         <h2 className="panel-title">Worker</h2>
-
-        {queue?.heldForDisk && <p className="job-error">{queue.heldForDisk}</p>}
 
         {rendering ? (
           <>

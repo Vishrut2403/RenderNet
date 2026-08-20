@@ -5,9 +5,8 @@ import { purgeExpiredSessions } from './db.js';
 import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, RETENTION_DAYS } from './paths.js';
 import { pruneOldLogs } from './logger.js';
 
-// Cleanup runs at boot and once a day, and the workstation is switched off
-// nightly - so in practice it gets one pass. A file that disappears between the
-// listing and the check must not cost the rest of that pass.
+// The workstation is switched off nightly, so in practice this gets one pass. A
+// file that disappears mid-pass must not cost the rest of it.
 function expired(target, cutoff) {
   try {
     return fs.statSync(target).mtimeMs < cutoff;
@@ -18,16 +17,14 @@ function expired(target, cutoff) {
 
 export function cleanupOldFiles() {
   const now = Date.now();
-  // A backstop for files nobody came back for, not the main limit - people are
-  // expected to delete their own jobs once they have downloaded them, and the
-  // per-user quota is what actually keeps the disk in check.
+  // A backstop for files nobody came back for; the per-user quota is the limit.
   const cutoff = now - (RETENTION_DAYS * 24 * 60 * 60 * 1000);
 
   console.log('Starting cleanup process...');
 
   try {
-    // A job can sit in the queue for longer than the cutoff; deleting by age
-    // alone would take its .blend away before it ever renders.
+    // A job can sit queued for longer than the cutoff, and deleting by age alone
+    // would take its .blend before it renders.
     const active = getActiveJobPaths();
     const uploadsDir = UPLOADS_DIR;
     if (fs.existsSync(uploadsDir)) {

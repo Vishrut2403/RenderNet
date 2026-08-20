@@ -63,8 +63,8 @@ export default function App() {
     return <div className="boot">Checking session…</div>;
   }
 
-  // The toast belongs here too: an expired session signs the user out, and the
-  // notice explaining why would otherwise be dropped with the rest of the app.
+  // An expired session signs the user out, and the notice explaining why would
+  // otherwise go with the rest of the app.
   if (!user) {
     return (
       <>
@@ -83,8 +83,7 @@ export default function App() {
     signOut();
   }
 
-  // Nothing else is reachable until the password is replaced, so there is no
-  // point rendering the tabs behind it.
+  // Nothing else is reachable until the password is replaced.
   if (user.mustChangePassword) {
     return (
       <div className="app">

@@ -31,7 +31,7 @@ export const DB_FILE = process.env.DB_PATH
 // Quota and retention are policy rather than layout, but they belong with the
 // other settings the operator tunes.
 export const RETENTION_DAYS = Number(process.env.RETENTION_DAYS) || 14;
-export const USER_QUOTA_BYTES = Number(process.env.USER_QUOTA_BYTES) || 5 * 1024 * 1024 * 1024;
+export const USER_QUOTA_BYTES = Number(process.env.USER_QUOTA_BYTES) || 10 * 1024 * 1024 * 1024;
 
 // Quotas divide the disk between people; this is what stops the disk itself
 // running out. A full disk fails every frame of every job rather than one.

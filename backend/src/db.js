@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import Database from 'better-sqlite3';
 import { DB_FILE, BACKUPS_DIR, DB_BACKUPS_KEPT } from './paths.js';
 
@@ -73,27 +74,33 @@ function addColumnIfMissing(table, column, definition) {
   }
 }
 
-// How many frames were already done when this job was last resumed, so a
-// restart that made progress can be told apart from one that made none.
+// Frames already done when the job was last resumed, so a restart that made
+// progress can be told from one that made none.
 addColumnIfMissing('jobs', 'framesAtResume', 'INTEGER DEFAULT 0');
 
-// Set on an account whose password somebody else has seen - the seeded admin,
-// or one an administrator has just reset.
+// Set where somebody else has seen the password: the seeded admin, or a reset.
 addColumnIfMissing('users', 'mustChangePassword', 'INTEGER DEFAULT 0');
 
-// Higher numbers go first. 'pausedBy' records who displaced a job, so nobody
-// gets pushed aside invisibly.
+// Higher numbers go first; pausedBy records who displaced a job.
 addColumnIfMissing('jobs', 'priority', 'INTEGER DEFAULT 0');
 addColumnIfMissing('jobs', 'pausedBy', 'TEXT');
 
-// Overrides applied to the scene at render time, so a cheap test pass does not
-// mean editing and re-uploading the .blend.
+// Applied to the scene at render time rather than by editing the .blend.
 addColumnIfMissing('jobs', 'resolutionPercent', 'INTEGER DEFAULT 100');
 addColumnIfMissing('jobs', 'samples', 'INTEGER');
 
-// Comma-separated Blender format ids. One render writes all of them, and the
-// first is the one the frame record and the preview point at.
+// Comma-separated Blender format ids; the first is what the frame record and
+// the preview point at.
 addColumnIfMissing('jobs', 'formats', "TEXT DEFAULT 'PNG'");
+
+// One frame claimed by one worker, with an expiry: a worker that stops answering
+// loses the frame rather than stranding it.
+addColumnIfMissing('frames', 'startedAt', 'TEXT');
+addColumnIfMissing('frames', 'durationMs', 'INTEGER');
+addColumnIfMissing('frames', 'leaseId', 'TEXT');
+addColumnIfMissing('frames', 'leasedBy', 'TEXT');
+addColumnIfMissing('frames', 'leaseExpiresAt', 'TEXT');
+db.exec('CREATE INDEX IF NOT EXISTS idx_frames_lease ON frames(leaseId)');
 
 const COLUMNS = [
   'id', 'status', 'filePath', 'outputPath', 'outputFolder', 'frameStart', 'frameEnd',
@@ -155,13 +162,6 @@ export function getLatestDoneFrame(jobId) {
   ).get(jobId);
 }
 
-export function getPendingFrames(jobId) {
-  return db
-    .prepare("SELECT frame FROM frames WHERE jobId = ? AND status = 'pending' ORDER BY frame")
-    .all(jobId)
-    .map(row => row.frame);
-}
-
 // Attempts go back to zero as well: a frame that exhausted its three tries is
 // being asked to try again, not being given a fourth.
 export function resetFailedFrames(jobId) {
@@ -171,11 +171,18 @@ export function resetFailedFrames(jobId) {
   ).run(new Date().toISOString(), jobId).changes;
 }
 
-export function doneFrameTimes() {
+// Recent frames only: the estimate is for the machine as it is now.
+export function recentFrameDurations(limit = 200) {
   return db.prepare(
-    `SELECT jobId, frame, updatedAt FROM frames
-     WHERE status = 'done' AND updatedAt IS NOT NULL
-     ORDER BY jobId, frame`
+    `SELECT durationMs FROM frames WHERE durationMs IS NOT NULL
+     ORDER BY updatedAt DESC LIMIT ?`
+  ).all(limit).map(row => row.durationMs);
+}
+
+export function frameDurationsByJob() {
+  return db.prepare(
+    `SELECT jobId, frame, durationMs FROM frames
+     WHERE durationMs IS NOT NULL ORDER BY jobId, frame`
   ).all();
 }
 
@@ -191,10 +198,20 @@ export function countFramesByStatus(jobId) {
 }
 
 export function markFrameDone(jobId, frame, filename) {
+  const finished = new Date();
+  const claimed = db
+    .prepare('SELECT startedAt FROM frames WHERE jobId = ? AND frame = ?')
+    .get(jobId, frame);
+
+  const durationMs = claimed?.startedAt
+    ? finished - new Date(claimed.startedAt)
+    : null;
+
   return db.prepare(
-    `UPDATE frames SET status = 'done', filename = ?, error = NULL, updatedAt = ?
+    `UPDATE frames SET status = 'done', filename = ?, error = NULL, updatedAt = ?,
+       durationMs = ?
      WHERE jobId = ? AND frame = ?`
-  ).run(filename, new Date().toISOString(), jobId, frame).changes;
+  ).run(filename, finished.toISOString(), durationMs, jobId, frame).changes;
 }
 
 // A frame only counts as failed once it has used up its attempts; until then it
@@ -205,7 +222,8 @@ export function markFrameAttemptFailed(jobId, frame, error, maxAttempts) {
      SET attempts = attempts + 1,
          error = @error,
          status = CASE WHEN attempts + 1 >= @maxAttempts THEN 'failed' ELSE 'pending' END,
-         updatedAt = @updatedAt
+         updatedAt = @updatedAt,
+         leaseId = NULL, leasedBy = NULL, leaseExpiresAt = NULL
      WHERE jobId = @jobId AND frame = @frame`
   ).run({ jobId, frame, error, maxAttempts, updatedAt: new Date().toISOString() });
 
@@ -214,9 +232,89 @@ export function markFrameAttemptFailed(jobId, frame, error, maxAttempts) {
 
 export function markFramePending(jobId, frame) {
   db.prepare(
-    `UPDATE frames SET status = 'pending', filename = NULL, updatedAt = ?
+    `UPDATE frames SET status = 'pending', filename = NULL, updatedAt = ?,
+       leaseId = NULL, leasedBy = NULL, leaseExpiresAt = NULL
      WHERE jobId = ? AND frame = ?`
   ).run(new Date().toISOString(), jobId, frame);
+}
+
+const claimable = db.prepare(
+  `SELECT frame FROM frames
+    WHERE jobId = ? AND status = 'pending'
+      AND (leaseExpiresAt IS NULL OR leaseExpiresAt <= ?)
+    ORDER BY frame LIMIT 1`
+);
+
+const claim = db.prepare(
+  `UPDATE frames SET leaseId = @leaseId, leasedBy = @leasedBy, leaseExpiresAt = @expiresAt,
+      startedAt = @now, durationMs = NULL
+    WHERE jobId = @jobId AND frame = @frame AND status = 'pending'
+      AND (leaseExpiresAt IS NULL OR leaseExpiresAt <= @now)`
+);
+
+// Compared as text, which is only sound because every one is a UTC ISO string of
+// the same length.
+function stamp(offsetMs = 0) {
+  return new Date(Date.now() + offsetMs).toISOString();
+}
+
+// One transaction, so two workers asking at once cannot get the same frame. The
+// UPDATE repeats the conditions rather than trusting the SELECT, so a claim that
+// lost the race changes nothing and says so.
+export const leaseFrame = db.transaction((jobId, workerId, ttlMs) => {
+  const now = stamp();
+  const row = claimable.get(jobId, now);
+
+  if (!row) return null;
+
+  const lease = {
+    leaseId: crypto.randomUUID(),
+    leasedBy: workerId,
+    expiresAt: stamp(ttlMs),
+    jobId,
+    frame: row.frame
+  };
+
+  return claim.run({ ...lease, now }).changes === 1 ? lease : null;
+});
+
+// Refused rather than extended: the frame may already belong to another worker.
+export function renewLease(leaseId, ttlMs) {
+  const expiresAt = stamp(ttlMs);
+
+  const renewed = db.prepare(
+    'UPDATE frames SET leaseExpiresAt = ? WHERE leaseId = ? AND leaseExpiresAt > ?'
+  ).run(expiresAt, leaseId, stamp()).changes === 1;
+
+  return renewed ? expiresAt : null;
+}
+
+export function releaseLease(leaseId) {
+  return db.prepare(
+    `UPDATE frames SET leaseId = NULL, leasedBy = NULL, leaseExpiresAt = NULL
+     WHERE leaseId = ?`
+  ).run(leaseId).changes === 1;
+}
+
+export function clearJobLeases(jobId) {
+  return db.prepare(
+    `UPDATE frames SET leaseId = NULL, leasedBy = NULL, leaseExpiresAt = NULL
+     WHERE jobId = ? AND leaseId IS NOT NULL`
+  ).run(jobId).changes;
+}
+
+export function getLease(leaseId) {
+  return db.prepare(
+    `SELECT jobId, frame, status, leasedBy, leaseExpiresAt AS expiresAt
+     FROM frames WHERE leaseId = ?`
+  ).get(leaseId) ?? null;
+}
+
+export function liveLeases() {
+  return db.prepare(
+    `SELECT jobId, frame, leasedBy, leaseExpiresAt AS expiresAt
+     FROM frames WHERE leaseExpiresAt > ? ORDER BY jobId, frame`
+  ).all(stamp());
 }
 
 export function getFailedFrames(jobId) {

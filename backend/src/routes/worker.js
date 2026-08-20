@@ -7,8 +7,11 @@ import {
   updateJobProgress,
   recordFrameUpload,
   recordFrameFailure,
-  completeJob
+  leaseNextFrame,
+  renewFrameLease,
+  releaseFrameLease
 } from '../queue.js';
+import { getLease } from '../db.js';
 import path from 'path';
 import { dataPath } from '../paths.js';
 import { parseFormats, primaryOf, extensionOf } from '../formats.js';
@@ -40,6 +43,23 @@ function requireWorker(req, res, next) {
     return res.status(401).json({ error: 'Invalid worker credentials' });
   }
 
+  next();
+}
+
+// A worker whose claim has lapsed could otherwise upload over the frame somebody
+// else is now rendering.
+function requireLease(req, res, next) {
+  const leaseId = req.headers['x-lease-id'];
+  const lease = typeof leaseId === 'string' ? getLease(leaseId) : null;
+
+  if (!lease
+    || lease.jobId !== req.jobId
+    || lease.frame !== Number(req.params.frame)
+    || new Date(lease.expiresAt) <= new Date()) {
+    return res.status(409).json({ error: `Frame ${req.params.frame} is not leased to you` });
+  }
+
+  req.leaseId = leaseId;
   next();
 }
 
@@ -114,7 +134,41 @@ function validFrame(req, res, next) {
 
 router.use(requireWorker);
 
-router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, upload.single('frame'), (req, res) => {
+router.post('/lease', (req, res) => {
+  const workerId = typeof req.body?.workerId === 'string' ? req.body.workerId : 'worker';
+  const lease = leaseNextFrame(workerId);
+
+  // 204 rather than an error: having no work is the ordinary answer.
+  if (!lease) return res.status(204).end();
+
+  res.json({ lease });
+});
+
+router.post('/leases/:leaseId/renew', (req, res) => {
+  const result = renewFrameLease(req.params.leaseId);
+
+  if (result.ok) return res.json({ expiresAt: result.expiresAt });
+
+  res.status(409).json({ error: `Lease ${result.reason}`, stopped: result.reason === 'stopped' });
+});
+
+router.post('/leases/:leaseId/release', (req, res) => {
+  res.json({ released: releaseFrameLease(req.params.leaseId) });
+});
+
+// For a worker on another machine. Worker-authenticated; the browser downloads
+// live under /api/download.
+router.get('/jobs/:id/blend', loadJob, (req, res) => {
+  const blend = dataPath(req.job.filePath);
+
+  if (!req.job.filePath || !fs.existsSync(blend)) {
+    return res.status(404).json({ error: `Job ${req.jobId} has no .blend on disk` });
+  }
+
+  res.sendFile(blend);
+});
+
+router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, requireLease, upload.single('frame'), (req, res) => {
   if (!req.file) {
     return res.status(400).json({ error: 'No frame file uploaded' });
   }
@@ -148,7 +202,7 @@ router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, up
 });
 
 
-router.post('/jobs/:id/frames/:frame/failed', loadJob, requireRendering, validFrame, (req, res) => {
+router.post('/jobs/:id/frames/:frame/failed', loadJob, requireRendering, validFrame, requireLease, (req, res) => {
   const frame = Number(req.params.frame);
   const { error } = req.body;
 
@@ -185,19 +239,6 @@ router.post('/jobs/:id/progress', loadJob, requireRendering, (req, res) => {
   res.json({ success: true, progress: job.progress, currentFrame: job.currentFrame });
 });
 
-router.post('/jobs/:id/complete', loadJob, (req, res) => {
-  const successfulFrames = Number(req.body.successfulFrames) || 0;
-  const failedFrames = Number(req.body.failedFrames) || 0;
-
-  const job = completeJob(req.jobId, { successfulFrames, failedFrames });
-
-  res.json({
-    success: true,
-    status: job.status,
-    completedFrames: job.completedFrames,
-    failedFrames: job.failedFrames
-  });
-});
 
 // Multer rejects (an unexpected format, an oversized frame) surface here.
 router.use((error, req, res, _next) => {

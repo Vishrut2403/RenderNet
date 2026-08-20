@@ -56,6 +56,23 @@ export default async function run() {
       brokenJob.frameErrors[0]?.error.includes('cannot read scene'),
       JSON.stringify(brokenJob.frameErrors[0]?.error));
 
+    console.log('\n  A scene that fails from the first frame is given up on early');
+    const earlyExit = await submitJob(base, token, createFakeScene(sandbox, 'broken-range.blend'), {
+      frameStart: 1, frameEnd: 10
+    });
+    const earlyJob = await waitForJob(base, token, earlyExit.body.jobId, 60000);
+
+    results.check('the job is marked failed', earlyJob.status === 'failed', earlyJob.status);
+    // Without this the farm works through all ten frames, three attempts each,
+    // to learn what the first three already said.
+    results.check('it stops after three failed frames rather than trying all ten',
+      earlyJob.failedFrames === 3, `${earlyJob.failedFrames} failed`);
+    results.check('the frames past that point were never attempted',
+      earlyJob.completedFrames === 0 && earlyJob.frameErrors.length === 3,
+      `${earlyJob.frameErrors.length} frames carry an error`);
+    results.check('and the reason says so', /first 3 frames/i.test(earlyJob.error || ''),
+      earlyJob.error);
+
     console.log('\n  Cancelling mid-render');
     const slow = await submitJob(base, token, createFakeScene(sandbox, 'slow.blend'), {
       frameStart: 1, frameEnd: 6
@@ -817,10 +834,14 @@ export default async function run() {
       inFlight !== undefined && inFlight.startsIn === null,
       JSON.stringify(all.map(job => [job.status, job.startsIn])));
 
-    const pushedAside = all.find(job => job.id === first.body.jobId);
-    results.check('and a job pushed aside is given a wait like any other queued one',
-      pushedAside?.status === 'pending' && pushedAside.startsIn > 0,
-      `${pushedAside?.status} ${pushedAside?.startsIn}`);
+    // A displaced job may be queued or already picked up again, depending on
+    // whether the urgent one still has frames to claim, so what is asserted is
+    // the rule rather than which of the two it landed in.
+    results.check('every queued job is told when it starts and every running one is not',
+      all.every(job => job.status === 'pending'
+        ? typeof job.startsIn === 'number'
+        : job.status !== 'rendering' || job.startsIn === null),
+      JSON.stringify(all.map(job => [job.status, job.startsIn])));
 
   } finally {
     await stopServer(waitServer);

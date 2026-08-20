@@ -8,8 +8,9 @@ import path from 'path';
 import { File } from 'node:buffer';
 import {
   createResults, makeSandbox, removeSandbox, sleep, snapshotEnv,
-  createFakeBlender, createFakeScene
+  createFakeBlender, createFakeScene, waitForCondition
 } from './helpers.mjs';
+import { checkLeases } from './lease-checks.mjs';
 
 const PORT = 5591;
 const SECRET = 'test-secret-abc123';
@@ -33,6 +34,7 @@ export default async function run() {
   fs.mkdirSync('uploads', { recursive: true });
 
   const queue = await import('../src/queue.js');
+  const db = await import('../src/db.js');
   const workerRouter = (await import('../src/routes/worker.js')).default;
 
   const app = express();
@@ -76,15 +78,12 @@ export default async function run() {
     results.check('progress pinned to 100', quick.progress === 100, `got ${quick.progress}`);
     results.check('completedAt stamped', !!quick.completedAt);
 
-    // The worker's closing tally is advisory; the server counts what arrived.
-    let res = await fetch(`${base}/jobs/${quickId}/complete`, {
-      method: 'POST', headers: json,
-      body: JSON.stringify({ successfulFrames: 99, failedFrames: 99 })
-    });
-    let body = await res.json();
     results.check('final counts come from what the server received',
-      body.completedFrames === 4 && body.failedFrames === 0,
-      JSON.stringify({ completed: body.completedFrames, failed: body.failedFrames }));
+      quick.completedFrames === 4 && quick.failedFrames === 0,
+      JSON.stringify({ completed: quick.completedFrames, failed: quick.failedFrames }));
+
+    let res;
+    let body;
 
     // This one occupies the worker for a minute so the callbacks below run
     // against a job that is genuinely mid-render; the next stays queued behind
@@ -132,16 +131,46 @@ export default async function run() {
       'base64'
     );
 
-    const uploadFrame = async frame => {
+    // A frame may only be sent by whoever holds the claim on it, so this stands
+    // in for a worker and claims everything the running one has not already
+    // taken - which is frame 1, the one the stand-in Blender is sitting on.
+    // The worker runs in its own process now, so it takes a moment to start up
+    // and claim the frame it is going to sit on.
+    await waitForCondition(
+      () => db.liveLeases().some(lease => lease.jobId === jobId && lease.frame === 1),
+      { label: 'the worker to claim its first frame' }
+    );
+
+    const claims = new Map();
+    for (;;) {
+      const claim = db.leaseFrame(jobId, 'test-worker', 600_000);
+      if (!claim) break;
+      claims.set(claim.frame, claim.leaseId);
+    }
+
+    results.check('the frame the worker is rendering cannot be claimed',
+      !claims.has(1) && claims.has(2), [...claims.keys()].join(','));
+
+    const uploadFrame = async (frame, leaseId) => {
       const form = new FormData();
       form.set('frame', new File([png], 'arbitrary-name.png', { type: 'image/png' }));
       const response = await fetch(`${base}/jobs/${jobId}/frames/${frame}`, {
-        method: 'POST', headers: secretHeader, body: form
+        method: 'POST',
+        headers: leaseId ? { ...secretHeader, 'x-lease-id': leaseId } : secretHeader,
+        body: form
       });
-      return { status: response.status, body: await response.json() };
+      return { status: response.status, body: await response.json().catch(() => ({})) };
     };
 
-    let upload = await uploadFrame(3);
+    const unclaimed = await uploadFrame(3, null);
+    results.check('a frame sent without a claim is refused', unclaimed.status === 409,
+      `got ${unclaimed.status}`);
+
+    const wrongFrame = await uploadFrame(3, claims.get(2));
+    results.check('a claim on another frame does not authorise this one',
+      wrongFrame.status === 409, `got ${wrongFrame.status}`);
+
+    let upload = await uploadFrame(3, claims.get(3));
     results.check('upload accepted', upload.status === 200, `got ${upload.status}`);
     results.check('stored under canonical name', upload.body.stored === 'frame_0003.png',
       `got ${upload.body.stored}`);
@@ -150,7 +179,7 @@ export default async function run() {
     results.check('progress counts frames delivered, not frame position (1 of 4)',
       upload.body.progress === 25, `got ${upload.body.progress}`);
 
-    upload = await uploadFrame(1);
+    upload = await uploadFrame(2, claims.get(2));
     results.check('a second frame advances progress to 50%', upload.body.progress === 50,
       `got ${upload.body.progress}`);
 
@@ -177,9 +206,17 @@ export default async function run() {
     results.check('non-integer frame rejected', res.status === 400, `got ${res.status}`);
 
     console.log('\n  Frame retries');
+    // A frame that failed goes back into circulation without its claim, so each
+    // attempt is a fresh one - which is what lets another worker pick it up.
     const failFrame = async () => {
+      if (!db.getLease(claims.get(4))) {
+        const again = db.leaseFrame(jobId, 'test-worker', 600_000);
+        claims.set(again.frame, again.leaseId);
+      }
+
       const response = await fetch(`${base}/jobs/${jobId}/frames/4/failed`, {
-        method: 'POST', headers: json,
+        method: 'POST',
+        headers: { ...json, 'x-lease-id': claims.get(4) },
         body: JSON.stringify({ error: 'Blender exited with code 1' })
       });
       return response.json();
@@ -206,12 +243,8 @@ export default async function run() {
     results.check('cancelling the queued job succeeds', queue.cancelJob(queuedId).success);
     results.check('its output folder is removed', !fs.existsSync(outputFolder));
 
-    res = await fetch(`${base}/jobs/${queuedId}/complete`, {
-      method: 'POST', headers: json,
-      body: JSON.stringify({ successfulFrames: 4, failedFrames: 0 })
-    });
-    body = await res.json();
-    results.check('late completion ignored', body.status === 'cancelled', `got ${body.status}`);
+    results.check('a cancelled job stays cancelled',
+      queue.getJob(queuedId).status === 'cancelled', queue.getJob(queuedId).status);
 
     res = await fetch(`${base}/jobs/${queuedId}/progress`, {
       method: 'POST', headers: json, body: JSON.stringify({ currentFrame: 4 })
@@ -238,12 +271,16 @@ export default async function run() {
       && untouched.frameErrors.length === 0,
       JSON.stringify({ progress: untouched.progress, done: untouched.completedFrames }));
 
+    console.log('\n  Frame leases');
+    checkLeases(db, results);
+
   } finally {
     // Stops the stand-in Blender still sitting on its first frame.
     for (const job of queue.getAllJobs()) {
       if (job.status === 'rendering' || job.status === 'pending') queue.cancelJob(job.id);
     }
 
+    queue.stopWorkers();
     server.close();
     process.chdir(originalCwd);
     restoreEnv();

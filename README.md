@@ -147,7 +147,10 @@ computer and download from another.
 
 To confirm the workstation is reachable, open `http://rendernet:5500/api/health`
 from a *different* machine. `{"status":"ok","blenderAvailable":true}` means the
-firewall rule and the name are both working.
+firewall rule and the name are both working. It answers `degraded` instead when
+Blender is missing or the disk is too full to render, and signing in first adds
+the queue depth, the free disk, the job in flight and the last failure — one URL
+that answers "is the farm actually working?" rather than "is the process up?".
 
 ---
 
@@ -162,7 +165,20 @@ Things that would otherwise surprise you.
 - **A failed frame gets three attempts**, since causes like a momentary memory
   shortage rarely repeat. But a job whose first three frames all fail stops
   immediately instead of working through the range.
-- **Each user holds 5 GB** across uploads and frames, and is expected to delete
+- **Renderers are separate processes.** The server starts `WORKER_SLOTS` of
+  them and restarts any that die. They share whichever jobs are running, and a
+  worker with nothing left to claim starts the next queued job rather than
+  waiting, so the tail of one job does not leave the rest of the farm idle.
+  A second machine joins by running `npm run worker` against the same API with
+  the same `WORKER_SECRET`: it downloads each scene over HTTP and renders in
+  its own scratch space. Nothing on the server has to know it is there.
+- **Frames are claimed, not handed out.** A worker asks for one frame at a time
+  and holds a claim on it with an expiry, renewed while the frame renders. A
+  worker that dies loses its claim and the frame returns to circulation, and a
+  frame can only be uploaded by whoever holds the claim on it. The server, not
+  the worker, decides when a job is finished: only the frames on disk are
+  downloadable, and a worker that died halfway is in no position to report.
+- **Each user holds 10 GB** across uploads and frames, and is expected to delete
   finished jobs once downloaded. The 14-day sweep is a backstop, not the limit.
   Anything still queued or rendering is never swept, however old.
 - **Any user can mark a job urgent**, which pauses whatever is rendering. The
@@ -170,8 +186,10 @@ Things that would otherwise surprise you.
   say what happened — visible rather than restricted.
 - **A job card shows the last frame rendered while it is still rendering**, so a
   scene that came out wrong is caught at frame 30 rather than at frame 500.
-- **A queued job is told roughly when it will start**, not just its position,
-  worked out from how long frames have actually been taking on this machine.
+- **A queued job is told roughly when it will start**, not just its position.
+  Every frame's render time is recorded, so the estimate is the median of what
+  frames have actually cost on this machine, shared out between the workers
+  running. A finished job also reports its typical and slowest frame.
 - **Several output formats can be ticked at once.** Blender renders the frame
   once and writes each one, so a second format costs disk rather than time, and
   they all arrive in the same ZIP. The first of them is what previews show,
@@ -190,8 +208,7 @@ Things that would otherwise surprise you.
   frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`, and
   output formats are PNG, JPEG and OpenEXR.
 
-Two things it does not do: renders run strictly one at a time, and the frontend
-has no automated tests in the repo.
+One thing it does not do: the frontend has no automated tests in the repo.
 
 ---
 
@@ -208,7 +225,7 @@ tree, so it is found however the server is started.
 | `BLENDER_PATH` | auto-detected | Blender executable. Required on Windows. |
 | `CYCLES_DEVICE` | `CPU` | `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI` or `METAL` |
 | `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |
-| `USER_QUOTA_BYTES` | `5368709120` (5 GB) | Disk each user may hold in uploads and rendered frames |
+| `USER_QUOTA_BYTES` | `10737418240` (10 GB) | Disk each user may hold in uploads and rendered frames |
 | `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |
 | `MIN_FREE_BYTES` | `5368709120` (5 GB) | Disk kept spare; below it uploads are refused and the queue holds |
 | `DB_BACKUPS_KEPT` | `7` | Database snapshots kept in `backups/`, one taken per start |
@@ -216,6 +233,10 @@ tree, so it is found however the server is started.
 | `MAX_LOG_BYTES` | `8388608` (8 MB) | Size at which the day's log rotates to a new file |
 | `DB_PATH` | `rendernet.db` inside `DATA_DIR` | SQLite database file |
 | `API_URL` | `http://localhost:5500` | Base URL the worker posts results back to |
+| `WORKER_SLOTS` | `1` | Renderers this machine runs, each its own process. `0` coordinates only |
+| `WORKER_REMOTE` | *unset* | Set to `1` on a worker not on the server's machine |
+| `WORKER_SCRATCH_DIR` | a temp directory | Where a remote worker keeps scenes and frames |
+| `LEASE_TTL_MS` | `120000` | How long a worker's claim on a frame lasts before another may take it |
 
 ---
 
@@ -223,14 +244,14 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 267 checks
+cd backend  && npm test        # 332 checks
 npm run lint                   # from the root, covers both packages
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 245 of the 267 still meaningful.
+Blender is absent, leaving 310 of the 332 still meaningful.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
 only place it is exercised on the platform the workstation actually runs. Windows

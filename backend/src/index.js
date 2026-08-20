@@ -1,6 +1,6 @@
 import './env.js';
-// Second, for the same reason env.js is first: it patches console on import, so
-// anything the modules below log as they load lands in the file too.
+// Before the rest: it patches console on import, so what they log while loading
+// lands in the file too.
 import { requestLogger } from './logger.js';
 import express from 'express';
 import cors from 'cors';
@@ -11,10 +11,11 @@ import authRouter from './routes/auth.js'
 import { requireAuth, requireAdmin } from './auth.js';
 import uploadRouter from './routes/upload.js';
 import jobsRouter from './routes/jobs.js';
-import { resumeInterruptedJobs } from './queue.js';
+import { resumeInterruptedJobs, stopWorkers } from './queue.js';
 import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
 import logsRouter from './routes/logs.js';
+import { healthRouter } from './routes/health.js';
 import { ENGINES } from './engines.js';
 import { FORMATS } from './formats.js';
 import { backupDatabase } from './db.js';
@@ -23,8 +24,7 @@ import fs from 'fs';
 import path from 'path';
 import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST, RETENTION_DAYS } from './paths.js';
 
-// Ephemeral rather than a hardcoded default, so an unconfigured deployment
-// never ships a publicly-known credential.
+// Ephemeral, so an unconfigured deployment never ships a known credential.
 if (!process.env.WORKER_SECRET) {
   process.env.WORKER_SECRET = crypto.randomBytes(32).toString('hex');
   console.warn('WORKER_SECRET not set - generated a temporary one for this process.');
@@ -34,8 +34,8 @@ if (!process.env.WORKER_SECRET) {
 const app = express();
 const PORT = process.env.PORT || 5500;
 
-// No credentials: sessions travel as a bearer token, and a browser refuses a
-// credentialed request to a wildcard origin anyway.
+// Sessions travel as a bearer token, and a browser refuses a credentialed
+// request to a wildcard origin anyway.
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 app.use(requestLogger);
@@ -64,15 +64,9 @@ app.use('/api/jobs', requireAuth, jobsRouter);
 app.use('/api/download', downloadRouter);
 app.use('/api/worker', workerRouter);
 
-app.get('/api/health', (req, res) => {
-  res.json({ 
-    status: 'ok',
-    blenderAvailable: !!blenderPath
-  });
-});
+app.use('/api/health', healthRouter(blenderPath));
 
-// Served rather than duplicated in the frontend: the upload form must offer
-// exactly what the upload route will accept.
+// The upload form must offer exactly what the upload route will accept.
 app.get('/api/engines', requireAuth, (req, res) => {
   res.json({ engines: ENGINES, formats: FORMATS });
 });
@@ -84,8 +78,7 @@ app.post('/api/cleanup', requireAuth, requireAdmin, (req, res) => {
   res.json({ message: 'Cleanup triggered' });
 });
 
-// Serving the built frontend from the API means a client needs nothing but a
-// browser: no clone, no Node, and no per-machine configuration to drift.
+// So a client needs nothing but a browser.
 if (fs.existsSync(FRONTEND_DIST)) {
   app.use(express.static(FRONTEND_DIST));
 
@@ -108,8 +101,7 @@ const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;
 setInterval(cleanupOldFiles, CLEANUP_INTERVAL);
 console.log(`Auto-cleanup scheduled (runs every 24 hours, deletes files older than ${RETENTION_DAYS} days)`);
 
-// Last resort: a handler that threw has already been caught by the async route
-// wrapper, and this turns it into a 500 rather than a hung request.
+// Turns a throw the async route wrapper caught into a 500 rather than a hang.
 app.use((error, req, res, next) => {
   console.error(`Unhandled error on ${req.method} ${req.path}:`, error);
 
@@ -118,8 +110,16 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong' });
 });
 
-// An unattended workstation losing a render to a stray rejection is worse than
-// running on with it logged, and jobs resume from their last frame anyway.
+// Workers are separate processes and outlive this one unless asked to stop.
+for (const signal of ['SIGTERM', 'SIGINT']) {
+  process.on(signal, () => {
+    stopWorkers();
+    process.exit(0);
+  });
+}
+
+// Losing an unattended render to a stray rejection is worse than logging it and
+// carrying on; jobs resume from their last frame anyway.
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason);
 });

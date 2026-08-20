@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
 // Polls while the tab is visible, at whatever interval the caller derives from
-// the data. Callers pass a faster interval while a render is active and a slow
-// one when the queue is idle, so an idle dashboard costs almost nothing.
+// the data.
 export function usePolling(fetcher, intervalFor, deps = []) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -21,9 +20,8 @@ export function usePolling(fetcher, intervalFor, deps = []) {
   dataRef.current = data;
 
   const tick = useCallback(async () => {
-    // Clearing the timer cannot cancel a request already in flight. Without
-    // this, a refresh landing mid-request leaves both ticks scheduling a
-    // successor, and the loop forks in two for the rest of the session.
+    // Clearing the timer cannot cancel a request already in flight, and without
+    // this both ticks schedule a successor and the loop forks in two.
     const run = ++runId.current;
     const stale = () => cancelled.current || run !== runId.current;
 

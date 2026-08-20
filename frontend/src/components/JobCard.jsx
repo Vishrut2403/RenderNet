@@ -8,14 +8,10 @@ export function JobCard({ job, onChanged, onError }) {
   const [busy, setBusy] = useState(false);
   const [frames, setFrames] = useState(null);
   const [showErrors, setShowErrors] = useState(false);
-  // Recorded per frame count, so a frame swept off disk hides the preview only
-  // until the next one lands.
   const [previewFailedAt, setPreviewFailedAt] = useState(null);
 
   const active = job.status === 'rendering';
   const done = job.status === 'completed';
-  // A job that failed part-way still delivered real frames, and re-rendering
-  // the range to get them back is the expensive thing this avoids.
   const partial = job.status === 'failed' && job.completedFrames > 0;
 
   const now = useNow(active);
@@ -26,17 +22,23 @@ export function JobCard({ job, onChanged, onError }) {
   const perFrame = job.completedFrames > 0 && elapsed ? elapsed / job.completedFrames : null;
   const remaining = job.totalFrames - job.completedFrames;
 
+  const measured = job.timing?.medianMs ?? null;
+  const frameCost = measured ?? perFrame;
+
   const timing = active
     ? [
         ['Elapsed', formatDuration(elapsed)],
-        ['Per frame', perFrame ? formatDuration(perFrame) : '—'],
+        ['Per frame', frameCost ? formatDuration(frameCost) : '—'],
         ['Remaining', `${remaining} frame${remaining === 1 ? '' : 's'}`],
         ['ETA', perFrame ? `~${formatDuration(perFrame * remaining)}` : 'estimating']
       ]
     : elapsed !== null && job.completedFrames > 0
       ? [
           ['Total', formatDuration(elapsed)],
-          ['Per frame', perFrame ? formatDuration(perFrame) : '—'],
+          ['Per frame', frameCost ? formatDuration(frameCost) : '—'],
+          ['Slowest', job.timing
+            ? `frame ${job.timing.slowestFrame} · ${formatDuration(job.timing.slowestMs)}`
+            : '—'],
           ['Frames', `${job.completedFrames} / ${job.totalFrames}`],
           ['Engine', job.renderEngine.replace('BLENDER_', '')]
         ]
@@ -119,9 +121,8 @@ export function JobCard({ job, onChanged, onError }) {
     ? `Rendering frame ${inFlight} of ${job.frameEnd}`
     : `${job.completedFrames} of ${job.totalFrames} frames`;
 
-  // Absent until the machine has rendered something to average over, and zero
-  // once the job is next up, where "starts in 0 seconds" reads worse than
-  // nothing at all.
+  // Zero once the job is next up, where "starts in 0 seconds" reads worse than
+  // nothing.
   const waitsFor = job.status === 'pending' && job.startsIn > 0;
 
   // Only the frames that failed are retried, so there has to be one.

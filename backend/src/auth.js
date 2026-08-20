@@ -374,6 +374,19 @@ export function requireAuth(req, res, next) {
   });
 }
 
+// Identifies the caller when it can and gives up quietly when it cannot, for
+// the endpoints that answer everyone but answer a signed-in user in more detail.
+export function optionalAuth(req, res, next) {
+  const token = req.headers.authorization?.replace('Bearer ', '');
+  const verification = token ? verifyToken(token) : { valid: false };
+
+  if (verification.valid) {
+    req.user = { username: verification.username, role: verification.role };
+  }
+
+  next();
+}
+
 export function requireAdmin(req, res, next) {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Admin access required' });
