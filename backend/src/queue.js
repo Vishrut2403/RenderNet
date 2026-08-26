@@ -543,8 +543,8 @@ export function getQueueStatus() {
   return {
     isRendering: active.size > 0,
     heldForDisk,
-    currentJobId: activeJobs()[0]?.id ?? null,
-    activeJobs: [...active],
+    activeJobs: activeJobs().map(job => job.id),
+    workers: liveLeases().map(({ leasedBy, jobId, frame }) => ({ id: leasedBy, jobId, frame })),
     queueLength: renderQueue.length,
     totalJobs: jobs.size,
     pendingJobs: renderQueue.length,

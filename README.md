@@ -149,8 +149,9 @@ To confirm the workstation is reachable, open `http://rendernet:5500/api/health`
 from a *different* machine. `{"status":"ok","blenderAvailable":true}` means the
 firewall rule and the name are both working. It answers `degraded` instead when
 Blender is missing or the disk is too full to render, and signing in first adds
-the queue depth, the free disk, the job in flight and the last failure — one URL
-that answers "is the farm actually working?" rather than "is the process up?".
+the queue depth, the free disk, every job in flight with the worker holding each
+frame, and the last failure — one URL that answers "is the farm actually
+working?" rather than "is the process up?".
 
 ---
 

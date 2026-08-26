@@ -39,7 +39,8 @@ export function healthRouter(blenderPath) {
           totalJobs: queue.totalJobs
         },
         disk: { freeBytes: free, minFreeBytes: MIN_FREE_BYTES, low: lowOnDisk },
-        current: currentJob(queue.currentJobId, req.user),
+        active: queue.activeJobs.map(id => jobSummary(id, req.user)).filter(Boolean),
+        workers: queue.workers,
         lastFailure: visibleFailure(queue.lastFailure, req.user)
       });
     }
@@ -52,8 +53,8 @@ export function healthRouter(blenderPath) {
   return router;
 }
 
-function currentJob(jobId, user) {
-  const job = jobId === null ? null : getJob(jobId);
+function jobSummary(jobId, user) {
+  const job = getJob(jobId);
 
   if (!job) return null;
 

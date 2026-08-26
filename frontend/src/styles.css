@@ -487,6 +487,12 @@ button, input, select { font: inherit; color: inherit; }
 
 .queue-pos { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: 13px; }
 
+.active-job + .active-job { margin-top: 22px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
+
+.holders { margin: 14px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px 20px; }
+
+.holders li { display: flex; gap: 8px; font-size: 13px; color: var(--text-2); }
+
 /* ---------- modal ---------- */
 
 .modal-backdrop {

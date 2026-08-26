@@ -43,8 +43,8 @@ export default async function run() {
     results.check('it reports Blender as available when a path is configured',
       anonymous.body.blenderAvailable === true, JSON.stringify(anonymous.body));
     results.check('and nothing at all about the jobs',
-      anonymous.body.queue === undefined && anonymous.body.current === undefined
-        && anonymous.body.lastFailure === undefined,
+      anonymous.body.queue === undefined && anonymous.body.active === undefined
+        && anonymous.body.workers === undefined && anonymous.body.lastFailure === undefined,
       JSON.stringify(anonymous.body));
 
     console.log('\n  A machine that cannot render says so');
@@ -76,7 +76,11 @@ export default async function run() {
         && idle.body.disk.minFreeBytes > 0 && idle.body.disk.low === false,
       JSON.stringify(idle.body.disk));
     results.check('no job is named as running while the queue is empty',
-      idle.body.current === null, JSON.stringify(idle.body.current));
+      Array.isArray(idle.body.active) && idle.body.active.length === 0,
+      JSON.stringify(idle.body.active));
+    results.check('and no worker is holding a frame',
+      Array.isArray(idle.body.workers) && idle.body.workers.length === 0,
+      JSON.stringify(idle.body.workers));
     results.check('nothing has failed yet', idle.body.lastFailure === null,
       JSON.stringify(idle.body.lastFailure));
 
@@ -106,27 +110,33 @@ export default async function run() {
       frameStart: 1, frameEnd: 6
     });
 
-    await waitForCondition(async () => (await health(base, token)).body.queue?.rendering,
-      { label: 'the slow job to start' });
+    let mine = null;
+    let onIt = null;
 
-    const owner = await health(base, token);
+    await waitForCondition(async () => {
+      const { body } = await health(base, token);
+      mine ??= (body.active ?? []).find(job => job.id === slow.body.jobId) ?? null;
+      onIt ??= (body.workers ?? []).find(worker => worker.jobId === slow.body.jobId) ?? null;
+      return mine && onIt;
+    }, { label: 'a worker to pick up the slow job' });
+
     results.check('the owner sees which job is running and what it is called',
-      owner.body.current?.id === slow.body.jobId
-        && owner.body.current?.filename === 'slow.blend',
-      JSON.stringify(owner.body.current));
+      mine?.filename === 'slow.blend', JSON.stringify(mine));
     results.check('and how far through it is',
-      owner.body.current?.totalFrames === 6 && typeof owner.body.current?.startedAt === 'string',
-      JSON.stringify(owner.body.current));
+      mine?.totalFrames === 6 && typeof mine?.startedAt === 'string', JSON.stringify(mine));
+    results.check('the worker holding a frame of it is named',
+      typeof onIt?.id === 'string' && Number.isInteger(onIt?.frame), JSON.stringify(onIt));
 
     const watched = await health(base, watcherToken);
+    const theirs = watched.body.active.find(job => job.id === slow.body.jobId);
     results.check('somebody else can see that the farm is busy',
-      watched.body.queue?.rendering === true && watched.body.current?.id === slow.body.jobId,
-      JSON.stringify(watched.body.current));
+      watched.body.queue?.rendering === true && theirs?.id === slow.body.jobId,
+      JSON.stringify(watched.body.active));
     // Everything else about a job is behind the same access check, so the
     // health endpoint is not the place that starts handing out filenames.
     results.check('but not whose job it is or what it is called',
-      watched.body.current?.filename === undefined && watched.body.current?.owner === undefined,
-      JSON.stringify(watched.body.current));
+      theirs?.filename === undefined && theirs?.owner === undefined,
+      JSON.stringify(watched.body.active));
     results.check('nor why somebody else\'s job failed',
       watched.body.lastFailure?.id === broken.body.jobId
         && watched.body.lastFailure?.error === null,

@@ -79,21 +79,39 @@ export default async function run() {
       frameStart: 1, frameEnd: 4
     });
 
-    const listJobs = async () =>
-      (await (await fetch(`${server.base}/jobs`, { headers: auth(token) })).json()).jobs;
+    const bothOf = ids => ids.includes(shortJob.body.jobId) && ids.includes(longJob.body.jobId);
 
-    const bothRunning = await waitForCondition(
+    // Each observation is recorded on its own, so a health endpoint that lost
+    // sight of one of the jobs cannot be mistaken for a scheduler that never
+    // started it.
+    let bothRendering = false;
+    let bothInHealth = null;
+    let busyWorkers = null;
+
+    await waitForCondition(
       async () => {
-        const running = (await listJobs()).filter(job => job.status === 'rendering');
-        return running.some(job => job.id === shortJob.body.jobId)
-          && running.some(job => job.id === longJob.body.jobId);
+        const jobs = (await (await fetch(`${server.base}/jobs`, { headers: auth(token) })).json())
+          .jobs.filter(job => job.status === 'rendering').map(job => job.id);
+        if (bothOf(jobs)) bothRendering = true;
+
+        const health = await (await fetch(`${server.base}/health`, { headers: auth(token) })).json();
+        if (bothOf((health.active ?? []).map(job => job.id))) bothInHealth = health.active;
+        if (health.workers?.length > 0) busyWorkers = health.workers;
+
+        return bothRendering && bothInHealth && busyWorkers;
       },
       { label: 'both jobs to be rendering at once', timeoutMs: 60000 }
     );
 
     // With one frame between them and two workers, the second worker would sit
     // idle until the first job finished if it could not start the next one.
-    results.check('the second job starts before the first has finished', bothRunning);
+    results.check('the second job starts before the first has finished', bothRendering);
+    results.check('health names every job in flight, not just one',
+      bothInHealth !== null, JSON.stringify(bothInHealth));
+    results.check('and says which worker is on which frame',
+      busyWorkers !== null && busyWorkers.every(worker => typeof worker.id === 'string'
+        && Number.isInteger(worker.frame) && Number.isInteger(worker.jobId)),
+      JSON.stringify(busyWorkers));
 
     for (const submitted of [shortJob, longJob]) {
       const finished = await waitForJob(server.base, token, submitted.body.jobId, 120000);

@@ -13,6 +13,49 @@ function Stat({ label, value, tone }) {
   );
 }
 
+function ActiveJob({ job, now, workers }) {
+  const elapsed = job.startedAt ? now - new Date(job.startedAt).getTime() : null;
+  const perFrame = job.timing?.medianMs
+    ?? (job.completedFrames > 0 && elapsed ? elapsed / job.completedFrames : null);
+  const holders = workers.filter(worker => worker.jobId === job.id);
+
+  return (
+    <div className="active-job">
+      <div className="worker-line">
+        <strong>{job.originalFilename}</strong>
+        <StatusBadge status="rendering" />
+      </div>
+      <ProgressBar
+        value={job.progress}
+        label={`Rendering frame ${Math.min(
+          job.frameEnd,
+          (job.currentFrame ?? job.frameStart - 1) + 1
+        )} of ${job.frameEnd}`}
+      />
+      <Metrics
+        items={[
+          ['Elapsed', formatDuration(elapsed)],
+          ['Per frame', perFrame ? formatDuration(perFrame) : '—'],
+          ['Engine', job.renderEngine.replace('BLENDER_', '')],
+          ['ETA', perFrame
+            ? `~${formatDuration(perFrame * (job.totalFrames - job.completedFrames))}`
+            : 'estimating']
+        ]}
+      />
+      {holders.length > 0 && (
+        <ul className="holders">
+          {holders.map(worker => (
+            <li key={`${worker.id}:${worker.frame}`}>
+              <span>{worker.id}</span>
+              <span className="queue-pos">frame {worker.frame}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 export function Dashboard({ notify }) {
   const jobsPoll = usePolling(api.jobs, result => jobsInterval(result?.jobs));
   const queuePoll = usePolling(api.queueStatus, result => (result?.isRendering ? 2000 : 10000));
@@ -30,17 +73,14 @@ export function Dashboard({ notify }) {
     return acc;
   }, {});
 
-  const rendering = jobs.find(job => job.status === 'rendering');
+  const rendering = jobs.filter(job => job.status === 'rendering');
   const recent = [...jobs].sort((a, b) => b.id - a.id).slice(0, 3);
   const framesRendered = jobs.reduce((sum, job) => sum + (job.completedFrames || 0), 0);
 
-  const now = useNow(Boolean(rendering));
-  const workerElapsed = rendering?.startedAt
-    ? now - new Date(rendering.startedAt).getTime()
-    : null;
-  const workerPerFrame = rendering?.completedFrames > 0 && workerElapsed
-    ? workerElapsed / rendering.completedFrames
-    : null;
+  const now = useNow(rendering.length > 0);
+  const workers = queue?.workers ?? [];
+  const elsewhere = Math.max((queue?.activeJobs?.length ?? 0) - rendering.length, 0);
+  const otherJobs = `${elsewhere} other job${elsewhere === 1 ? '' : 's'}`;
 
   const finished = jobs.filter(job => job.status === 'completed' && job.startedAt && job.completedAt);
   const totalRenderMs = finished.reduce(
@@ -86,34 +126,20 @@ export function Dashboard({ notify }) {
       )}
 
       <section className="panel">
-        <h2 className="panel-title">Worker</h2>
+        <h2 className="panel-title">Workers</h2>
 
-        {rendering ? (
-          <>
-            <div className="worker-line">
-              <strong>{rendering.originalFilename}</strong>
-              <StatusBadge status="rendering" />
-            </div>
-            <ProgressBar
-              value={rendering.progress}
-              label={`Rendering frame ${Math.min(
-                rendering.frameEnd,
-                (rendering.currentFrame ?? rendering.frameStart - 1) + 1
-              )} of ${rendering.frameEnd}`}
-            />
-            <Metrics
-              items={[
-                ['Elapsed', formatDuration(workerElapsed)],
-                ['Per frame', workerPerFrame ? formatDuration(workerPerFrame) : '—'],
-                ['Engine', rendering.renderEngine.replace('BLENDER_', '')],
-                ['ETA', workerPerFrame
-                  ? `~${formatDuration(workerPerFrame * (rendering.totalFrames - rendering.completedFrames))}`
-                  : 'estimating']
-              ]}
-            />
-          </>
-        ) : (
-          <p className="idle">Idle — no render in progress</p>
+        {rendering.length > 0
+          ? rendering.map(job => (
+            <ActiveJob key={job.id} job={job} now={now} workers={workers} />
+          ))
+          : (
+            <p className="idle">
+              {elsewhere > 0 ? `Busy with ${otherJobs}` : 'Idle — no render in progress'}
+            </p>
+          )}
+
+        {rendering.length > 0 && elsewhere > 0 && (
+          <p className="idle">Also rendering {otherJobs}.</p>
         )}
 
         {queue?.queue?.length > 0 && (
