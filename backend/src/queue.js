@@ -10,6 +10,7 @@ import {
   getFailedFrames, getAllFailedFrames, recentFrameDurations, frameDurationsByJob,
   leaseFrame, renewLease, releaseLease, getLease, liveLeases, clearJobLeases
 } from './db.js';
+import { DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY } from './formats.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
@@ -148,7 +149,10 @@ export function addToQueue(jobData) {
     pausedBy: null,
     resolutionPercent: jobData.resolutionPercent ?? 100,
     samples: jobData.samples ?? null,
-    formats: jobData.formats || 'PNG'
+    formats: jobData.formats || 'PNG',
+    exrCodec: jobData.exrCodec || DEFAULT_EXR_CODEC,
+    exrDepth: jobData.exrDepth || DEFAULT_EXR_DEPTH,
+    jpegQuality: jobData.jpegQuality ?? DEFAULT_JPEG_QUALITY
   };
 
   jobs.set(jobId, job);
@@ -402,7 +406,10 @@ function leaseFromActive(workerId) {
         renderEngine: job.renderEngine,
         formats: job.formats,
         resolutionPercent: job.resolutionPercent,
-        samples: job.samples
+        samples: job.samples,
+        exrCodec: job.exrCodec,
+        exrDepth: job.exrDepth,
+        jpegQuality: job.jpegQuality
       };
     }
   }

@@ -904,6 +904,69 @@ export default async function run() {
       lastArgs().includes('resolution_percentage=50') && !lastArgs().includes('cycles.samples'),
       lastArgs());
 
+    console.log('\n  How each format is written');
+
+    const lastEnv = () => Object.fromEntries(
+      fs.readFileSync(path.join(settingsBox, 'uploads', 'last-env.txt'), 'utf8')
+        .split('\n').filter(Boolean).map(line => line.split(/=(.*)/s).slice(0, 2))
+    );
+
+    const byDefault = await submitJob(
+      settingsServer.base, settingsToken, createFakeScene(settingsBox, 'default.blend'),
+      { frameStart: 1, frameEnd: 1, formats: ['OPEN_EXR', 'JPEG'] }
+    );
+    const defaultJob = await waitForJob(settingsServer.base, settingsToken, byDefault.body.jobId, 30000);
+
+    // Half float rather than the 32-bit a scene carries by default: the size of
+    // every EXR the farm keeps depends on it, so it is worth stating.
+    results.check('a job that says nothing gets half-float ZIP and quality 90',
+      defaultJob.exrCodec === 'ZIP' && defaultJob.exrDepth === '16'
+        && defaultJob.jpegQuality === 90,
+      `${defaultJob.exrCodec}/${defaultJob.exrDepth}/${defaultJob.jpegQuality}`);
+
+    const asked = await submitJob(
+      settingsServer.base, settingsToken, createFakeScene(settingsBox, 'asked.blend'),
+      {
+        frameStart: 1, frameEnd: 1, formats: ['OPEN_EXR', 'JPEG'],
+        exrCodec: 'DWAA', exrDepth: '32', jpegQuality: 40
+      }
+    );
+    const askedJob = await waitForJob(settingsServer.base, settingsToken, asked.body.jobId, 30000);
+
+    results.check('the settings are remembered on the job',
+      askedJob.exrCodec === 'DWAA' && askedJob.exrDepth === '32' && askedJob.jpegQuality === 40,
+      `${askedJob.exrCodec}/${askedJob.exrDepth}/${askedJob.jpegQuality}`);
+
+    const env = lastEnv();
+    results.check('and reach the script Blender runs',
+      env.RENDERNET_EXR_CODEC === 'DWAA' && env.RENDERNET_EXR_DEPTH === '32'
+        && env.RENDERNET_JPEG_QUALITY === '40',
+      JSON.stringify(env));
+    results.check('along with which format is the primary and which are saved after',
+      env.RENDERNET_PRIMARY_FORMAT === 'JPEG' && env.RENDERNET_EXTRA_FORMATS === 'OPEN_EXR:.exr',
+      JSON.stringify(env));
+
+    const badCodec = await submitJob(
+      settingsServer.base, settingsToken, createFakeScene(settingsBox, 'bad.blend'),
+      { frameStart: 1, frameEnd: 1, formats: ['OPEN_EXR'], exrCodec: 'B44' }
+    );
+    results.check('a codec the form does not offer is refused',
+      badCodec.status === 400, `${badCodec.status} ${JSON.stringify(badCodec.body)}`);
+
+    const badDepth = await submitJob(
+      settingsServer.base, settingsToken, createFakeScene(settingsBox, 'bad.blend'),
+      { frameStart: 1, frameEnd: 1, formats: ['OPEN_EXR'], exrDepth: '8' }
+    );
+    results.check('and so is a colour depth OpenEXR does not have',
+      badDepth.status === 400, `${badDepth.status} ${JSON.stringify(badDepth.body)}`);
+
+    const badQuality = await submitJob(
+      settingsServer.base, settingsToken, createFakeScene(settingsBox, 'bad.blend'),
+      { frameStart: 1, frameEnd: 1, formats: ['JPEG'], jpegQuality: 0 }
+    );
+    results.check('a JPEG quality outside 1 to 100 is refused',
+      badQuality.status === 400, `${badQuality.status} ${JSON.stringify(badQuality.body)}`);
+
   } finally {
     await stopServer(settingsServer);
     removeSandbox(settingsBox);

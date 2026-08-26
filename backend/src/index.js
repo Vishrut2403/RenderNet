@@ -17,7 +17,10 @@ import workerRouter from './routes/worker.js';
 import logsRouter from './routes/logs.js';
 import { healthRouter } from './routes/health.js';
 import { ENGINES } from './engines.js';
-import { FORMATS } from './formats.js';
+import {
+  FORMATS, EXR_CODECS, EXR_DEPTHS,
+  DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY
+} from './formats.js';
 import { backupDatabase } from './db.js';
 import crypto from 'crypto';
 import fs from 'fs';
@@ -68,7 +71,17 @@ app.use('/api/health', healthRouter(blenderPath));
 
 // The upload form must offer exactly what the upload route will accept.
 app.get('/api/engines', requireAuth, (req, res) => {
-  res.json({ engines: ENGINES, formats: FORMATS });
+  res.json({
+    engines: ENGINES,
+    formats: FORMATS,
+    exrCodecs: EXR_CODECS,
+    exrDepths: EXR_DEPTHS,
+    defaults: {
+      exrCodec: DEFAULT_EXR_CODEC,
+      exrDepth: DEFAULT_EXR_DEPTH,
+      jpegQuality: DEFAULT_JPEG_QUALITY
+    }
+  });
 });
 
 app.use('/api/logs', requireAuth, requireAdmin, logsRouter);

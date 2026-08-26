@@ -22,9 +22,30 @@ const SCRATCH_DIR = process.env.WORKER_SCRATCH_DIR
 // Blender writes one format per render; the rest are saved from the finished
 // Render Result. A file rather than --python-expr because a command line cannot
 // carry newlines through cmd.exe on Windows.
-const EXTRAS_SCRIPT = `import bpy, os
+const OUTPUT_SCRIPT = `import bpy, os
 
-FORMATS = [pair.split(':') for pair in os.environ.get('RENDERNET_EXTRA_FORMATS', '').split(',') if pair]
+PRIMARY = os.environ.get('RENDERNET_PRIMARY_FORMAT', '')
+EXTRAS = [pair.split(':') for pair in os.environ.get('RENDERNET_EXTRA_FORMATS', '').split(',') if pair]
+EXR_CODEC = os.environ.get('RENDERNET_EXR_CODEC', '')
+EXR_DEPTH = os.environ.get('RENDERNET_EXR_DEPTH', '')
+JPEG_QUALITY = os.environ.get('RENDERNET_JPEG_QUALITY', '')
+
+
+# Depth and quality are one setting shared by every format rather than one per
+# format, so each format has to state its own or inherit the last one written.
+def use_format(settings, name):
+    settings.file_format = name
+
+    if name == 'OPEN_EXR':
+        if EXR_CODEC:
+            settings.exr_codec = EXR_CODEC
+        if EXR_DEPTH:
+            settings.color_depth = EXR_DEPTH
+    else:
+        settings.color_depth = '8'
+
+    if name == 'JPEG' and JPEG_QUALITY:
+        settings.quality = int(JPEG_QUALITY)
 
 
 def save_extras(scene, _depsgraph=None):
@@ -35,19 +56,20 @@ def save_extras(scene, _depsgraph=None):
 
     base = os.environ['RENDERNET_FRAME_BASE']
     settings = scene.render.image_settings
-    original = settings.file_format
 
     try:
-        for name, extension in FORMATS:
-            settings.file_format = name
+        for name, extension in EXTRAS:
+            use_format(settings, name)
             result.save_render(base + extension, scene=scene)
     finally:
-        # Blender has already written the primary by now, but the setting is
-        # part of the scene and the next frame reuses it.
-        settings.file_format = original
+        use_format(settings, PRIMARY)
 
 
-bpy.app.handlers.render_post.append(save_extras)
+if PRIMARY:
+    use_format(bpy.context.scene.render.image_settings, PRIMARY)
+
+if EXTRAS:
+    bpy.app.handlers.render_post.append(save_extras)
 `;
 
 // Blender has no flag for either, so they are set on the loaded scene.
@@ -184,8 +206,10 @@ class RenderWorker {
       }
     }
 
-    const extrasScript = extras.length > 0 ? path.join(outputDir, 'save-extras.py') : null;
-    if (extrasScript) fs.writeFileSync(extrasScript, EXTRAS_SCRIPT);
+    // Named per frame: workers sharing a job share the folder, and one of them
+    // rewriting the file another is reading would break that render.
+    const outputScript = path.join(outputDir, `output_${frame}.py`);
+    fs.writeFileSync(outputScript, OUTPUT_SCRIPT);
 
     console.log(`\n🎬 Job ${jobId}, frame ${frame} (${renderEngine})`);
 
@@ -195,7 +219,14 @@ class RenderWorker {
       const produced = await this.renderSingleFrame(
         blendPath, frame, outputDir, renderEngine,
         { resolutionPercent: lease.resolutionPercent, samples: lease.samples },
-        { primary, extras, extrasScript }
+        {
+          primary,
+          extras,
+          outputScript,
+          exrCodec: lease.exrCodec,
+          exrDepth: lease.exrDepth,
+          jpegQuality: lease.jpegQuality
+        }
       );
 
       console.log(`✅ Frame ${frame} rendered: ${produced.join(', ')}`);
@@ -225,7 +256,7 @@ class RenderWorker {
       // and a frame that finished before the first renewal never heard about it.
       await this.releaseLease(leaseId);
 
-      if (extrasScript) fs.rmSync(extrasScript, { force: true });
+      fs.rmSync(outputScript, { force: true });
     }
   }
 
@@ -270,7 +301,7 @@ class RenderWorker {
       // '####' pads the frame number to four digits; a single '#' does not pad
       // at all, so the written and expected names never agree.
       const outputPattern = path.join(outputDir, 'frame_####');
-      const { primary = 'PNG', extras = [], extrasScript = null } = output;
+      const { primary = 'PNG', extras = [], outputScript } = output;
       const stem = path.join(outputDir, `frame_${frame.toString().padStart(4, '0')}`);
       const expectedFile = stem + extensionOf(primary);
 
@@ -288,7 +319,7 @@ class RenderWorker {
       const expression = sceneOverrides(renderEngine, overrides);
       if (expression) args.push('--python-expr', expression);
 
-      if (extrasScript) args.push('-P', extrasScript);
+      args.push('-P', outputScript);
 
       // Last, because Blender renders when it reaches this and ignores what
       // follows.
@@ -305,13 +336,15 @@ class RenderWorker {
       // Passed as environment rather than script arguments: Blender hands its
       // own leftovers to the script and the quoting is one less thing to get
       // wrong on Windows.
-      const env = extrasScript
-        ? {
-            ...process.env,
-            RENDERNET_FRAME_BASE: stem,
-            RENDERNET_EXTRA_FORMATS: extras.map(id => `${id}:${extensionOf(id)}`).join(',')
-          }
-        : process.env;
+      const env = {
+        ...process.env,
+        RENDERNET_FRAME_BASE: stem,
+        RENDERNET_PRIMARY_FORMAT: primary,
+        RENDERNET_EXTRA_FORMATS: extras.map(id => `${id}:${extensionOf(id)}`).join(','),
+        RENDERNET_EXR_CODEC: output.exrCodec ?? '',
+        RENDERNET_EXR_DEPTH: output.exrDepth ?? '',
+        RENDERNET_JPEG_QUALITY: output.jpegQuality == null ? '' : String(output.jpegQuality)
+      };
 
       const blender = launch(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
       this.currentProcess = blender;

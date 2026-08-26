@@ -8,7 +8,7 @@ import { ENGINE_IDS } from '../src/engines.js';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, blenderAvailable, blenderEngines,
-  engineRenders, createFixtureBlend,
+  engineRenders, createFixtureBlend, exrHeader, EXR_COMPRESSION, EXR_HALF, EXR_FLOAT,
   adminSession, signUp, SIGNUP_CODE, ADMIN_PASSWORD
 } from './helpers.mjs';
 
@@ -314,6 +314,9 @@ export default async function run() {
         'frame paths carry no token', 'session survives restart', 'job survives restart',
         'progress survives restart', 'download survives restart',
         'every offered engine is one this Blender lists',
+        'the EXR is written half float, not the 32-bit a scene defaults to',
+        'a JPEG at quality 10 is smaller than the same frame at 90',
+        'a scene set to 16-bit PNG is still written at the 8 the form promises',
         'BLENDER_EEVEE renders', 'BLENDER_WORKBENCH renders']) {
         results.skipped(name, 'Blender not installed');
       }
@@ -363,6 +366,52 @@ export default async function run() {
     results.check('the JPEG is a JPEG', bytes('frame_0001.jpg').subarray(0, 2).toString('hex') === 'ffd8');
     results.check('the EXR is an EXR',
       bytes('frame_0001.exr').subarray(0, 4).toString('hex') === '762f3101');
+
+    // The codec and the depth are only visible in the file Blender wrote, and
+    // the default is the one that decides how much disk every job costs.
+    const written = exrHeader(path.join(sandbox, multiJob.outputFolder, 'frame_0001.exr'));
+    results.check('the EXR is written half float, not the 32-bit a scene defaults to',
+      written.pixelTypes.length > 0 && written.pixelTypes.every(type => type === EXR_HALF),
+      JSON.stringify(written.pixelTypes));
+    results.check('and compressed with the codec the job asked for',
+      written.compression === EXR_COMPRESSION.ZIP, String(written.compression));
+
+    const lossy = await submitJob(base, adminToken, blend, {
+      frameStart: 1, frameEnd: 1, formats: ['PNG', 'JPEG', 'OPEN_EXR'],
+      exrCodec: 'DWAA', exrDepth: '32', jpegQuality: 10
+    });
+    const lossyJob = await waitForJob(base, adminToken, lossy.body.jobId);
+
+    results.check('a job that asks for other settings still renders',
+      lossyJob.status === 'completed',
+      `${lossyJob.status}: ${JSON.stringify(lossyJob.frameErrors ?? [])}`);
+
+    const other = exrHeader(path.join(sandbox, lossyJob.outputFolder, 'frame_0001.exr'));
+    results.check('with the codec and depth it chose instead',
+      other.compression === EXR_COMPRESSION.DWAA
+        && other.pixelTypes.every(type => type === EXR_FLOAT),
+      `${other.compression} / ${JSON.stringify(other.pixelTypes)}`);
+
+    // The JPEG is saved from the finished render rather than by the render
+    // itself, so its quality proves the handler applies settings too.
+    const sizeOf = (job, name) => fs.statSync(path.join(sandbox, job.outputFolder, name)).size;
+    results.check('and a JPEG at quality 10 is smaller than the same frame at 90',
+      sizeOf(lossyJob, 'frame_0001.jpg') < sizeOf(multiJob, 'frame_0001.jpg'),
+      `${sizeOf(lossyJob, 'frame_0001.jpg')} vs ${sizeOf(multiJob, 'frame_0001.jpg')}`);
+
+    // The format is forced on the command line, but the depth is a separate
+    // setting the scene carries, and a 16-bit PNG is not what the form offers.
+    const deep = createFixtureBlend(sandbox, {
+      name: 'deep.blend', extra: "s.render.image_settings.color_depth = '16'"
+    });
+    const deepJob = await waitForJob(base, adminToken, (await submitJob(base, adminToken, deep, {
+      frameStart: 1, frameEnd: 1, formats: ['PNG']
+    })).body.jobId);
+
+    // Byte 24 of a PNG is the bit depth in its header.
+    const pngDepth = fs.readFileSync(path.join(sandbox, deepJob.outputFolder, 'frame_0001.png'))[24];
+    results.check('a scene set to 16-bit PNG is still written at the 8 the form promises',
+      pngDepth === 8, String(pngDepth));
 
     // The expression is built by hand and handed to Blender's own interpreter,
     // so the only proof it is valid Python against a real scene is running it.

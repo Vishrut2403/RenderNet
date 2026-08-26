@@ -4,10 +4,33 @@
 export const FORMATS = [
   { id: 'PNG', label: 'PNG — lossless, 8-bit', extension: '.png' },
   { id: 'JPEG', label: 'JPEG — small, lossy', extension: '.jpg' },
-  { id: 'OPEN_EXR', label: 'OpenEXR — 32-bit, for compositing', extension: '.exr' }
+  { id: 'OPEN_EXR', label: 'OpenEXR — for compositing', extension: '.exr' }
 ];
 
 export const FORMAT_IDS = FORMATS.map(format => format.id);
+
+// A useful few of Blender's eleven: lossless by default, one lossy choice for
+// when the frames are only ever going to be watched.
+export const EXR_CODECS = [
+  { id: 'ZIP', label: 'ZIP — lossless' },
+  { id: 'PIZ', label: 'PIZ — lossless, smaller on grainy renders' },
+  { id: 'DWAA', label: 'DWAA — lossy, far smaller' },
+  { id: 'NONE', label: 'None — uncompressed' }
+];
+
+export const EXR_DEPTHS = [
+  { id: '16', label: '16-bit half' },
+  { id: '32', label: '32-bit full' }
+];
+
+export const EXR_CODEC_IDS = EXR_CODECS.map(codec => codec.id);
+export const EXR_DEPTH_IDS = EXR_DEPTHS.map(depth => depth.id);
+
+export const DEFAULT_EXR_CODEC = 'ZIP';
+// Half rather than the 32-bit a scene usually carries: the same picture at half
+// the bytes, and the farm is shared.
+export const DEFAULT_EXR_DEPTH = '16';
+export const DEFAULT_JPEG_QUALITY = 90;
 
 export const PREVIEWABLE_EXTENSIONS = FORMATS
   .filter(format => format.id !== 'OPEN_EXR')

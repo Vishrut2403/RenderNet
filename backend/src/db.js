@@ -93,6 +93,12 @@ addColumnIfMissing('jobs', 'samples', 'INTEGER');
 // the preview point at.
 addColumnIfMissing('jobs', 'formats', "TEXT DEFAULT 'PNG'");
 
+// How each format is written: kept as text because Blender's depth is an enum
+// of digits rather than a number.
+addColumnIfMissing('jobs', 'exrCodec', "TEXT DEFAULT 'ZIP'");
+addColumnIfMissing('jobs', 'exrDepth', "TEXT DEFAULT '16'");
+addColumnIfMissing('jobs', 'jpegQuality', 'INTEGER DEFAULT 90');
+
 // One frame claimed by one worker, with an expiry: a worker that stops answering
 // loses the frame rather than stranding it.
 addColumnIfMissing('frames', 'startedAt', 'TEXT');
@@ -107,7 +113,7 @@ const COLUMNS = [
   'renderEngine', 'originalFilename', 'owner', 'createdAt', 'startedAt', 'completedAt',
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
-  'resolutionPercent', 'samples', 'formats'
+  'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality'
 ];
 
 const upsertJob = db.prepare(`

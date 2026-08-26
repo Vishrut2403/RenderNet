@@ -6,7 +6,10 @@ import { addToQueue, getJob } from '../queue.js';
 import { DATA_DIR, UPLOADS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
 import { usageFor } from '../queue.js';
 import { ENGINE_IDS } from '../engines.js';
-import { FORMAT_IDS, normaliseFormats } from '../formats.js';
+import {
+  FORMAT_IDS, normaliseFormats, EXR_CODEC_IDS, EXR_DEPTH_IDS,
+  DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY
+} from '../formats.js';
 
 const router = express.Router();
 
@@ -145,6 +148,23 @@ router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => 
       });
     }
 
+    const exrCodec = req.body.exrCodec || DEFAULT_EXR_CODEC;
+    const exrDepth = String(req.body.exrDepth || DEFAULT_EXR_DEPTH);
+
+    if (!EXR_CODEC_IDS.includes(exrCodec) || !EXR_DEPTH_IDS.includes(exrDepth)) {
+      deleteFile(req.file.path);
+      return res.status(400).json({
+        error: `OpenEXR takes one of ${EXR_CODEC_IDS.join(', ')} at ${EXR_DEPTH_IDS.join(' or ')} bits`
+      });
+    }
+
+    const jpegQuality = optionalInteger(req.body.jpegQuality, { min: 1, max: 100 });
+
+    if (!jpegQuality.ok) {
+      deleteFile(req.file.path);
+      return res.status(400).json({ error: 'jpegQuality must be a whole number from 1 to 100' });
+    }
+
     const jobId = addToQueue({
       filePath: path.join('uploads', req.file.filename),
       frameStart: start,
@@ -155,7 +175,10 @@ router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => 
       priority: Number(req.body.priority) === 1 ? 1 : 0,
       resolutionPercent: resolution.value ?? 100,
       samples: samples.value,
-      formats: formats.join(',')
+      formats: formats.join(','),
+      exrCodec,
+      exrDepth,
+      jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY
     });
 
     res.json({

@@ -13,6 +13,11 @@ export function Upload({ onSubmitted, notify }) {
   const [engine, setEngine] = useState('');
   const [formats, setFormats] = useState([]);
   const [chosen, setChosen] = useState(['PNG']);
+  const [exrCodecs, setExrCodecs] = useState([]);
+  const [exrDepths, setExrDepths] = useState([]);
+  const [exrCodec, setExrCodec] = useState('ZIP');
+  const [exrDepth, setExrDepth] = useState('16');
+  const [jpegQuality, setJpegQuality] = useState(90);
   const [resolutionPercent, setResolutionPercent] = useState(100);
   // Blank means whatever the scene already specifies.
   const [samples, setSamples] = useState('');
@@ -28,11 +33,16 @@ export function Upload({ onSubmitted, notify }) {
     let current = true;
 
     api.engines()
-      .then(({ engines: available, formats: offered }) => {
+      .then(({ engines: available, formats: offered, exrCodecs: codecs, exrDepths: depths, defaults }) => {
         if (!current) return;
         setEngines(available);
         setEngine(available[0]?.id ?? '');
         setFormats(offered);
+        setExrCodecs(codecs ?? []);
+        setExrDepths(depths ?? []);
+        setExrCodec(defaults?.exrCodec ?? 'ZIP');
+        setExrDepth(defaults?.exrDepth ?? '16');
+        setJpegQuality(defaults?.jpegQuality ?? 90);
       })
       .catch(err => current && setError(err.message));
 
@@ -66,7 +76,7 @@ export function Upload({ onSubmitted, notify }) {
         file,
         {
           frameStart, frameEnd, renderEngine: engine, priority: urgent,
-          resolutionPercent, samples, formats: chosen
+          resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality
         },
         setProgress
       );
@@ -190,6 +200,40 @@ export function Upload({ onSubmitted, notify }) {
         ))}
       </fieldset>
 
+      {chosen.includes('OPEN_EXR') && (
+        <div className="row">
+          <label className="field">
+            <span className="field-label">EXR compression</span>
+            <select value={exrCodec} onChange={e => setExrCodec(e.target.value)}>
+              {exrCodecs.map(({ id, label }) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
+          </label>
+          <label className="field">
+            <span className="field-label">EXR colour depth</span>
+            <select value={exrDepth} onChange={e => setExrDepth(e.target.value)}>
+              {exrDepths.map(({ id, label }) => (
+                <option key={id} value={id}>{label}</option>
+              ))}
+            </select>
+          </label>
+        </div>
+      )}
+
+      {chosen.includes('JPEG') && (
+        <div className="row">
+          <Field
+            label="JPEG quality"
+            type="number"
+            min="1"
+            max="100"
+            value={jpegQuality}
+            onChange={e => setJpegQuality(e.target.value)}
+          />
+        </div>
+      )}
+
       <label className="check">
         <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} />
         <span>
@@ -207,6 +251,8 @@ export function Upload({ onSubmitted, notify }) {
           : 'Invalid frame range'}
         {Number(resolutionPercent) !== 100 && ` at ${resolutionPercent}% resolution`}
         {engine === 'CYCLES' && samples && ` with ${samples} samples`}
+        {chosen.includes('OPEN_EXR') && `, EXR at ${exrDepth}-bit ${exrCodec}`}
+        {chosen.includes('JPEG') && `, JPEG at quality ${jpegQuality}`}
       </p>
 
       <Alert>{error}</Alert>

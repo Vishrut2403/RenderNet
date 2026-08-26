@@ -159,7 +159,10 @@ export const api = {
   // Versioned by frame count so a new frame is not served from cache.
   previewUrl: (id, delivered) => `${authorizedUrl(`/download/${id}/preview`)}&v=${delivered}`,
 
-  upload(file, { frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats }, onProgress) {
+  upload(file, {
+    frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats,
+    exrCodec, exrDepth, jpegQuality
+  }, onProgress) {
     // XHR rather than fetch: upload progress events have no fetch equivalent.
     return new Promise((resolve, reject) => {
       const form = new FormData();
@@ -170,6 +173,11 @@ export const api = {
       form.append('resolutionPercent', resolutionPercent);
       if (samples) form.append('samples', samples);
       form.append('formats', (formats ?? ['PNG']).join(','));
+      if (formats?.includes('OPEN_EXR')) {
+        form.append('exrCodec', exrCodec);
+        form.append('exrDepth', exrDepth);
+      }
+      if (formats?.includes('JPEG')) form.append('jpegQuality', jpegQuality);
       form.append('priority', priority ? 1 : 0);
 
       const xhr = new XMLHttpRequest();

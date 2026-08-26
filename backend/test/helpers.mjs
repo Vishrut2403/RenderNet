@@ -93,8 +93,8 @@ export function engineRenders(engine, blendPath, dir) {
 }
 
 // Renders fast: 64x64, one Cycles sample, no denoising.
-export function createFixtureBlend(dir) {
-  const blendPath = path.join(dir, 'fixture.blend');
+export function createFixtureBlend(dir, { name = 'fixture.blend', extra = '' } = {}) {
+  const blendPath = path.join(dir, name);
   const script = `
 import bpy
 s = bpy.context.scene
@@ -103,6 +103,7 @@ s.render.resolution_y = 64
 s.render.engine = 'CYCLES'
 s.cycles.samples = 1
 s.cycles.use_denoising = False
+${extra}
 bpy.ops.wm.save_as_mainfile(filepath=r'${blendPath}')
 `;
 
@@ -156,9 +157,16 @@ const EXTENSIONS = { PNG: '.png', JPEG: '.jpg', OPEN_EXR: '.exr' };
 const target = valueOf('-o').replace('####', String(frame).padStart(4, '0'))
   + (EXTENSIONS[valueOf('-F')] || '.png');
 
-// Recorded so a test can assert on the command line the worker built, which is
-// the only place render settings become visible.
+// Recorded so a test can assert on the command line the worker built and the
+// environment it set, which is where the render settings become visible.
 fs.writeFileSync(path.join(path.dirname(valueOf('-b')), 'last-args.txt'), args.join(' '));
+fs.writeFileSync(
+  path.join(path.dirname(valueOf('-b')), 'last-env.txt'),
+  Object.entries(process.env)
+    .filter(([name]) => name.startsWith('RENDERNET_'))
+    .map(([name, value]) => name + '=' + value)
+    .join('\\n')
+);
 
 if (scene.includes('stubborn')) {
   process.on('SIGTERM', () => {});
@@ -400,7 +408,8 @@ export async function status(url, options) {
 }
 
 export async function submitJob(base, token, blendPath, {
-  frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples, formats
+  frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples, formats,
+  exrCodec, exrDepth, jpegQuality
 }) {
   const form = new FormData();
   form.set('blend', new Blob([fs.readFileSync(blendPath)]), path.basename(blendPath));
@@ -411,9 +420,60 @@ export async function submitJob(base, token, blendPath, {
   if (resolutionPercent !== undefined) form.set('resolutionPercent', String(resolutionPercent));
   if (samples !== undefined) form.set('samples', String(samples));
   if (formats !== undefined) form.set('formats', formats.join(','));
+  if (exrCodec !== undefined) form.set('exrCodec', exrCodec);
+  if (exrDepth !== undefined) form.set('exrDepth', String(exrDepth));
+  if (jpegQuality !== undefined) form.set('jpegQuality', String(jpegQuality));
 
   const res = await fetch(`${base}/upload`, { method: 'POST', headers: auth(token), body: form });
   return { status: res.status, body: await res.json() };
+}
+
+// OpenEXR header: the magic and version, then name\0type\0size(int32)value
+// until an empty name. Compression and the channels' pixel type are what say
+// whether the codec and the colour depth a job asked for actually arrived.
+export const EXR_COMPRESSION = { NONE: 0, ZIP: 3, PIZ: 4, DWAA: 8 };
+export const EXR_HALF = 1;
+export const EXR_FLOAT = 2;
+
+export function exrHeader(file) {
+  const buffer = fs.readFileSync(file);
+  const header = { compression: null, pixelTypes: [] };
+  let at = 8;
+
+  const readString = () => {
+    const end = buffer.indexOf(0, at);
+    const value = buffer.toString('latin1', at, end);
+    at = end + 1;
+    return value;
+  };
+
+  for (;;) {
+    const name = readString();
+
+    if (name === '') break;
+
+    readString();
+    const size = buffer.readInt32LE(at);
+    at += 4;
+    const value = buffer.subarray(at, at + size);
+    at += size;
+
+    if (name === 'compression') header.compression = value[0];
+
+    if (name === 'channels') {
+      let cursor = 0;
+
+      // Each channel is its name, then the pixel type, then 16 bytes of
+      // sampling and padding this does not need.
+      while (value[cursor] !== 0) {
+        cursor = value.indexOf(0, cursor) + 1;
+        header.pixelTypes.push(value.readInt32LE(cursor));
+        cursor += 16;
+      }
+    }
+  }
+
+  return header;
 }
 
 export async function waitForJob(base, token, jobId, timeoutMs = 180000) {

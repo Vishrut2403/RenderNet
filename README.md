@@ -195,6 +195,11 @@ Things that would otherwise surprise you.
   once and writes each one, so a second format costs disk rather than time, and
   they all arrive in the same ZIP. The first of them is what previews show,
   which is why a browser-friendly one sorts ahead of OpenEXR.
+- **How each format is written is a choice, not the scene's.** OpenEXR takes a
+  codec and a colour depth, JPEG a quality. EXR defaults to half float rather
+  than the 32-bit a scene usually carries, which is the same picture at half the
+  bytes on a disk several people share. Depth is one Blender setting shared by
+  every format, so each is written with its own rather than inheriting the last.
 - **Rerunning a job retries only the frames that failed**, keeping the ones that
   worked. The uploaded `.blend` is reused, so nothing is uploaded twice.
 - **Resolution and Cycles samples can be overridden at submit time**, for a
@@ -207,7 +212,8 @@ Things that would otherwise surprise you.
   evening and rarely watch the tab. It asks the first time you queue something.
 - **Cancelling deletes that job's files.** Uploads are capped at 500MB and 2000
   frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`, and
-  output formats are PNG, JPEG and OpenEXR.
+  output formats are PNG, JPEG and OpenEXR with ZIP, PIZ, DWAA or no
+  compression.
 
 One thing it does not do: the frontend has no automated tests in the repo.
 
