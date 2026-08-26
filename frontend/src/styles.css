@@ -212,7 +212,7 @@ button, input, select { font: inherit; color: inherit; }
 
 .dropzone span { color: var(--text-3); font-size: 13px; }
 .dropzone strong { font-weight: 500; }
-.dropzone:hover, .dropzone.dragging { border-color: var(--accent-dim); }
+.dropzone:hover, .dropzone.dragging, .dropzone:focus-visible { border-color: var(--accent-dim); }
 .dropzone.filled { border-style: solid; }
 
 /* ---------- buttons ---------- */
@@ -486,6 +486,8 @@ button, input, select { font: inherit; color: inherit; }
 }
 
 .queue-pos { color: var(--text-3); font-variant-numeric: tabular-nums; font-size: 13px; }
+
+.missing-assets { margin: 8px 0 0; padding: 0 0 0 18px; color: var(--text-3); font-size: 13px; }
 
 .active-job + .active-job { margin-top: 22px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
 

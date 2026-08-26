@@ -46,7 +46,7 @@ function ActiveJob({ job, now, workers }) {
         <ul className="holders">
           {holders.map(worker => (
             <li key={`${worker.id}:${worker.frame}`}>
-              <span>{worker.id}</span>
+              <span>{worker.name || worker.id}</span>
               <span className="queue-pos">frame {worker.frame}</span>
             </li>
           ))}

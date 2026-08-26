@@ -1,4 +1,4 @@
-import { execSync } from 'child_process';
+import { execSync, spawnSync } from 'child_process';
 import fs from 'fs';
 
 export function findBlenderExecutable() {
@@ -17,4 +17,28 @@ export function findBlenderExecutable() {
     console.error('Blender not found in PATH');
     return null;
   }
+}
+
+// What this machine's Blender lists for -E. An operator who knows more than the
+// build does - EEVEE wants a GL context a headless box may not give it - can
+// narrow the list with WORKER_ENGINES.
+export function renderableEngines(blenderPath) {
+  const configured = (process.env.WORKER_ENGINES || '')
+    .split(',')
+    .map(engine => engine.trim())
+    .filter(Boolean);
+
+  if (configured.length > 0) return configured;
+
+  const probe = spawnSync(blenderPath, ['-b', '--factory-startup', '-E', 'help'], {
+    encoding: 'utf8',
+    timeout: 60000
+  });
+
+  if (probe.status !== 0) return [];
+
+  return probe.stdout
+    .split('\n')
+    .map(line => line.trim())
+    .filter(line => /^[A-Z][A-Z_]+$/.test(line));
 }

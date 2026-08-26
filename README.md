@@ -173,6 +173,12 @@ Things that would otherwise surprise you.
   A second machine joins by running `npm run worker` against the same API with
   the same `WORKER_SECRET`: it downloads each scene over HTTP and renders in
   its own scratch space. Nothing on the server has to know it is there.
+- **A frame only goes to a machine that can render it.** Every worker says which
+  engines it offers when it asks for work, and is passed over for jobs using
+  anything else. Without that, a machine whose Blender cannot render a job's
+  engine would take its frames, fail all three attempts on each, and the
+  fail-fast would stop the job for everybody. A job nobody present can render
+  waits rather than failing, and health says so by name.
 - **Frames are claimed, not handed out.** A worker asks for one frame at a time
   and holds a claim on it with an expiry, renewed while the frame renders. A
   worker that dies loses its claim and the frame returns to circulation, and a
@@ -200,6 +206,14 @@ Things that would otherwise surprise you.
   than the 32-bit a scene usually carries, which is the same picture at half the
   bytes on a disk several people share. Depth is one Blender setting shared by
   every format, so each is written with its own rather than inheriting the last.
+- **A scene is opened before it is queued** to see whether it reaches for
+  textures, linked files or caches it did not bring. Those live on the artist's
+  own machine, so on the farm they are simply absent and the frames come out
+  untextured rather than failing. A job missing files is stopped with the list
+  and told to pack them (`File → External Data → Pack Resources`), before a
+  worker has spent anything on it. Tick "render even if files are missing" to
+  go ahead anyway. If the check cannot run, the job renders: a broken check must
+  not be able to stop the farm.
 - **Rerunning a job retries only the frames that failed**, keeping the ones that
   worked. The uploaded `.blend` is reused, so nothing is uploaded twice.
 - **Resolution and Cycles samples can be overridden at submit time**, for a
@@ -245,9 +259,11 @@ tree, so it is found however the server is started.
 | `DB_PATH` | `rendernet.db` inside `DATA_DIR` | SQLite database file |
 | `API_URL` | `http://localhost:5500` | Base URL the worker posts results back to |
 | `WORKER_SLOTS` | `1` | Renderers this machine runs, each its own process. `0` coordinates only |
+| `WORKER_ENGINES` | what Blender lists | Engines this machine will accept frames for, comma-separated. Narrow it where an engine cannot render headless |
 | `WORKER_REMOTE` | *unset* | Set to `1` on a worker not on the server's machine |
 | `WORKER_SCRATCH_DIR` | a temp directory | Where a remote worker keeps scenes and frames |
 | `LEASE_TTL_MS` | `120000` | How long a worker's claim on a frame lasts before another may take it |
+| `PREFLIGHT_TIMEOUT_MS` | `120000` | How long the pre-render scene check may take before the job is queued anyway |
 
 ---
 

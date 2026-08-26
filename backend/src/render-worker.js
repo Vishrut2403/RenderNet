@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
-import { findBlenderExecutable } from './utils/blender-check.js';
+import { findBlenderExecutable, renderableEngines } from './utils/blender-check.js';
 import { launch, terminate } from './utils/process-control.js';
 import { primaryOf, extrasOf, extensionOf } from './formats.js';
 
@@ -163,12 +163,24 @@ class RenderWorker {
     return true;
   }
 
+  // Probed once: it costs a Blender start, and the answer cannot change while
+  // this process is running.
+  engines() {
+    this.engineList ??= renderableEngines(BLENDER_PATH);
+    return this.engineList;
+  }
+
   async requestLease() {
     try {
       const response = await fetch(`${WORKER_BASE}/lease`, {
         method: 'POST',
         headers: workerHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ workerId: this.workerId })
+        body: JSON.stringify({
+          workerId: this.workerId,
+          name: os.hostname(),
+          engines: this.engines(),
+          device: CYCLES_DEVICE
+        })
       });
 
       // 204 is the ordinary "nothing for you" answer.

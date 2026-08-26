@@ -164,7 +164,7 @@ export const api = {
 
   upload(file, {
     frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats,
-    exrCodec, exrDepth, jpegQuality
+    exrCodec, exrDepth, jpegQuality, skipAssetCheck
   }, onProgress) {
     // XHR rather than fetch: upload progress events have no fetch equivalent.
     return new Promise((resolve, reject) => {
@@ -182,6 +182,7 @@ export const api = {
       }
       if (formats?.includes('JPEG')) form.append('jpegQuality', jpegQuality);
       form.append('priority', priority ? 1 : 0);
+      if (skipAssetCheck) form.append('skipAssetCheck', '1');
 
       const xhr = new XMLHttpRequest();
       xhr.open('POST', `${BASE}/upload`);

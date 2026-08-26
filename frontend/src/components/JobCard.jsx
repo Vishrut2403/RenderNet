@@ -181,7 +181,17 @@ export function JobCard({ job, onChanged, onError }) {
 
       {timing && <Metrics items={timing} />}
 
+      {job.assetCheck === 'checking' && (
+        <p className="job-note">Checking the scene for files it did not bring…</p>
+      )}
+
       {job.error && <p className="job-error">{job.error}</p>}
+
+      {job.missingAssets?.length > 0 && (
+        <ul className="missing-assets">
+          {job.missingAssets.map(file => <li key={file}>{file}</li>)}
+        </ul>
+      )}
 
       {job.frameErrors?.length > 0 && (
         <div className="frame-errors">

@@ -972,6 +972,64 @@ export default async function run() {
     removeSandbox(settingsBox);
   }
 
+  // A scene that reaches for textures it did not bring renders untextured
+  // rather than failing, which is worth catching before the whole range.
+  const assetBox = makeSandbox('assets');
+  let assetServer;
+
+  try {
+    console.log('\n  The scene is checked before it is queued');
+
+    assetServer = await startServer({
+      port: PORT + 11,
+      cwd: assetBox,
+      env: { BLENDER_PATH: createFakeBlender(assetBox) }
+    });
+
+    const assetToken = await adminSession(assetServer.base);
+
+    const packed = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'packed.blend'),
+      { frameStart: 1, frameEnd: 1 }
+    );
+    const packedJob = await waitForJob(assetServer.base, assetToken, packed.body.jobId, 60000);
+
+    results.check('a self-contained scene renders as usual',
+      packedJob.status === 'completed' && packedJob.assetCheck === 'ok',
+      `${packedJob.status} / ${packedJob.assetCheck}`);
+
+    const unpacked = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'unpacked.blend'),
+      { frameStart: 1, frameEnd: 40 }
+    );
+    const unpackedJob = await waitForJob(assetServer.base, assetToken, unpacked.body.jobId, 60000);
+
+    results.check('a scene missing its textures fails', unpackedJob.status === 'failed',
+      unpackedJob.status);
+    // The point of checking first: no worker time is spent on frames that were
+    // going to come out wrong.
+    results.check('without rendering a frame of it', unpackedJob.completedFrames === 0,
+      `${unpackedJob.completedFrames} frames rendered`);
+    results.check('and says how to put it right',
+      unpackedJob.error?.includes('Pack Resources'), unpackedJob.error);
+    results.check('naming the files, without the artist\'s own folders',
+      unpackedJob.missingAssets?.join(',') === 'wood.png,metal.png',
+      JSON.stringify(unpackedJob.missingAssets));
+
+    const anyway = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'unpacked.blend'),
+      { frameStart: 1, frameEnd: 1, skipAssetCheck: true }
+    );
+    const anywayJob = await waitForJob(assetServer.base, assetToken, anyway.body.jobId, 60000);
+
+    results.check('somebody who means it can render it anyway',
+      anywayJob.status === 'completed', anywayJob.status);
+
+  } finally {
+    await stopServer(assetServer);
+    removeSandbox(assetBox);
+  }
+
   // Retrying a frame that failed for a reason since put right, without paying
   // again for the frames that were fine.
   const rerunBox = makeSandbox('rerun');

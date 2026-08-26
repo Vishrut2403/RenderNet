@@ -11,6 +11,7 @@ import {
 } from './helpers.mjs';
 
 const PORT = 5598;
+const CAPABILITY_PORT = 5610;
 
 // "[worker-1] 🎬 Job 17..., frame 3 (CYCLES)" - the pool tags each worker's
 // output with which one it came from, so the log says who rendered what.
@@ -168,5 +169,90 @@ export default async function run() {
     removeSandbox(sandbox);
   }
 
+  await capabilities(results);
+
   return results;
+}
+
+// A worker that cannot render an engine must not be given frames of it: it
+// would fail all three attempts of each, and three failures in a row stop the
+// job for everybody.
+async function capabilities(results) {
+  const box = makeSandbox('capabilities');
+  let server;
+  let eeveeWorker;
+
+  try {
+    console.log('\n  Frames only go to a worker that can render them');
+
+    server = await startServer({
+      port: CAPABILITY_PORT,
+      cwd: box,
+      env: {
+        BLENDER_PATH: createFakeBlender(box),
+        WORKER_SLOTS: '1',
+        WORKER_ENGINES: 'CYCLES'
+      }
+    });
+
+    const token = await adminSession(server.base);
+    const health = async () =>
+      (await (await fetch(`${server.base}/health`, { headers: auth(token) })).json());
+
+    const eevee = await submitJob(server.base, token, createFakeScene(box, 'slow.blend'), {
+      frameStart: 1, frameEnd: 2, engine: 'BLENDER_EEVEE'
+    });
+    const cycles = await submitJob(server.base, token, createFakeScene(box, 'slow.blend'), {
+      frameStart: 1, frameEnd: 2, engine: 'CYCLES'
+    });
+
+    const cyclesJob = await waitForJob(server.base, token, cycles.body.jobId, 120000);
+    results.check('the job it can render is finished',
+      cyclesJob.status === 'completed', cyclesJob.status);
+
+    const waiting = await (await fetch(`${server.base}/jobs/${eevee.body.jobId}`, {
+      headers: auth(token)
+    })).json();
+    results.check('the one it cannot is left alone rather than failed',
+      waiting.completedFrames === 0 && waiting.failedFrames === 0 && waiting.status !== 'failed',
+      `${waiting.status}: ${waiting.completedFrames} done, ${waiting.failedFrames} failed`);
+
+    const reported = await health();
+    results.check('the worker says which machine it is and what it offers',
+      reported.workers.some(worker => worker.engines?.join(',') === 'CYCLES'
+        && typeof worker.name === 'string'),
+      JSON.stringify(reported.workers));
+    results.check('and health says the job is waiting for a worker that can take it',
+      reported.problems.some(problem => problem.includes(`Job ${eevee.body.jobId}`)
+        && problem.includes('BLENDER_EEVEE')),
+      JSON.stringify(reported.problems));
+
+    // The same worker code, told it can do the other engine: the job was never
+    // broken, it was waiting for a machine that offers what it needs.
+    const elsewhere = makeSandbox('capabilities-eevee');
+
+    eeveeWorker = spawn(process.execPath, [path.join(BACKEND_ROOT, 'src', 'worker-main.js')], {
+      env: {
+        ...process.env,
+        API_URL: `http://127.0.0.1:${CAPABILITY_PORT}`,
+        WORKER_SECRET: 'test-worker-secret',
+        BLENDER_PATH: createFakeBlender(elsewhere),
+        WORKER_SCRATCH_DIR: elsewhere,
+        WORKER_REMOTE: '1',
+        WORKER_ENGINES: 'BLENDER_EEVEE',
+        WORKER_ID: 'eevee-box'
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    const eeveeJob = await waitForJob(server.base, token, eevee.body.jobId, 120000);
+    results.check('a machine that offers it picks it up',
+      eeveeJob.status === 'completed', eeveeJob.status);
+
+    removeSandbox(elsewhere);
+  } finally {
+    eeveeWorker?.kill('SIGKILL');
+    await stopServer(server);
+    removeSandbox(box);
+  }
 }

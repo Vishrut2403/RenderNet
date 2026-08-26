@@ -1,5 +1,5 @@
 import express from 'express';
-import { getQueueStatus, getJob } from '../queue.js';
+import { getQueueStatus, getJob, jobsNoWorkerCanRender } from '../queue.js';
 import { freeBytes } from '../utils/file-utils.js';
 import { optionalAuth } from '../auth.js';
 import { DATA_DIR, MIN_FREE_BYTES } from '../paths.js';
@@ -23,6 +23,10 @@ export function healthRouter(blenderPath) {
 
     if (queue.heldForDisk) problems.push(queue.heldForDisk);
     else if (lowOnDisk) problems.push('Free disk has fallen below the reserve');
+
+    for (const job of jobsNoWorkerCanRender()) {
+      problems.push(`Job ${job.id} needs ${job.renderEngine} and no worker here offers it`);
+    }
 
     const body = {
       status: problems.length > 0 ? 'degraded' : 'ok',

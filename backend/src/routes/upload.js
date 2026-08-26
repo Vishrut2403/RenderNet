@@ -178,7 +178,8 @@ router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => 
       formats: formats.join(','),
       exrCodec,
       exrDepth,
-      jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY
+      jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY,
+      skipAssetCheck: req.body.skipAssetCheck === '1'
     });
 
     res.json({

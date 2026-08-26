@@ -15,6 +15,7 @@ import { getLease } from '../db.js';
 import path from 'path';
 import { dataPath } from '../paths.js';
 import { parseFormats, primaryOf, extensionOf } from '../formats.js';
+import { announceWorker } from '../worker-registry.js';
 
 const router = express.Router();
 
@@ -136,6 +137,16 @@ router.use(requireWorker);
 
 router.post('/lease', (req, res) => {
   const workerId = typeof req.body?.workerId === 'string' ? req.body.workerId : 'worker';
+
+  // Said again with every request rather than registered once: a worker that
+  // stops asking stops counting, which is all the liveness this needs.
+  announceWorker({
+    workerId,
+    name: typeof req.body?.name === 'string' ? req.body.name : null,
+    engines: req.body?.engines,
+    device: typeof req.body?.device === 'string' ? req.body.device : null
+  });
+
   const lease = leaseNextFrame(workerId);
 
   // 204 rather than an error: having no work is the ordinary answer.

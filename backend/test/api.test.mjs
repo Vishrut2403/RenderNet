@@ -320,6 +320,7 @@ export default async function run() {
         'a scoped token downloads the job it was minted for',
         'a session token in the query string is refused',
         'a scene set to 16-bit PNG is still written at the 8 the form promises',
+        'a scene reaching for a file it did not bring is stopped before rendering',
         'BLENDER_EEVEE renders', 'BLENDER_WORKBENCH renders']) {
         results.skipped(name, 'Blender not installed');
       }
@@ -415,6 +416,38 @@ export default async function run() {
     const pngDepth = fs.readFileSync(path.join(sandbox, deepJob.outputFolder, 'frame_0001.png'))[24];
     results.check('a scene set to 16-bit PNG is still written at the 8 the form promises',
       pngDepth === 8, String(pngDepth));
+
+    // The asset check is a script run inside Blender against a real scene, so a
+    // scene that genuinely reaches for a file that is not there is the only way
+    // to know it reports one.
+    const wanting = createFixtureBlend(sandbox, {
+      name: 'wanting.blend',
+      extra: [
+        "mat = bpy.data.materials.new('Textured')",
+        'mat.use_nodes = True',
+        "img = bpy.data.images.new('missing_tex', 8, 8)",
+        "img.filepath = '/nowhere/rendernet/wood.png'",
+        "img.source = 'FILE'",
+        "node = mat.node_tree.nodes.new('ShaderNodeTexImage')",
+        'node.image = img',
+        "bpy.data.objects['Cube'].data.materials.append(mat)"
+      ].join('\n')
+    });
+
+    const wantingJob = await waitForJob(base, adminToken, (await submitJob(base, adminToken, wanting, {
+      frameStart: 1, frameEnd: 1
+    })).body.jobId);
+
+    results.check('a scene reaching for a file it did not bring is stopped before rendering',
+      wantingJob.status === 'failed' && wantingJob.completedFrames === 0,
+      `${wantingJob.status}: ${wantingJob.error}`);
+    results.check('and the file it wanted is named',
+      wantingJob.missingAssets?.includes('wood.png'), JSON.stringify(wantingJob.missingAssets));
+
+    // The ordinary fixture has nothing outside itself, so the same check has to
+    // let it through - a check that stopped everything would be worse than none.
+    results.check('while a self-contained scene is passed as sound',
+      multiJob.assetCheck === 'ok', multiJob.assetCheck);
 
     // The expression is built by hand and handed to Blender's own interpreter,
     // so the only proof it is valid Python against a real scene is running it.

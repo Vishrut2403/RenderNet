@@ -22,6 +22,7 @@ export function Upload({ onSubmitted, notify }) {
   // Blank means whatever the scene already specifies.
   const [samples, setSamples] = useState('');
   const [urgent, setUrgent] = useState(false);
+  const [skipAssetCheck, setSkipAssetCheck] = useState(false);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -76,7 +77,8 @@ export function Upload({ onSubmitted, notify }) {
         file,
         {
           frameStart, frameEnd, renderEngine: engine, priority: urgent,
-          resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality
+          resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality,
+          skipAssetCheck
         },
         setProgress
       );
@@ -102,6 +104,9 @@ export function Upload({ onSubmitted, notify }) {
     <form className="panel upload-panel" onSubmit={submit}>
       <div
         className={`dropzone ${dragging ? 'dragging' : ''} ${file ? 'filled' : ''}`}
+        role="button"
+        tabIndex={0}
+        aria-label={file ? `${file.name} chosen — choose a different .blend file` : 'Choose a .blend file'}
         onDragOver={e => { e.preventDefault(); setDragging(true); }}
         onDragLeave={() => setDragging(false)}
         onDrop={e => {
@@ -110,6 +115,11 @@ export function Upload({ onSubmitted, notify }) {
           pick(e.dataTransfer.files[0]);
         }}
         onClick={() => inputRef.current?.click()}
+        onKeyDown={e => {
+          if (e.key !== 'Enter' && e.key !== ' ') return;
+          e.preventDefault();
+          inputRef.current?.click();
+        }}
       >
         <input
           ref={inputRef}
@@ -241,6 +251,22 @@ export function Upload({ onSubmitted, notify }) {
           <span className="check-hint">
             Goes ahead of everything queued, and pauses whatever is rendering now.
             The paused job keeps its finished frames and carries on afterwards.
+          </span>
+        </span>
+      </label>
+
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={skipAssetCheck}
+          onChange={e => setSkipAssetCheck(e.target.checked)}
+        />
+        <span>
+          <strong>Render even if files are missing</strong>
+          <span className="check-hint">
+            The scene is opened before it is queued to see whether it reaches for
+            textures it did not bring. Tick this to render anyway — untextured, if
+            they really are missing.
           </span>
         </span>
       </label>

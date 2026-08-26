@@ -99,6 +99,10 @@ addColumnIfMissing('jobs', 'exrCodec', "TEXT DEFAULT 'ZIP'");
 addColumnIfMissing('jobs', 'exrDepth', "TEXT DEFAULT '16'");
 addColumnIfMissing('jobs', 'jpegQuality', 'INTEGER DEFAULT 90');
 
+// What the scene reaches for outside itself, checked before it is queued.
+addColumnIfMissing('jobs', 'assetCheck', 'TEXT');
+addColumnIfMissing('jobs', 'missingAssets', 'TEXT');
+
 // One frame claimed by one worker, with an expiry: a worker that stops answering
 // loses the frame rather than stranding it.
 addColumnIfMissing('frames', 'startedAt', 'TEXT');
@@ -113,7 +117,8 @@ const COLUMNS = [
   'renderEngine', 'originalFilename', 'owner', 'createdAt', 'startedAt', 'completedAt',
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
-  'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality'
+  'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality',
+  'assetCheck', 'missingAssets'
 ];
 
 const upsertJob = db.prepare(`

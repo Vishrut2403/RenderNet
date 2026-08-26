@@ -151,7 +151,28 @@ const path = require('path');
 const args = process.argv.slice(2);
 const valueOf = flag => args[args.indexOf(flag) + 1];
 
+// '-E help' is a listing, not a render: it answers and exits before anything
+// below reads a scene or an output path that this invocation does not have.
+if (valueOf('-E') === 'help') {
+  const offered = process.env.FAKE_BLENDER_ENGINES
+    || 'CYCLES,BLENDER_EEVEE,BLENDER_WORKBENCH';
+  fs.writeSync(1, offered.split(',').map(name => name.trim()).join('\\n') + '\\n');
+  process.exit(0);
+}
+
 const scene = path.basename(valueOf('-b') || '');
+
+// The asset check opens the scene with a script and renders nothing, so there
+// is no output path to write to. 'unpacked' scenes reach for files they did
+// not bring; everything else is self-contained.
+if (args.includes('-P') && !args.includes('-o')) {
+  const missing = scene.includes('unpacked')
+    ? ['/home/artist/textures/wood.png', '/home/artist/textures/metal.png']
+    : [];
+  fs.writeSync(1, 'RENDERNET_PREFLIGHT ' + JSON.stringify({ missing: missing }) + '\\n');
+  process.exit(0);
+}
+
 const frame = Number(valueOf('-f'));
 const EXTENSIONS = { PNG: '.png', JPEG: '.jpg', OPEN_EXR: '.exr' };
 const target = valueOf('-o').replace('####', String(frame).padStart(4, '0'))
@@ -409,7 +430,7 @@ export async function status(url, options) {
 
 export async function submitJob(base, token, blendPath, {
   frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples, formats,
-  exrCodec, exrDepth, jpegQuality
+  exrCodec, exrDepth, jpegQuality, skipAssetCheck
 }) {
   const form = new FormData();
   form.set('blend', new Blob([fs.readFileSync(blendPath)]), path.basename(blendPath));
@@ -423,6 +444,7 @@ export async function submitJob(base, token, blendPath, {
   if (exrCodec !== undefined) form.set('exrCodec', exrCodec);
   if (exrDepth !== undefined) form.set('exrDepth', String(exrDepth));
   if (jpegQuality !== undefined) form.set('jpegQuality', String(jpegQuality));
+  if (skipAssetCheck) form.set('skipAssetCheck', '1');
 
   const res = await fetch(`${base}/upload`, { method: 'POST', headers: auth(token), body: form });
   return { status: res.status, body: await res.json() };

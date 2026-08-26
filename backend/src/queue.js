@@ -11,6 +11,8 @@ import {
   leaseFrame, renewLease, releaseLease, getLease, liveLeases, clearJobLeases
 } from './db.js';
 import { DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY } from './formats.js';
+import { workerCanRender, engineIsOffered, machines } from './worker-registry.js';
+import { checkAssets, missingAssetsMessage } from './preflight.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
@@ -109,6 +111,9 @@ export function resumeInterruptedJobs() {
 
     renderQueue.push(job.id);
     resumed++;
+
+    // Killed partway through its own asset check, so it never got an answer.
+    if (job.assetCheck === 'checking') startAssetCheck(job);
   }
 
   if (resumed || abandoned) {
@@ -159,13 +164,49 @@ export function addToQueue(jobData) {
   createFrames(jobId, job.frameStart, job.frameEnd);
   saveJob(job);
   forgetUsage(job.owner);
+
+  // Queued straight away so it has a position and an estimate like any other,
+  // but held back from being claimed until the scene has been looked at.
+  if (!jobData.skipAssetCheck) job.assetCheck = 'checking';
+
+  saveJob(job);
   renderQueue.push(jobId);
 
   console.log(`Job ${jobId} added to queue. Queue length: ${renderQueue.length}`);
 
-  if (!preemptFor(job)) processQueue();
+  if (job.assetCheck === 'checking') startAssetCheck(job);
+  else if (!preemptFor(job)) processQueue();
 
   return jobId;
+}
+
+// A scene that reaches for textures it did not bring renders untextured rather
+// than failing, and nobody wants to find that out at frame 500.
+function startAssetCheck(job) {
+  checkAssets(dataPath(job.filePath)).then(({ checked, missing }) => {
+    const current = jobs.get(job.id);
+
+    // Deleted or cancelled while Blender was reading it.
+    if (!current || current.status !== 'pending') return;
+
+    if (checked && missing.length > 0) {
+      const queued = renderQueue.indexOf(current.id);
+      if (queued > -1) renderQueue.splice(queued, 1);
+
+      current.assetCheck = 'missing';
+      current.missingAssets = JSON.stringify(missing);
+      saveJob(current);
+      failJob(current.id, missingAssetsMessage(missing));
+
+      console.log(`Job ${current.id} reaches for ${missing.length} file(s) it did not bring`);
+      return;
+    }
+
+    current.assetCheck = checked ? 'ok' : 'skipped';
+    saveJob(current);
+
+    if (!preemptFor(current)) processQueue();
+  });
 }
 
 function preemptFor(job) {
@@ -297,7 +338,13 @@ function promoteNext() {
 
   sortQueue();
 
-  const jobId = renderQueue.shift();
+  // A job still being looked at keeps its place in the queue; it is simply not
+  // handed to a worker yet.
+  const next = renderQueue.findIndex(id => jobs.get(id)?.assetCheck !== 'checking');
+
+  if (next === -1) return null;
+
+  const [jobId] = renderQueue.splice(next, 1);
   const job = jobs.get(jobId);
 
   if (!job) {
@@ -378,7 +425,7 @@ function releaseSlot(jobId) {
 function failJob(jobId, message) {
   const job = jobs.get(jobId);
 
-  if (job && job.status === 'rendering') {
+  if (job && (job.status === 'rendering' || job.status === 'pending')) {
     job.status = 'failed';
     job.error = message;
     job.completedAt = new Date().toISOString();
@@ -395,6 +442,10 @@ function recordFailure(job) {
 
 function leaseFromActive(workerId) {
   for (const job of activeJobs()) {
+    // A worker that cannot render the engine would fail every frame it took,
+    // and three failures in a row is enough to stop the job for everyone.
+    if (!workerCanRender(workerId, job.renderEngine)) continue;
+
     const lease = leaseFrame(job.id, workerId, LEASE_TTL_MS);
 
     if (lease) {
@@ -506,6 +557,18 @@ export function pruneOldJobs(cutoffMs) {
   return pruned;
 }
 
+// Stored as text because SQLite has no list, and read back here so no caller
+// has to know that.
+function parseMissing(stored) {
+  if (!stored) return null;
+
+  try {
+    return JSON.parse(stored).map(file => file.split(/[\\/]/).pop());
+  } catch {
+    return null;
+  }
+}
+
 function asFrameError(row) {
   return { frame: row.frame, error: row.error, at: row.updatedAt };
 }
@@ -516,6 +579,7 @@ export function getJob(jobId) {
 
   return {
     ...job,
+    missingAssets: parseMissing(job.missingAssets),
     frameErrors: getFailedFrames(jobId).map(asFrameError),
     timing: frameTimings().get(jobId) ?? null,
     startsIn: queueWaits().get(jobId) ?? null
@@ -536,10 +600,20 @@ export function getAllJobs() {
 
   return Array.from(jobs.values()).map(job => ({
     ...job,
+    missingAssets: parseMissing(job.missingAssets),
     timing: timings.get(job.id) ?? null,
     frameErrors: errorsByJob.get(job.id) ?? [],
     startsIn: waits.get(job.id) ?? null
   }));
+}
+
+// Rendering, but nobody here can render it: the job is not stuck on anything
+// this server can fix, so it is worth naming rather than leaving as a progress
+// bar that never moves.
+export function jobsNoWorkerCanRender() {
+  return activeJobs()
+    .filter(job => !engineIsOffered(job.renderEngine))
+    .map(job => ({ id: job.id, renderEngine: job.renderEngine }));
 }
 
 export function getQueueStatus() {
@@ -551,7 +625,7 @@ export function getQueueStatus() {
     isRendering: active.size > 0,
     heldForDisk,
     activeJobs: activeJobs().map(job => job.id),
-    workers: liveLeases().map(({ leasedBy, jobId, frame }) => ({ id: leasedBy, jobId, frame })),
+    workers: machines(liveLeases().map(({ leasedBy, jobId, frame }) => ({ id: leasedBy, jobId, frame }))),
     queueLength: renderQueue.length,
     totalJobs: jobs.size,
     pendingJobs: renderQueue.length,
