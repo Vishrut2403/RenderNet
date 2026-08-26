@@ -41,13 +41,18 @@ router.post('/signup', route(async (req, res) => {
     return res.status(400).json({ error: 'Username and password required' });
   }
 
-  const result = await signup(username, password, code);
-  
+  const result = await signup(username, password, code, req.ip);
+
   if (result.success) {
-    res.json(result);
-  } else {
-    res.status(400).json(result);
+    return res.json(result);
   }
+
+  if (result.locked) {
+    res.set('Retry-After', String(result.retryAfter));
+    return res.status(429).json(result);
+  }
+
+  res.status(400).json(result);
 }));
 
 router.post('/change-password', requireSession, route(async (req, res) => {

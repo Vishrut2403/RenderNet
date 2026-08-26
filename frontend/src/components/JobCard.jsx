@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { api } from '../api/client';
+import { useDownloadToken } from '../hooks/useDownloadToken';
 import { StatusBadge, ProgressBar, Button, Metrics, relativeTime, formatDuration, useNow } from './ui';
 
 const TONE = { completed: 'done', failed: 'fail', cancelled: 'muted' };
@@ -13,6 +14,8 @@ export function JobCard({ job, onChanged, onError }) {
   const active = job.status === 'rendering';
   const done = job.status === 'completed';
   const partial = job.status === 'failed' && job.completedFrames > 0;
+
+  const downloadToken = useDownloadToken(job.id, job.completedFrames > 0);
 
   const now = useNow(active);
   const started = job.startedAt ? new Date(job.startedAt).getTime() : null;
@@ -105,7 +108,7 @@ export function JobCard({ job, onChanged, onError }) {
 
     setBusy(true);
     try {
-      const result = await api.jobFiles(job.id);
+      const result = await api.jobFiles(job.id, downloadToken);
       setFrames(result.files);
     } catch (err) {
       onError?.(err.message);
@@ -129,9 +132,9 @@ export function JobCard({ job, onChanged, onError }) {
   const retryable = (done || job.status === 'failed') && job.frameErrors?.length > 0;
 
   // Hidden once the full grid is open, which shows the same frames and more.
-  const showPreview = job.completedFrames > 0 && !frames
-    && previewFailedAt !== job.completedFrames;
-  const previewSrc = api.previewUrl(job.id, job.completedFrames);
+  const showPreview = downloadToken && !frames && previewFailedAt !== job.completedFrames;
+  const previewSrc = downloadToken
+    && api.previewUrl(job.id, job.completedFrames, downloadToken);
 
   return (
     <article className={`job job-${job.status}`}>
@@ -214,9 +217,9 @@ export function JobCard({ job, onChanged, onError }) {
       )}
 
       <footer className="job-actions">
-        {(done || partial) && (
+        {(done || partial) && downloadToken && (
           <>
-            <a className="btn btn-primary" href={api.zipUrl(job.id)}>
+            <a className="btn btn-primary" href={api.zipUrl(job.id, downloadToken)}>
               {partial
                 ? `Download ${job.completedFrames} finished frame${job.completedFrames === 1 ? '' : 's'}`
                 : 'Download ZIP'}

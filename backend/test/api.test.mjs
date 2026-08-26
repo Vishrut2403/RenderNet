@@ -310,12 +310,15 @@ export default async function run() {
       console.log('\n  Rendering, downloads and persistence');
       for (const name of ['render completes', 'frames written', 'download by header',
         'download by query token', 'unauthenticated download rejected',
-        'cross-user download denied', 'traversal blocked', 'frame listing by header',
+        'cross-user download denied', 'traversal blocked',
+        'a token minted for another job does not open this one', 'frame listing by header',
         'frame paths carry no token', 'session survives restart', 'job survives restart',
         'progress survives restart', 'download survives restart',
         'every offered engine is one this Blender lists',
         'the EXR is written half float, not the 32-bit a scene defaults to',
         'a JPEG at quality 10 is smaller than the same frame at 90',
+        'a scoped token downloads the job it was minted for',
+        'a session token in the query string is refused',
         'a scene set to 16-bit PNG is still written at the 8 the form promises',
         'BLENDER_EEVEE renders', 'BLENDER_WORKBENCH renders']) {
         results.skipped(name, 'Blender not installed');
@@ -440,16 +443,39 @@ export default async function run() {
     }
 
     console.log('\n  Downloads');
+
+    const mint = async (id, token) => {
+      const res = await fetch(`${base}/download/${id}/token`, {
+        method: 'POST', headers: auth(token)
+      });
+      return { status: res.status, body: await res.json() };
+    };
+
+    const scoped = (await mint(jobId, adminToken)).body.token;
+    const frameUrl = `${base}/download/files/render_${jobId}/frame_0001.png`;
+
     results.check('download by header',
       await status(`${base}/download/${jobId}/zip`, { headers: auth(adminToken) }) === 200);
-    results.check('download by query token',
-      await status(`${base}/download/files/render_${jobId}/frame_0001.png?token=${adminToken}`) === 200);
+    results.check('a scoped token downloads the job it was minted for',
+      await status(`${frameUrl}?token=${scoped}`) === 200);
+
+    // The whole point of the scoped token: a URL is copied, bookmarked and kept
+    // in history, so the one thing it must never carry is the session itself.
+    results.check('a session token in the query string is refused',
+      await status(`${frameUrl}?token=${adminToken}`) === 401);
+
+    const elsewhere = (await mint(multi.body.jobId, adminToken)).body.token;
+    results.check('a token minted for another job does not open this one',
+      await status(`${frameUrl}?token=${elsewhere}`) === 403);
+    results.check('a tampered token is refused',
+      await status(`${frameUrl}?token=${scoped.slice(0, -2)}xy`) === 401);
+
     results.check('unauthenticated download rejected',
       await status(`${base}/download/${jobId}/zip`) === 401);
     results.check('cross-user download denied',
-      await status(`${base}/download/files/render_${jobId}/frame_0001.png?token=${userToken}`) === 403);
+      (await mint(jobId, userToken)).status === 403);
     results.check('path traversal blocked',
-      await status(`${base}/download/files/render_${jobId}/..%2f..%2fusers.json?token=${adminToken}`) === 404);
+      await status(`${base}/download/files/render_${jobId}/..%2f..%2fusers.json?token=${scoped}`) === 404);
 
     const listing = await (await fetch(`${base}/download/${jobId}/files`, {
       headers: auth(adminToken)

@@ -10,44 +10,56 @@ import { USERS_FILE } from './paths.js';
 const BCRYPT_ROUNDS = 12;
 const SESSION_DURATION = 24 * 60 * 60 * 1000;
 const DEFAULT_ADMIN_PASSWORD = 'admin123';
-const LOGIN_ATTEMPT_LIMIT = 5;
-const LOGIN_LOCKOUT_MS = 15 * 60 * 1000;
+const ATTEMPT_LIMIT = 5;
+const LOCKOUT_MS = 15 * 60 * 1000;
 
 // Held in memory on purpose. The workstation is switched off nightly, and a
 // lockout that outlived a reboot would mostly punish whoever mistyped last.
-const failedLogins = new Map();
+function attemptLimiter() {
+  const attempts = new Map();
 
-// Unknown usernames are counted too, so a lockout says nothing about whether
-// the account exists.
-function lockoutSecondsLeft(username) {
-  const record = failedLogins.get(username);
-  if (!record) return 0;
+  return {
+    // Unknown usernames are counted too, so a lockout says nothing about
+    // whether the account exists.
+    secondsLeft(key) {
+      const record = attempts.get(key);
 
-  if (Date.now() >= record.until) {
-    failedLogins.delete(username);
-    return 0;
-  }
+      if (!record) return 0;
 
-  return record.count >= LOGIN_ATTEMPT_LIMIT
-    ? Math.ceil((record.until - Date.now()) / 1000)
-    : 0;
-}
+      if (Date.now() >= record.until) {
+        attempts.delete(key);
+        return 0;
+      }
 
-function recordFailedLogin(username) {
-  // Keys come from whatever was typed into the login box, so expired entries
-  // are swept rather than left to pile up.
-  if (failedLogins.size > 1000) {
-    for (const [name, seen] of failedLogins) {
-      if (Date.now() >= seen.until) failedLogins.delete(name);
+      return record.count >= ATTEMPT_LIMIT ? Math.ceil((record.until - Date.now()) / 1000) : 0;
+    },
+
+    record(key) {
+      // Keys come from whatever the caller sent, so expired entries are swept
+      // rather than left to pile up.
+      if (attempts.size > 1000) {
+        for (const [name, seen] of attempts) {
+          if (Date.now() >= seen.until) attempts.delete(name);
+        }
+      }
+
+      const record = attempts.get(key) ?? { count: 0 };
+
+      record.count++;
+      record.until = Date.now() + LOCKOUT_MS;
+      attempts.set(key, record);
+    },
+
+    clear(key) {
+      attempts.delete(key);
     }
-  }
-
-  const record = failedLogins.get(username) ?? { count: 0 };
-
-  record.count++;
-  record.until = Date.now() + LOGIN_LOCKOUT_MS;
-  failedLogins.set(username, record);
+  };
 }
+
+const failedLogins = attemptLimiter();
+// Keyed by address rather than by name: the signup code is one shared secret,
+// and guessing it is the only way in that does not need an account already.
+const failedSignups = attemptLimiter();
 
 // Read lazily: index.js loads .env before this module, but tests set it per run.
 function signupCode() {
@@ -166,7 +178,7 @@ for (const row of loadSessions()) {
 export async function login(username, password) {
   // Checked before any hashing: a locked-out name must not cost a bcrypt round
   // on the way to being refused.
-  const lockedFor = lockoutSecondsLeft(username);
+  const lockedFor = failedLogins.secondsLeft(username);
 
   if (lockedFor > 0) {
     return {
@@ -183,16 +195,16 @@ export async function login(username, password) {
     // Spend comparable time on an unknown username so response timing does not
     // reveal which accounts exist.
     await bcrypt.compare(password, '$2b$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidinv');
-    recordFailedLogin(username);
+    failedLogins.record(username);
     return { success: false, error: 'Invalid username or password' };
   }
 
   if (!await verifyPassword(password, user)) {
-    recordFailedLogin(username);
+    failedLogins.record(username);
     return { success: false, error: 'Invalid username or password' };
   }
 
-  failedLogins.delete(username);
+  failedLogins.clear(username);
 
   if (user.hashAlgo === 'sha256') {
     await upgradeLegacyHash(user, password);
@@ -219,7 +231,7 @@ export async function login(username, password) {
   };
 }
 
-export async function signup(username, password, code) {
+export async function signup(username, password, code, from = 'unknown') {
   if (!signupCode()) {
     return {
       success: false,
@@ -227,9 +239,23 @@ export async function signup(username, password, code) {
     };
   }
 
+  const lockedFor = failedSignups.secondsLeft(from);
+
+  if (lockedFor > 0) {
+    return {
+      success: false,
+      locked: true,
+      retryAfter: lockedFor,
+      error: `Too many failed attempts. Try again in ${Math.ceil(lockedFor / 60)} minute(s).`
+    };
+  }
+
   if (!matchesSecret(code, signupCode())) {
+    failedSignups.record(from);
     return { success: false, error: 'That signup code is not right' };
   }
+
+  failedSignups.clear(from);
 
   if (!username || username.length < 3) {
     return { success: false, error: 'Username must be at least 3 characters' };

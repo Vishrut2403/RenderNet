@@ -1298,9 +1298,8 @@ export default async function run() {
     results.check('the dashboard polling the job list writes nothing',
       polls() === 0, `${polls()} polling lines recorded`);
 
-    // A download authenticates by query string, so the URL carries a live
-    // session token. Writing that down would put credentials in a file an
-    // admin can fetch over HTTP.
+    // Download URLs authenticate by query string. Whatever is in one, writing
+    // it down would put a credential in a file an admin can fetch over HTTP.
     await status(`${logServer.base}/download/files/render_1/frame_0001.png?token=${logToken}`);
     results.check('a download token never reaches the log',
       !logged().includes(logToken), 'the session token was written to the log');

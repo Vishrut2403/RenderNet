@@ -210,6 +210,9 @@ Things that would otherwise surprise you.
   failed, because deleting one finished job is all it takes to free it.
 - **The browser can notify you when a job lands**, since people submit in the
   evening and rarely watch the tab. It asks the first time you queue something.
+- **A download link carries a token for that job alone**, good for ten minutes,
+  because a link is copied, bookmarked and left in history. The session token is
+  refused in a query string: it goes in the `Authorization` header or nowhere.
 - **Cancelling deletes that job's files.** Uploads are capped at 500MB and 2000
   frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`, and
   output formats are PNG, JPEG and OpenEXR with ZIP, PIZ, DWAA or no
@@ -231,6 +234,7 @@ tree, so it is found however the server is started.
 | `WORKER_SECRET` | *generated per process* | Authenticates worker callbacks. Must be set explicitly for workers on other machines. |
 | `BLENDER_PATH` | auto-detected | Blender executable. Required on Windows. |
 | `CYCLES_DEVICE` | `CPU` | `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI` or `METAL` |
+| `ALLOWED_ORIGINS` | *unset* | Origins allowed to call the API from a browser, comma-separated. Unset means same-origin only. |
 | `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |
 | `USER_QUOTA_BYTES` | `10737418240` (10 GB) | Disk each user may hold in uploads and rendered frames |
 | `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |

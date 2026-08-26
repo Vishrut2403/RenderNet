@@ -4,48 +4,71 @@ import fs from 'fs';
 import path from 'path';
 import { getJob } from '../queue.js';
 import { getFilesInDirectory } from '../utils/file-utils.js';
-import { verifyToken, mustChangePassword } from '../auth.js';
+import { verifyToken, mustChangePassword, requireAuth } from '../auth.js';
+import { mintDownloadToken, readDownloadToken } from '../download-tokens.js';
 import { getLatestDoneFrame } from '../db.js';
 import { PREVIEWABLE_EXTENSIONS } from '../formats.js';
 import { dataPath, RETENTION_DAYS } from '../paths.js';
 
 const router = express.Router();
 
+// A session in the header, or a scoped token in the query string. The session
+// token is never accepted from the query: a URL is copied, bookmarked and kept
+// in history, and none of those are places to leave an account.
 function authenticateDownload(req, res, next) {
-  let token = req.headers.authorization?.replace('Bearer ', '');
+  const header = req.headers.authorization?.replace('Bearer ', '');
 
-  if (!token) {
-    token = req.query.token;
-  }
-  
-  if (!token) {
-    return res.status(401).json({ error: 'No authentication token provided' });
-  }
-  
-  const verification = verifyToken(token);
-  
-  if (!verification.valid) {
-    return res.status(401).json({ error: verification.error });
-  }
-  
-  if (mustChangePassword(verification.username)) {
-    return res.status(403).json({
-      error: 'Choose a new password before using RenderNet',
-      mustChangePassword: true
-    });
+  if (header) {
+    const verification = verifyToken(header);
+
+    if (!verification.valid) {
+      return res.status(401).json({ error: verification.error });
+    }
+
+    if (mustChangePassword(verification.username)) {
+      return res.status(403).json({
+        error: 'Choose a new password before using RenderNet',
+        mustChangePassword: true
+      });
+    }
+
+    req.user = { username: verification.username, role: verification.role };
+    return next();
   }
 
-  req.user = {
-    username: verification.username,
-    role: verification.role
-  };
+  const scoped = readDownloadToken(req.query.token);
+
+  if (!scoped) {
+    return res.status(401).json({ error: 'No valid download token provided' });
+  }
+
+  req.user = { username: scoped.username, role: 'user' };
+  req.scopedJobId = scoped.jobId;
 
   next();
 }
 
-function canAccess(job, user) {
-  return job.owner === user.username || user.role === 'admin';
+// A scoped token was already checked against the job when it was handed out,
+// so all that is left is that it is being used on the job it was minted for.
+function canAccess(job, req) {
+  if (req.scopedJobId !== undefined) return req.scopedJobId === job.id;
+
+  return job.owner === req.user.username || req.user.role === 'admin';
 }
+
+router.post('/:id/token', requireAuth, (req, res) => {
+  const job = getJob(Number(req.params.id));
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (job.owner !== req.user.username && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  res.json(mintDownloadToken(job.id, req.user.username));
+});
 
 // A job that stopped early keeps every frame it delivered, and those frames are
 // all that stands between the user and re-rendering the whole range. Cancelled
@@ -62,7 +85,7 @@ router.get('/files/render_:id/:filename', authenticateDownload, (req, res) => {
     return res.status(404).json({ error: 'Job not found' });
   }
 
-  if (!canAccess(job, req.user)) {
+  if (!canAccess(job, req)) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -90,7 +113,7 @@ router.get('/:id/preview', authenticateDownload, (req, res) => {
     return res.status(404).json({ error: 'Job not found' });
   }
 
-  if (!canAccess(job, req.user)) {
+  if (!canAccess(job, req)) {
     return res.status(403).json({ error: 'Access denied' });
   }
 
@@ -120,7 +143,7 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
       return res.status(404).json({ error: 'Job not found' });
     }
     
-    if (!canAccess(job, req.user)) {
+    if (!canAccess(job, req)) {
       return res.status(403).json({ error: 'Access denied' });
     }
     
@@ -175,7 +198,7 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
       return res.status(404).json({ error: 'Job not found' });
     }
     
-    if (!canAccess(job, req.user)) {
+    if (!canAccess(job, req)) {
       return res.status(403).json({ error: 'Access denied' });
     }
     

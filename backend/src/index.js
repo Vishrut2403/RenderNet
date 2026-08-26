@@ -3,7 +3,7 @@ import './env.js';
 // lands in the file too.
 import { requestLogger } from './logger.js';
 import express from 'express';
-import cors from 'cors';
+import { securityHeaders, crossOrigin } from './security.js';
 import { ensureDir } from './utils/file-utils.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
 import { cleanupOldFiles } from './cleanup.js';
@@ -37,15 +37,10 @@ if (!process.env.WORKER_SECRET) {
 const app = express();
 const PORT = process.env.PORT || 5500;
 
-// Sessions travel as a bearer token, and a browser refuses a credentialed
-// request to a wildcard origin anyway.
-app.use(cors({ origin: '*' }));
+app.use(securityHeaders);
+app.use(crossOrigin());
 app.use(express.json());
 app.use(requestLogger);
-
-app.get('/api/test', (req, res) => {
-  res.json({ message: 'Backend is working!' });
-});
 
 ensureDir(UPLOADS_DIR);
 ensureDir(RENDERS_DIR);

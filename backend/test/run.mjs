@@ -3,6 +3,7 @@ import workerEndpoints from './worker-endpoints.test.mjs';
 import renderPipeline from './render-pipeline.test.mjs';
 import workers from './workers.test.mjs';
 import health from './health.test.mjs';
+import security from './security.test.mjs';
 import api from './api.test.mjs';
 
 const suites = [
@@ -11,6 +12,7 @@ const suites = [
   ['Render pipeline', renderPipeline],
   ['Workers', workers],
   ['Health endpoint', health],
+  ['Security', security],
   ['API, rendering and persistence', api]
 ];
 

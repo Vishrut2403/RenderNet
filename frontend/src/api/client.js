@@ -36,18 +36,16 @@ export function clearSession() {
   localStorage.removeItem('rendernet.user');
 }
 
-// For URLs the browser fetches itself, which cannot carry an Authorization
-// header.
-function authorizedUrl(path) {
-  return `${BASE}${path}?token=${encodeURIComponent(getToken())}`;
-}
-
 function parseOrEmpty(text) {
   try {
     return JSON.parse(text);
   } catch {
     return {};
   }
+}
+
+function downloadUrl(path, token) {
+  return `${BASE}${path}?token=${encodeURIComponent(token)}`;
 }
 
 class ApiError extends Error {
@@ -144,20 +142,25 @@ export const api = {
 
   engines: () => request('/engines'),
 
+  // Read-only, one job, minutes long: what a link or an <img> can carry when it
+  // cannot carry the session.
+  downloadToken: id => request(`/download/${id}/token`, { method: 'POST' }),
+
   // Built here because only the browser knows which API origin it is talking to.
-  async jobFiles(id) {
+  async jobFiles(id, token) {
     const result = await request(`/download/${id}/files`);
 
     return {
       ...result,
-      files: result.files.map(file => ({ ...file, url: authorizedUrl(file.path) }))
+      files: result.files.map(file => ({ ...file, url: downloadUrl(file.path, token) }))
     };
   },
 
-  zipUrl: id => authorizedUrl(`/download/${id}/zip`),
+  zipUrl: (id, token) => downloadUrl(`/download/${id}/zip`, token),
 
   // Versioned by frame count so a new frame is not served from cache.
-  previewUrl: (id, delivered) => `${authorizedUrl(`/download/${id}/preview`)}&v=${delivered}`,
+  previewUrl: (id, delivered, token) =>
+    `${downloadUrl(`/download/${id}/preview`, token)}&v=${delivered}`,
 
   upload(file, {
     frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats,
