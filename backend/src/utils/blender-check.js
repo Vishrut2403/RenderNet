@@ -1,5 +1,6 @@
 import { execSync, spawnSync } from 'child_process';
 import fs from 'fs';
+import { spawnPlan } from './process-control.js';
 
 export function findBlenderExecutable() {
   // A configured path wins, so the server and the render worker never disagree
@@ -30,7 +31,12 @@ export function renderableEngines(blenderPath) {
 
   if (configured.length > 0) return configured;
 
-  const probe = spawnSync(blenderPath, ['-b', '--factory-startup', '-E', 'help'], {
+  // Through the same launcher a render uses: Windows refuses to spawn a .cmd
+  // or .bat directly, and BLENDER_PATH may well point at one.
+  const plan = spawnPlan(blenderPath, ['-b', '--factory-startup', '-E', 'help']);
+
+  const probe = spawnSync(plan.command, plan.args, {
+    ...plan.options,
     encoding: 'utf8',
     timeout: 60000
   });

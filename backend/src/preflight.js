@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { spawn } from 'child_process';
+import { launch, terminate } from './utils/process-control.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
 
 const MARKER = 'RENDERNET_PREFLIGHT ';
@@ -61,11 +61,23 @@ function parse(output) {
   }
 }
 
+let queued = Promise.resolve();
+
 // A scene that reaches for files it did not bring renders untextured rather
 // than failing, which is worth catching before 500 frames of it. Anything that
 // goes wrong with the check itself lets the job through: a broken preflight
 // must not be able to stop the farm.
 export function checkAssets(blendPath) {
+  // One at a time: a burst of uploads would otherwise put a Blender per job on
+  // a machine that is meant to be spending itself on renders.
+  const next = queued.then(() => openScene(blendPath));
+
+  queued = next.catch(() => {});
+
+  return next;
+}
+
+function openScene(blendPath) {
   return new Promise(resolve => {
     const blender = findBlenderExecutable();
 
@@ -74,7 +86,7 @@ export function checkAssets(blendPath) {
     const scriptPath = path.join(os.tmpdir(), `rendernet-preflight-${process.pid}.py`);
     fs.writeFileSync(scriptPath, SCRIPT);
 
-    const probe = spawn(blender, ['-b', blendPath, '-P', scriptPath], {
+    const probe = launch(blender, ['-b', blendPath, '-P', scriptPath], {
       stdio: ['ignore', 'pipe', 'pipe']
     });
 
@@ -89,7 +101,7 @@ export function checkAssets(blendPath) {
     };
 
     const timer = setTimeout(() => {
-      probe.kill('SIGKILL');
+      terminate(probe);
       console.warn(`Asset check for ${path.basename(blendPath)} timed out; rendering anyway`);
       done({ checked: false, missing: [] });
     }, TIMEOUT_MS);
