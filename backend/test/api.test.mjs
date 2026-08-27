@@ -9,6 +9,7 @@ import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, blenderAvailable, blenderEngines,
   engineRenders, createFixtureBlend, exrHeader, EXR_COMPRESSION, EXR_HALF, EXR_FLOAT,
+  ffmpegAvailable, waitForCondition,
   adminSession, signUp, SIGNUP_CODE, ADMIN_PASSWORD
 } from './helpers.mjs';
 
@@ -321,6 +322,7 @@ export default async function run() {
         'a session token in the query string is refused',
         'a scene set to 16-bit PNG is still written at the 8 the form promises',
         'a scene reaching for a file it did not bring is stopped before rendering',
+        'the frames are encoded into a playable video',
         'BLENDER_EEVEE renders', 'BLENDER_WORKBENCH renders']) {
         results.skipped(name, 'Blender not installed');
       }
@@ -449,6 +451,31 @@ export default async function run() {
     results.check('while a self-contained scene is passed as sound',
       multiJob.assetCheck === 'ok', multiJob.assetCheck);
 
+    // A stub ffmpeg proves the plumbing; only the real one proves that what
+    // comes out is a video a player will open.
+    if (!ffmpegAvailable()) {
+      results.skipped('the frames are encoded into a playable video', 'ffmpeg not installed');
+    } else {
+      const asked = await fetch(`${base}/jobs/${jobId}/video`, {
+        method: 'POST', headers: auth(adminToken)
+      });
+
+      results.check('a video can be asked for', asked.status === 202, String(asked.status));
+
+      const encoded = await waitForCondition(async () => {
+        const job = await (await fetch(`${base}/jobs/${jobId}`, { headers: auth(adminToken) })).json();
+        return job.video === 'ready';
+      }, { label: 'ffmpeg to finish', timeoutMs: 60000 });
+
+      const video = path.join(sandbox, finished.outputFolder, `render_${jobId}.mp4`);
+
+      // 'ftyp' at byte four is what a player looks for.
+      results.check('the frames are encoded into a playable video',
+        encoded && fs.existsSync(video)
+          && fs.readFileSync(video).subarray(4, 8).toString() === 'ftyp',
+        encoded ? `${fs.existsSync(video)}` : 'ffmpeg did not finish');
+    }
+
     // The expression is built by hand and handed to Blender's own interpreter,
     // so the only proof it is valid Python against a real scene is running it.
     const tuned = await submitJob(base, adminToken, blend, {
@@ -513,7 +540,15 @@ export default async function run() {
     const listing = await (await fetch(`${base}/download/${jobId}/files`, {
       headers: auth(adminToken)
     })).json();
-    results.check('frame listing works with a header token', listing.files.length === 2,
+    const listedFrames = listing.files.filter(file => file.filename.endsWith('.png'));
+
+    results.check('frame listing works with a header token', listedFrames.length === 2,
+      JSON.stringify(listing.files));
+    // The video is one of the job's outputs, so it is offered beside the frames
+    // and travels in the same ZIP.
+    results.check('and the video is offered with them',
+      !ffmpegAvailable() || listing.files.some(file =>
+        file.filename.endsWith('.mp4') && file.previewable === false),
       JSON.stringify(listing.files));
     // The browser composes the fetchable URL; baking in an origin and a token
     // here breaks any deployment where the API is not same-origin.

@@ -16,8 +16,16 @@ const POLICY = [
   "frame-ancestors 'none'"
 ].join('; ');
 
+// Only over TLS: promising a browser that this host is HTTPS-only, on a farm
+// that is not, would lock people out of their own workstation for a year.
+const HSTS = process.env.TLS_KEY && process.env.TLS_CERT
+  ? 'max-age=31536000'
+  : null;
+
 export function securityHeaders(req, res, next) {
   res.setHeader('Content-Security-Policy', POLICY);
+
+  if (HSTS) res.setHeader('Strict-Transport-Security', HSTS);
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'same-origin');

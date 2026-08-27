@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { pruneOldJobs, getActiveJobPaths } from './queue.js';
+import { pruneOldJobs } from './queue.js';
+import { getActiveJobPaths } from './storage.js';
 import { purgeExpiredSessions } from './db.js';
 import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, RETENTION_DAYS } from './paths.js';
 import { pruneOldLogs } from './logger.js';

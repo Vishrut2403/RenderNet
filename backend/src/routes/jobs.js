@@ -1,8 +1,10 @@
 import express from 'express';
 import {
-  cancelJob, getJob, getAllJobs, getQueueStatus, getQueuePosition,
-  deleteJobAndFiles, setJobPriority, rerunJob, usageFor, usageByOwner
+  cancelJob, getQueueStatus, getQueuePosition, deleteJobAndFiles, setJobPriority, rerunJob
 } from '../queue.js';
+import { getJob, getAllJobs } from '../job-views.js';
+import { usageFor, usageByOwner } from '../storage.js';
+import { startVideo } from '../video.js';
 import { requireAdmin } from '../auth.js';
 
 const router = express.Router();
@@ -124,6 +126,29 @@ router.post('/:id/priority', (req, res) => {
   const result = setJobPriority(jobId, priority);
 
   res.status(result.success ? 200 : 400).json(result);
+});
+
+// Made on request rather than for every job: encoding wants the same processor
+// the renders do, and most jobs are downloaded as frames.
+router.post('/:id/video', (req, res) => {
+  const job = getJob(Number(req.params.id));
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (!canAccess(job, req.user)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const fps = req.body?.fps === undefined ? undefined : Number(req.body.fps);
+  const started = startVideo(job.id, fps);
+
+  if (started.status !== 202) {
+    return res.status(started.status).json({ error: started.error });
+  }
+
+  res.status(202).json({ status: 'encoding', frames: started.frames });
 });
 
 router.get('/queue/status', (req, res) => {

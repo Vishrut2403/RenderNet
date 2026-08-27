@@ -19,7 +19,7 @@ export function announceWorker({ workerId, name, engines, device }) {
   });
 }
 
-export function knownWorkers() {
+function knownWorkers() {
   const cutoff = Date.now() - CURRENT_MS;
 
   for (const [id, worker] of workers) {

@@ -1,6 +1,7 @@
 import { spawn, spawnSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import https from 'https';
 import fs from 'fs';
 import os from 'os';
 
@@ -316,7 +317,73 @@ export async function startServer(options) {
   throw new Error(`Server did not start on port ${options.port}:\n${lastLog}`);
 }
 
-async function tryStartServer({ port, cwd, dataDir = cwd, env = {} }) {
+// A server behind its own certificate cannot be reached with fetch's default
+// trust, so the caller hands over the certificate it just made.
+export function httpsGet(url, ca) {
+  return new Promise((resolve, reject) => {
+    https.get(url, { ca, headers: {} }, response => {
+      let body = '';
+      response.on('data', chunk => { body += chunk; });
+      response.on('end', () => resolve({
+        status: response.statusCode,
+        headers: response.headers,
+        body
+      }));
+    }).on('error', reject);
+  });
+}
+
+// Stands in for ffmpeg where it is not installed: writes a file with the same
+// leading bytes an .mp4 has, so the plumbing can be tested anywhere.
+export function createFakeFfmpeg(dir) {
+  const scriptPath = path.join(dir, 'fake-ffmpeg.js');
+
+  fs.writeFileSync(scriptPath, `const fs = require('fs');
+const path = require('path');
+
+const args = process.argv.slice(2);
+const target = args[args.length - 1];
+const list = args[args.indexOf('-i') + 1];
+
+// Recorded so a test can assert on what was asked for and in what order.
+fs.writeFileSync(path.join(path.dirname(target), 'last-ffmpeg.txt'),
+  args.join(' ') + '\\n' + fs.readFileSync(list, 'utf8'));
+
+fs.writeFileSync(target, Buffer.from('000000206674797069736f6d', 'hex'));
+process.exit(0);
+`);
+
+  const ffmpegPath = path.join(dir, process.platform === 'win32' ? 'fake-ffmpeg.cmd' : 'fake-ffmpeg');
+
+  if (process.platform === 'win32') {
+    fs.writeFileSync(ffmpegPath, `@echo off\r\n"${process.execPath}" "${scriptPath}" %*\r\n`);
+  } else {
+    fs.writeFileSync(ffmpegPath, `#!/bin/sh\nexec "${process.execPath}" "${scriptPath}" "$@"\n`);
+    fs.chmodSync(ffmpegPath, 0o755);
+  }
+
+  return ffmpegPath;
+}
+
+export function ffmpegAvailable() {
+  return spawnSync('ffmpeg', ['-version'], { encoding: 'utf8' }).status === 0;
+}
+
+export function createCertificate(dir) {
+  const key = path.join(dir, 'test-key.pem');
+  const cert = path.join(dir, 'test-cert.pem');
+
+  const made = spawnSync('openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
+    '-keyout', key, '-out', cert, '-days', '1',
+    '-subj', '/CN=localhost',
+    '-addext', 'subjectAltName=IP:127.0.0.1,DNS:localhost'
+  ], { encoding: 'utf8' });
+
+  return made.status === 0 && fs.existsSync(cert) ? { key, cert } : null;
+}
+
+async function tryStartServer({ port, cwd, dataDir = cwd, env = {}, ca = null }) {
   const proc = spawn(process.execPath, [path.join(BACKEND_ROOT, 'src', 'index.js')], {
     cwd,
     env: {
@@ -339,12 +406,12 @@ async function tryStartServer({ port, cwd, dataDir = cwd, env = {} }) {
     if (code !== 0 && code !== null) console.error(`Server exited ${code}:\n${log}`);
   });
 
-  const base = `http://127.0.0.1:${port}/api`;
+  const base = `${ca ? 'https' : 'http'}://127.0.0.1:${port}/api`;
 
   for (let attempt = 0; attempt < 60; attempt++) {
     try {
-      const res = await fetch(`${base}/health`);
-      if (res.ok) return { server: { proc, base, getLog: () => log } };
+      const res = ca ? await httpsGet(`${base}/health`, ca) : await fetch(`${base}/health`);
+      if (ca ? res.status === 200 : res.ok) return { server: { proc, base, getLog: () => log } };
     } catch {
       // not listening yet
     }

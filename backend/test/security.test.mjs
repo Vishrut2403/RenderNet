@@ -1,11 +1,14 @@
 // What the browser is told to enforce, who may call the API from another
 // origin, and how many guesses the signup code is worth. Runs without Blender.
+import fs from 'fs';
 import {
-  createResults, makeSandbox, removeSandbox, startServer, stopServer, signUp, SIGNUP_CODE
+  createResults, makeSandbox, removeSandbox, startServer, stopServer, signUp, SIGNUP_CODE,
+  createCertificate, httpsGet
 } from './helpers.mjs';
 
 const PORT = 5596;
 const CORS_PORT = 5597;
+const TLS_PORT = 5611;
 const ALLOWED = 'http://studio.local:8080';
 
 async function headersOf(url, options = {}) {
@@ -93,6 +96,10 @@ export default async function run() {
     results.check('the right code is refused too while the lock holds',
       await signUp(base, 'latecomer', 'a-real-password', SIGNUP_CODE) === 429);
 
+    results.check('no promise of HTTPS is made over plain HTTP',
+      api.headers.get('strict-transport-security') === null,
+      api.headers.get('strict-transport-security'));
+
   } finally {
     await stopServer(server);
     await stopServer(corsServer);
@@ -100,5 +107,70 @@ export default async function run() {
     removeSandbox(corsSandbox);
   }
 
+  await overTls(results);
+
   return results;
+}
+
+// Everything the farm carries - passwords, session tokens, whole scenes -
+// crosses the network, so the server can hold the certificate itself rather
+// than needing something in front of it.
+async function overTls(results) {
+  const box = makeSandbox('tls');
+  const certificate = createCertificate(box);
+
+  if (!certificate) {
+    for (const name of ['the server answers over HTTPS', 'and says so for a year',
+      'a half-configured pair refuses to start']) {
+      results.skipped(name, 'openssl not available');
+    }
+    removeSandbox(box);
+    return;
+  }
+
+  let server;
+
+  try {
+    console.log('\n  Serving over TLS');
+
+    const ca = fs.readFileSync(certificate.cert);
+
+    server = await startServer({
+      port: TLS_PORT,
+      cwd: box,
+      ca,
+      env: { TLS_KEY: certificate.key, TLS_CERT: certificate.cert }
+    });
+
+    const answered = await httpsGet(`${server.base}/health`, ca);
+
+    results.check('the server answers over HTTPS',
+      answered.status === 200 && JSON.parse(answered.body).status === 'ok', answered.body);
+    results.check('and says so for a year',
+      answered.headers['strict-transport-security'] === 'max-age=31536000',
+      answered.headers['strict-transport-security']);
+
+    // Serving plain HTTP after being told to use TLS would be a downgrade
+    // nobody would notice.
+    const halfConfigured = makeSandbox('tls-half');
+    let refused = false;
+
+    try {
+      const started = await startServer({
+        port: TLS_PORT + 1,
+        cwd: halfConfigured,
+        env: { TLS_KEY: certificate.key }
+      });
+      await stopServer(started);
+    } catch {
+      refused = true;
+    }
+
+    results.check('a half-configured pair refuses to start', refused);
+    removeSandbox(halfConfigured);
+
+  } finally {
+    await stopServer(server);
+    removeSandbox(box);
+  }
 }

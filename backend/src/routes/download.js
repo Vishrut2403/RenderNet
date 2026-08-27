@@ -2,7 +2,7 @@ import express from 'express';
 import archiver from 'archiver';
 import fs from 'fs';
 import path from 'path';
-import { getJob } from '../queue.js';
+import { getJob } from '../job-views.js';
 import { getFilesInDirectory } from '../utils/file-utils.js';
 import { verifyToken, mustChangePassword, requireAuth } from '../auth.js';
 import { mintDownloadToken, readDownloadToken } from '../download-tokens.js';

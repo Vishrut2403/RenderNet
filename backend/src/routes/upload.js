@@ -2,9 +2,10 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import { deleteFile, freeBytes } from '../utils/file-utils.js';
-import { addToQueue, getJob } from '../queue.js';
+import { addToQueue } from '../queue.js';
+import { getJob } from '../job-views.js';
 import { DATA_DIR, UPLOADS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
-import { usageFor } from '../queue.js';
+import { usageFor } from '../storage.js';
 import { ENGINE_IDS } from '../engines.js';
 import {
   FORMAT_IDS, normaliseFormats, EXR_CODEC_IDS, EXR_DEPTH_IDS,

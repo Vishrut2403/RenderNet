@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
-  login, auth, status, submitJob, waitForJob, getJob, adminSession, signUp,
+  login, auth, status, submitJob, waitForJob, getJob, adminSession, signUp, createFakeFfmpeg,
   createFakeBlender, createFakeScene, waitForCondition, stubbornIsUnkillable,
   fakeBlenderPath
 } from './helpers.mjs';
@@ -972,6 +972,170 @@ export default async function run() {
     removeSandbox(settingsBox);
   }
 
+  // A job's timings are worked out once and kept until one of its own frames
+  // moves, so the two things worth proving are that they follow the frames as
+  // they arrive and that the numbers themselves are the ones intended.
+  const timingBox = makeSandbox('timings');
+  let timingServer;
+
+  try {
+    console.log('\n  What a job reports about its frames');
+
+    timingServer = await startServer({
+      port: PORT + 13,
+      cwd: timingBox,
+      env: { BLENDER_PATH: createFakeBlender(timingBox) }
+    });
+
+    const timingToken = await adminSession(timingServer.base);
+
+    const timed = await submitJob(
+      timingServer.base, timingToken, createFakeScene(timingBox, 'slow.blend'),
+      { frameStart: 1, frameEnd: 4 }
+    );
+    const timedId = timed.body.jobId;
+
+    // Read while it is still going, which is what a dashboard does: a job's
+    // timings are remembered, and this is the read that would leave a stale
+    // answer behind if nothing forgot them as frames land.
+    await waitForCondition(
+      async () => (await getJob(timingServer.base, timingToken, timedId)).completedFrames >= 1,
+      { label: 'the first frame', timeoutMs: 60000 }
+    );
+
+    const partway = await getJob(timingServer.base, timingToken, timedId);
+    const timedJob = await waitForJob(timingServer.base, timingToken, timedId, 60000);
+
+    results.check('a job part way through reports the frames measured so far',
+      partway.timing?.measured >= 1 && partway.timing.measured < 4,
+      JSON.stringify(partway.timing));
+    results.check('and the finished job reports all of them',
+      timedJob.timing?.measured === 4, JSON.stringify(timedJob.timing));
+
+    // Written by hand rather than measured, so the median and the slowest are
+    // known in advance. Four frames: the median is the third once sorted, and
+    // the two slowest are a tie the answer has to break the same way each time.
+    const db = new Database(path.join(timingBox, 'test.db'));
+    const written = db.prepare('UPDATE frames SET durationMs = ? WHERE jobId = ? AND frame = ?');
+
+    for (const [frame, durationMs] of [[1, 5000], [2, 1000], [3, 9000], [4, 9000]]) {
+      written.run(durationMs, timedId, frame);
+    }
+    db.close();
+
+    // Restarted rather than waited out: the numbers are worked out from the
+    // frames table, so a fresh process has to arrive at the same answer.
+    await stopServer(timingServer);
+    timingServer = await startServer({
+      port: PORT + 13,
+      cwd: timingBox,
+      env: { BLENDER_PATH: createFakeBlender(timingBox) }
+    });
+
+    const reported = (await getJob(timingServer.base, timingToken, timedId)).timing;
+
+    results.check('every measured frame is counted', reported?.measured === 4,
+      JSON.stringify(reported));
+    results.check('the median is the middle of them, not the mean',
+      reported?.medianMs === 9000, JSON.stringify(reported));
+    results.check('the slowest is named with its frame',
+      reported?.slowestMs === 9000 && reported?.slowestFrame === 4, JSON.stringify(reported));
+
+  } finally {
+    await stopServer(timingServer);
+    removeSandbox(timingBox);
+  }
+
+  // Frames are what the farm makes; a video of them is what people actually
+  // want to watch.
+  const videoBox = makeSandbox('video');
+  let videoServer;
+
+  try {
+    console.log('\n  Making a video of the finished frames');
+
+    videoServer = await startServer({
+      port: PORT + 12,
+      cwd: videoBox,
+      env: {
+        BLENDER_PATH: createFakeBlender(videoBox),
+        FFMPEG_PATH: createFakeFfmpeg(videoBox)
+      }
+    });
+
+    const videoToken = await adminSession(videoServer.base);
+    const makeVideo = (id, body) => fetch(`${videoServer.base}/jobs/${id}/video`, {
+      method: 'POST',
+      headers: { ...auth(videoToken), 'Content-Type': 'application/json' },
+      body: JSON.stringify(body ?? {})
+    });
+
+    const shot = await submitJob(
+      videoServer.base, videoToken, createFakeScene(videoBox, 'flaky.blend'),
+      { frameStart: 1, frameEnd: 3 }
+    );
+    const shotJob = await waitForJob(videoServer.base, videoToken, shot.body.jobId, 60000);
+
+    // 'flaky' fails its second frame, so this job has a gap in the middle.
+    results.check('the job delivered frames either side of a failure',
+      shotJob.completedFrames === 2 && shotJob.failedFrames === 1,
+      `${shotJob.completedFrames} done, ${shotJob.failedFrames} failed`);
+
+    const started = await makeVideo(shot.body.jobId);
+    results.check('asking for a video is accepted', started.status === 202,
+      `${started.status} ${JSON.stringify(await started.clone().json())}`);
+
+    const ready = await waitForCondition(async () => {
+      const job = await getJob(videoServer.base, videoToken, shot.body.jobId);
+      return job.video === 'ready';
+    }, { label: 'the video to be made', timeoutMs: 30000 });
+
+    results.check('and the video is made', ready);
+
+    const videoFile = path.join(videoBox, shotJob.outputFolder, `render_${shot.body.jobId}.mp4`);
+    results.check('the file is there beside the frames', fs.existsSync(videoFile));
+
+    const asked = fs.readFileSync(path.join(videoBox, shotJob.outputFolder, 'last-ffmpeg.txt'), 'utf8');
+    results.check('only the frames that rendered are in it, in order',
+      asked.includes('frame_0001.png') && asked.includes('frame_0003.png')
+        && !asked.includes('frame_0002.png'),
+      asked);
+    results.check('at the frame rate asked for',
+      asked.includes('-r 24'), asked.split('\n')[0]);
+
+    const rejected = await makeVideo(shot.body.jobId, { fps: 0 });
+    results.check('a frame rate outside 1 to 120 is refused', rejected.status === 400,
+      String(rejected.status));
+
+    // ffmpeg can read an EXR, but not into anything a browser will play back
+    // without being told how to map it, so the job is turned down rather than
+    // producing something wrong.
+    const exrOnly = await submitJob(
+      videoServer.base, videoToken, createFakeScene(videoBox, 'exr.blend'),
+      { frameStart: 1, frameEnd: 3, formats: ['OPEN_EXR'] }
+    );
+    await waitForJob(videoServer.base, videoToken, exrOnly.body.jobId, 60000);
+
+    const exrRefused = await makeVideo(exrOnly.body.jobId);
+    results.check('a job with only EXR frames is turned down', exrRefused.status === 409,
+      String(exrRefused.status));
+
+    // One frame is a picture, not a video.
+    const single = await submitJob(
+      videoServer.base, videoToken, createFakeScene(videoBox, 'single.blend'),
+      { frameStart: 1, frameEnd: 1 }
+    );
+    await waitForJob(videoServer.base, videoToken, single.body.jobId, 60000);
+
+    const tooFew = await makeVideo(single.body.jobId);
+    results.check('a job with one frame is turned down', tooFew.status === 409,
+      String(tooFew.status));
+
+  } finally {
+    await stopServer(videoServer);
+    removeSandbox(videoBox);
+  }
+
   // A scene that reaches for textures it did not bring renders untextured
   // rather than failing, which is worth catching before the whole range.
   const assetBox = makeSandbox('assets');
@@ -1015,6 +1179,23 @@ export default async function run() {
     results.check('naming the files, without the artist\'s own folders',
       unpackedJob.missingAssets?.join(',') === 'wood.png,metal.png',
       JSON.stringify(unpackedJob.missingAssets));
+
+    // The button next to the failure would otherwise undo the check: the stored
+    // scene is the one that was looked at, so it can only fail the same way.
+    const rerun = await fetch(`${assetServer.base}/jobs/${unpacked.body.jobId}/rerun`, {
+      method: 'POST', headers: auth(assetToken)
+    });
+    const rerunBody = await rerun.json();
+
+    results.check('it cannot be rerun into rendering anyway', rerun.status === 400,
+      `${rerun.status} ${JSON.stringify(rerunBody)}`);
+    results.check('and the refusal says what to do about it',
+      rerunBody.error?.includes('Pack Resources'), rerunBody.error);
+
+    const stillFailed = await getJob(assetServer.base, assetToken, unpacked.body.jobId);
+    results.check('the job is left where it was',
+      stillFailed.status === 'failed' && stillFailed.completedFrames === 0,
+      `${stillFailed.status}: ${stillFailed.completedFrames} frames`);
 
     const anyway = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'unpacked.blend'),

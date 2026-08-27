@@ -34,6 +34,7 @@ export default async function run() {
   fs.mkdirSync('uploads', { recursive: true });
 
   const queue = await import('../src/queue.js');
+  const views = await import('../src/job-views.js');
   const db = await import('../src/db.js');
   const workerRouter = (await import('../src/routes/worker.js')).default;
 
@@ -59,7 +60,7 @@ export default async function run() {
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
-      const job = queue.getJob(id);
+      const job = views.getJob(id);
       if (['completed', 'failed', 'cancelled'].includes(job.status)) return job;
       await sleep(100);
     }
@@ -93,7 +94,7 @@ export default async function run() {
 
     await sleep(500);
     results.check('job is rendering while its frames are outstanding',
-      queue.getJob(jobId).status === 'rendering', queue.getJob(jobId).status);
+      views.getJob(jobId).status === 'rendering', views.getJob(jobId).status);
 
     console.log('\n  Authentication');
     res = await fetch(`${base}/jobs/${jobId}/progress`, {
@@ -175,7 +176,7 @@ export default async function run() {
     results.check('stored under canonical name', upload.body.stored === 'frame_0003.png',
       `got ${upload.body.stored}`);
     results.check('file written to job output folder',
-      fs.existsSync(path.join(sandbox, queue.getJob(jobId).outputFolder, 'frame_0003.png')));
+      fs.existsSync(path.join(sandbox, views.getJob(jobId).outputFolder, 'frame_0003.png')));
     results.check('progress counts frames delivered, not frame position (1 of 4)',
       upload.body.progress === 25, `got ${upload.body.progress}`);
 
@@ -235,16 +236,16 @@ export default async function run() {
     results.check('the exhausted frame is counted as failed', body.failedFrames === 1,
       `got ${body.failedFrames}`);
     results.check('error detail retained',
-      queue.getJob(jobId).frameErrors[0].error === 'Blender exited with code 1',
-      JSON.stringify(queue.getJob(jobId).frameErrors));
+      views.getJob(jobId).frameErrors[0].error === 'Blender exited with code 1',
+      JSON.stringify(views.getJob(jobId).frameErrors));
 
     console.log('\n  Cancelled jobs are not resurrected');
-    const outputFolder = path.join(sandbox, queue.getJob(queuedId).outputFolder);
+    const outputFolder = path.join(sandbox, views.getJob(queuedId).outputFolder);
     results.check('cancelling the queued job succeeds', queue.cancelJob(queuedId).success);
     results.check('its output folder is removed', !fs.existsSync(outputFolder));
 
     results.check('a cancelled job stays cancelled',
-      queue.getJob(queuedId).status === 'cancelled', queue.getJob(queuedId).status);
+      views.getJob(queuedId).status === 'cancelled', views.getJob(queuedId).status);
 
     res = await fetch(`${base}/jobs/${queuedId}/progress`, {
       method: 'POST', headers: json, body: JSON.stringify({ currentFrame: 4 })
@@ -265,7 +266,7 @@ export default async function run() {
     });
     results.check('late frame failure rejected', res.status === 409, `got ${res.status}`);
 
-    const untouched = queue.getJob(queuedId);
+    const untouched = views.getJob(queuedId);
     results.check('cancelled job counters are left alone',
       untouched.progress === 0 && untouched.completedFrames === 0
       && untouched.frameErrors.length === 0,
@@ -276,7 +277,7 @@ export default async function run() {
 
   } finally {
     // Stops the stand-in Blender still sitting on its first frame.
-    for (const job of queue.getAllJobs()) {
+    for (const job of views.getAllJobs()) {
       if (job.status === 'rendering' || job.status === 'pending') queue.cancelJob(job.id);
     }
 

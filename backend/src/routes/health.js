@@ -1,5 +1,6 @@
 import express from 'express';
-import { getQueueStatus, getJob, jobsNoWorkerCanRender } from '../queue.js';
+import { getQueueStatus, jobsNoWorkerCanRender } from '../queue.js';
+import { getJob } from '../job-views.js';
 import { freeBytes } from '../utils/file-utils.js';
 import { optionalAuth } from '../auth.js';
 import { DATA_DIR, MIN_FREE_BYTES } from '../paths.js';

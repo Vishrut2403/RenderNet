@@ -1,29 +1,26 @@
 import fs from 'fs';
 import { ensureWorkers, stopWorkers } from './worker-pool.js';
 import path from 'path';
-import { ensureDir, freeBytes } from './utils/file-utils.js';
-import { dataPath, DATA_DIR, SCRATCH_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from './paths.js';
+import { ensureDir } from './utils/file-utils.js';
+import { dataPath } from './paths.js';
 import {
-  saveJob, loadJobs, deleteJob,
+  saveJob, deleteJob,
   createFrames, getFrames, countFramesByStatus,
   markFrameDone, markFramePending, markFrameAttemptFailed, resetFailedFrames,
-  getFailedFrames, getAllFailedFrames, recentFrameDurations, frameDurationsByJob,
   leaseFrame, renewLease, releaseLease, getLease, liveLeases, clearJobLeases
 } from './db.js';
 import { DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY } from './formats.js';
 import { workerCanRender, engineIsOffered, machines } from './worker-registry.js';
 import { checkAssets, missingAssetsMessage } from './preflight.js';
+import { queueWaits as waitsFor, forgetTiming } from './estimates.js';
+import { jobs, nextJobId, workerScratchDir } from './job-store.js';
+import { diskIsTooFull, heldForDisk, deleteJobFiles, forgetUsage } from './storage.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
 
-const DISK_RECHECK_MS = 60 * 1000;
-
-const jobs = new Map();
 const renderQueue = [];
 const active = new Set();
-let heldForDisk = null;
-let diskTimer = null;
 
 // The worker renews this while a frame is still rendering.
 const LEASE_TTL_MS = Number(process.env.LEASE_TTL_MS) || 2 * 60 * 1000;
@@ -33,23 +30,6 @@ const FAILFAST_FRAMES = 3;
 const DRAIN_POLL_MS = 500;
 
 let lastFailure = null;
-
-function workerScratchDir(jobId) {
-  return path.join(SCRATCH_DIR, `job_${jobId}`);
-}
-
-let lastJobId = 0;
-
-for (const job of loadJobs()) {
-  jobs.set(job.id, job);
-  lastJobId = Math.max(lastJobId, job.id);
-}
-
-function nextJobId() {
-  const now = Date.now();
-  lastJobId = now > lastJobId ? now : lastJobId + 1;
-  return lastJobId;
-}
 
 // The database can outlive the frames: cleanup removes them, or someone empties
 // renders/ by hand.
@@ -84,6 +64,10 @@ export function resumeInterruptedJobs() {
     if (job.status !== 'rendering' && job.status !== 'pending') continue;
 
     const done = reconcileFrames(job);
+
+    // A frame whose file has been swept goes back to pending, taking its
+    // measured time with it.
+    forgetTiming(job.id);
 
     if (job.status === 'rendering') {
       job.interruptions = done > (job.framesAtResume ?? 0) ? 0 : (job.interruptions ?? 0) + 1;
@@ -160,16 +144,14 @@ export function addToQueue(jobData) {
     jpegQuality: jobData.jpegQuality ?? DEFAULT_JPEG_QUALITY
   };
 
-  jobs.set(jobId, job);
-  createFrames(jobId, job.frameStart, job.frameEnd);
-  saveJob(job);
-  forgetUsage(job.owner);
-
   // Queued straight away so it has a position and an estimate like any other,
   // but held back from being claimed until the scene has been looked at.
   if (!jobData.skipAssetCheck) job.assetCheck = 'checking';
 
+  jobs.set(jobId, job);
+  createFrames(jobId, job.frameStart, job.frameEnd);
   saveJob(job);
+  forgetUsage(job.owner);
   renderQueue.push(jobId);
 
   console.log(`Job ${jobId} added to queue. Queue length: ${renderQueue.length}`);
@@ -242,6 +224,12 @@ export function rerunJob(jobId) {
     return { success: false, error: `Cannot rerun a ${job.status} job` };
   }
 
+  // The stored .blend is the one that was checked, so running it again can only
+  // produce the same frames with the same files missing.
+  if (job.assetCheck === 'missing') {
+    return { success: false, error: job.error };
+  }
+
   if (!job.filePath || !fs.existsSync(dataPath(job.filePath))) {
     return { success: false, error: 'The uploaded .blend is no longer on the workstation' };
   }
@@ -251,6 +239,7 @@ export function rerunJob(jobId) {
   const delivered = reconcileFrames(job);
 
   resetFailedFrames(jobId);
+  forgetTiming(jobId);
   const retried = countFramesByStatus(jobId).pending;
 
   if (retried === 0) {
@@ -313,34 +302,18 @@ function activeJobs() {
     .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.id - b.id);
 }
 
-function diskIsTooFull() {
-  const free = freeBytes(DATA_DIR);
-
-  if (free === null || free >= MIN_FREE_BYTES) {
-    heldForDisk = null;
-    return false;
-  }
-
-  heldForDisk = `Only ${(free / 1024 ** 3).toFixed(1)} GB of disk left; `
-    + 'renders are held until finished jobs are deleted';
-
-  console.warn(`Queue held: ${heldForDisk}`);
-
-  clearTimeout(diskTimer);
-  diskTimer = setTimeout(processQueue, DISK_RECHECK_MS);
-  diskTimer.unref?.();
-
-  return true;
-}
-
 function promoteNext() {
-  if (renderQueue.length === 0 || diskIsTooFull()) return null;
+  if (renderQueue.length === 0 || diskIsTooFull(processQueue)) return null;
 
   sortQueue();
 
-  // A job still being looked at keeps its place in the queue; it is simply not
-  // handed to a worker yet.
-  const next = renderQueue.findIndex(id => jobs.get(id)?.assetCheck !== 'checking');
+  // A job still being looked at, or one this farm has nobody to render, keeps
+  // its place in the queue rather than being started: a job marked rendering
+  // that no worker will ever claim is a progress bar that never moves.
+  const next = renderQueue.findIndex(id => {
+    const queued = jobs.get(id);
+    return queued?.assetCheck !== 'checking' && engineIsOffered(queued?.renderEngine);
+  });
 
   if (next === -1) return null;
 
@@ -468,9 +441,37 @@ function leaseFromActive(workerId) {
   return null;
 }
 
+// A job promoted before any worker had said what it can do, on a farm where
+// none of them can render it. Put back rather than left showing progress it
+// will never make; it keeps the frames it has and starts again when a machine
+// that offers the engine turns up.
+function parkUnrenderable() {
+  for (const jobId of [...active]) {
+    const job = jobs.get(jobId);
+
+    if (!job || job.status !== 'rendering') continue;
+    if (engineIsOffered(job.renderEngine)) continue;
+    if (liveLeases().some(lease => lease.jobId === jobId)) continue;
+
+    job.status = 'pending';
+    job.startedAt = null;
+    job.currentFrame = null;
+    saveJob(job);
+
+    renderQueue.push(jobId);
+    releaseSlot(jobId);
+
+    console.log(`Job ${jobId} put back: no worker here renders ${job.renderEngine}`);
+  }
+}
+
 // A worker with nothing to claim starts the next queued job rather than waiting,
 // so the tail of one job does not leave the farm idle.
 export function leaseNextFrame(workerId) {
+  // The asking worker has just said what it offers, so this is the freshest
+  // the registry ever is.
+  parkUnrenderable();
+
   for (;;) {
     const lease = leaseFromActive(workerId);
 
@@ -551,67 +552,27 @@ export function pruneOldJobs(cutoffMs) {
     jobs.delete(job.id);
     deleteJob(job.id);
     forgetUsage(job.owner);
+    forgetTiming(job.id);
     pruned++;
   }
 
   return pruned;
 }
 
-// Stored as text because SQLite has no list, and read back here so no caller
-// has to know that.
-function parseMissing(stored) {
-  if (!stored) return null;
+// The order the queue will actually run in, which is what an estimate is
+// measured against.
+export function queueWaits() {
+  sortQueue();
 
-  try {
-    return JSON.parse(stored).map(file => file.split(/[\\/]/).pop());
-  } catch {
-    return null;
-  }
+  return waitsFor(activeJobs(), renderQueue.map(id => jobs.get(id)).filter(Boolean));
 }
 
-function asFrameError(row) {
-  return { frame: row.frame, error: row.error, at: row.updatedAt };
-}
-
-export function getJob(jobId) {
-  const job = jobs.get(jobId);
-  if (!job) return undefined;
-
-  return {
-    ...job,
-    missingAssets: parseMissing(job.missingAssets),
-    frameErrors: getFailedFrames(jobId).map(asFrameError),
-    timing: frameTimings().get(jobId) ?? null,
-    startsIn: queueWaits().get(jobId) ?? null
-  };
-}
-
-// One query rather than one per job: the dashboard polls this every few seconds.
-export function getAllJobs() {
-  const errorsByJob = new Map();
-
-  for (const row of getAllFailedFrames()) {
-    if (!errorsByJob.has(row.jobId)) errorsByJob.set(row.jobId, []);
-    errorsByJob.get(row.jobId).push(asFrameError(row));
-  }
-
-  const waits = queueWaits();
-  const timings = frameTimings();
-
-  return Array.from(jobs.values()).map(job => ({
-    ...job,
-    missingAssets: parseMissing(job.missingAssets),
-    timing: timings.get(job.id) ?? null,
-    frameErrors: errorsByJob.get(job.id) ?? [],
-    startsIn: waits.get(job.id) ?? null
-  }));
-}
-
-// Rendering, but nobody here can render it: the job is not stuck on anything
-// this server can fix, so it is worth naming rather than leaving as a progress
-// bar that never moves.
 export function jobsNoWorkerCanRender() {
-  return activeJobs()
+  const waiting = renderQueue.map(id => jobs.get(id)).filter(Boolean);
+
+  // Queued ones are the ordinary case; a running one was promoted while a
+  // machine that could take it was still here.
+  return [...activeJobs(), ...waiting]
     .filter(job => !engineIsOffered(job.renderEngine))
     .map(job => ({ id: job.id, renderEngine: job.renderEngine }));
 }
@@ -623,90 +584,17 @@ export function getQueueStatus() {
 
   return {
     isRendering: active.size > 0,
-    heldForDisk,
+    heldForDisk: heldForDisk(),
     activeJobs: activeJobs().map(job => job.id),
     workers: machines(liveLeases().map(({ leasedBy, jobId, frame }) => ({ id: leasedBy, jobId, frame }))),
     queueLength: renderQueue.length,
     totalJobs: jobs.size,
-    pendingJobs: renderQueue.length,
     lastFailure,
     queue: renderQueue.map(id => ({
       id,
       filename: jobs.get(id)?.originalFilename
     }))
   };
-}
-
-const RATE_TTL_MS = 10 * 1000;
-let frameRate = { at: 0, value: null };
-
-// Median, so one pathological frame does not move the estimate for the rest.
-function typicalFrameMs() {
-  if (Date.now() - frameRate.at < RATE_TTL_MS) return frameRate.value;
-
-  const durations = recentFrameDurations().sort((a, b) => a - b);
-
-  // Not cached: holding this answer would outlast the first frames arriving.
-  if (durations.length === 0) return null;
-
-  const value = durations[Math.floor(durations.length / 2)];
-  frameRate = { at: Date.now(), value };
-
-  return value;
-}
-
-export function frameTimings() {
-  const byJob = new Map();
-
-  for (const row of frameDurationsByJob()) {
-    if (!byJob.has(row.jobId)) byJob.set(row.jobId, []);
-    byJob.get(row.jobId).push(row);
-  }
-
-  const timings = new Map();
-
-  for (const [jobId, rows] of byJob) {
-    const sorted = [...rows].sort((a, b) => a.durationMs - b.durationMs);
-    const slowest = sorted[sorted.length - 1];
-
-    timings.set(jobId, {
-      measured: rows.length,
-      medianMs: sorted[Math.floor(sorted.length / 2)].durationMs,
-      slowestMs: slowest.durationMs,
-      slowestFrame: slowest.frame
-    });
-  }
-
-  return timings;
-}
-
-function framesLeft(job) {
-  return Math.max(0, job.totalFrames - job.completedFrames);
-}
-
-export function queueWaits() {
-  const waits = new Map();
-  const typical = typicalFrameMs();
-
-  if (typical === null) return waits;
-
-  // Frames render side by side, so the work ahead is shared between workers.
-  const workers = Math.max(new Set(liveLeases().map(lease => lease.leasedBy)).size, 1);
-
-  let ahead = 0;
-
-  for (const job of activeJobs()) ahead += framesLeft(job) * typical;
-
-  sortQueue();
-
-  for (const id of renderQueue) {
-    waits.set(id, Math.round(ahead / workers));
-
-    const job = jobs.get(id);
-    if (job) ahead += framesLeft(job) * typical;
-  }
-
-  return waits;
 }
 
 export function getQueuePosition(jobId) {
@@ -753,6 +641,7 @@ export function recordFrameUpload(jobId, frameNumber, filename) {
   if (!job) return null;
 
   markFrameDone(jobId, frameNumber, filename);
+  forgetTiming(jobId);
   job.currentFrame = frameNumber;
   syncFrameCounts(job);
   saveJob(job);
@@ -775,7 +664,7 @@ export function recordFrameFailure(jobId, frameNumber, error) {
   return { job, frame };
 }
 
-export function completeJob(jobId, { successfulFrames, failedFrames }) {
+function completeJob(jobId, { successfulFrames, failedFrames }) {
   const job = jobs.get(jobId);
   if (!job) return null;
 
@@ -884,84 +773,6 @@ export function cancelJob(jobId) {
   return { success: false, error: 'Job cannot be cancelled' };
 }
 
-function deleteJobFiles(job) {
-  try {
-    if (job.filePath && fs.existsSync(dataPath(job.filePath))) {
-      fs.unlinkSync(dataPath(job.filePath));
-      console.log(`Deleted upload: ${job.filePath}`);
-    }
-
-    if (job.outputFolder && fs.existsSync(dataPath(job.outputFolder))) {
-      fs.rmSync(dataPath(job.outputFolder), { recursive: true, force: true });
-      console.log(`Deleted renders: ${job.outputFolder}`);
-    }
-
-    fs.rmSync(workerScratchDir(job.id), { recursive: true, force: true });
-  } catch (error) {
-    console.error(`Error deleting files:`, error.message);
-  }
-}
-
-function sizeOf(target) {
-  let total = 0;
-
-  try {
-    const stats = fs.statSync(target);
-    if (!stats.isDirectory()) return stats.size;
-
-    for (const entry of fs.readdirSync(target)) {
-      total += sizeOf(path.join(target, entry));
-    }
-  } catch {
-    // Gone between listing and measuring, which is only ever an overcount.
-  }
-
-  return total;
-}
-
-// Measured from disk rather than tracked in a counter: a counter drifts the
-// moment anything is removed outside the app, and there are few enough jobs
-// here that walking them costs nothing.
-const usageCache = new Map();
-const USAGE_TTL_MS = 10000;
-
-export function usageFor(username, { fresh = false } = {}) {
-  const cached = usageCache.get(username);
-
-  if (!fresh && cached && Date.now() - cached.at < USAGE_TTL_MS) {
-    return cached.value;
-  }
-
-  let bytes = 0;
-
-  for (const job of jobs.values()) {
-    if (job.owner !== username) continue;
-    if (job.filePath) bytes += sizeOf(dataPath(job.filePath));
-    if (job.outputFolder) bytes += sizeOf(dataPath(job.outputFolder));
-  }
-
-  const value = {
-    bytes,
-    quota: USER_QUOTA_BYTES,
-    remaining: Math.max(0, USER_QUOTA_BYTES - bytes)
-  };
-
-  usageCache.set(username, { at: Date.now(), value });
-
-  return value;
-}
-
-// Deleting, cancelling or uploading is exactly when somebody is watching the
-// number, so those clear the cache rather than making them wait it out.
-function forgetUsage(username) {
-  usageCache.delete(username);
-}
-
-export function usageByOwner() {
-  const owners = new Set(Array.from(jobs.values(), job => job.owner));
-  return Object.fromEntries(Array.from(owners, owner => [owner, usageFor(owner)]));
-}
-
 // Removing a job is the way space is reclaimed, so it takes the files with it.
 // A rendering job has to be cancelled first: its worker is still writing.
 export function deleteJobAndFiles(jobId) {
@@ -976,6 +787,7 @@ export function deleteJobAndFiles(jobId) {
   jobs.delete(jobId);
   deleteJob(jobId);
   forgetUsage(job.owner);
+  forgetTiming(jobId);
 
   console.log(`Job ${jobId} deleted by request`);
 
@@ -986,16 +798,3 @@ export function deleteJobAndFiles(jobId) {
 // under a job that has been sitting in the queue for longer than the cutoff.
 export { stopWorkers };
 
-export function getActiveJobPaths() {
-  const active = new Set();
-
-  for (const job of jobs.values()) {
-    if (job.status !== 'pending' && job.status !== 'rendering') continue;
-
-    if (job.filePath) active.add(dataPath(job.filePath));
-    if (job.outputFolder) active.add(dataPath(job.outputFolder));
-    active.add(workerScratchDir(job.id));
-  }
-
-  return active;
-}

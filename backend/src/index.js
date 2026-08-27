@@ -4,6 +4,7 @@ import './env.js';
 import { requestLogger } from './logger.js';
 import express from 'express';
 import { securityHeaders, crossOrigin } from './security.js';
+import { tlsOptions } from './tls.js';
 import { ensureDir } from './utils/file-utils.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
 import { cleanupOldFiles } from './cleanup.js';
@@ -23,6 +24,7 @@ import {
 } from './formats.js';
 import { backupDatabase } from './db.js';
 import crypto from 'crypto';
+import https from 'https';
 import fs from 'fs';
 import path from 'path';
 import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST, RETENTION_DAYS } from './paths.js';
@@ -132,9 +134,26 @@ process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason);
 });
 
-app.listen(PORT, () => {
+let tls;
+
+try {
+  tls = tlsOptions();
+} catch (error) {
+  console.error(`TLS is configured but unusable: ${error.message}`);
+  process.exit(1);
+}
+
+const scheme = tls ? 'https' : 'http';
+const server = tls ? https.createServer(tls, app) : app;
+
+server.listen(PORT, () => {
   console.log(`Render Farm started.
     Port: ${PORT}  , BlenderPath: ${blenderPath ? 'Found': 'Not Found'}
     Data:  ${DATA_DIR}
-    UI:    ${fs.existsSync(FRONTEND_DIST) ? `http://localhost:${PORT}` : 'not built'}`);
+    UI:    ${fs.existsSync(FRONTEND_DIST) ? `${scheme}://localhost:${PORT}` : 'not built'}`);
+
+  if (!tls) {
+    console.warn('Serving plain HTTP: passwords, session tokens and scenes cross the network in clear.');
+    console.warn('Set TLS_KEY and TLS_CERT to turn on HTTPS.');
+  }
 });

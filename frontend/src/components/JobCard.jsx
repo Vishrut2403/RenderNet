@@ -103,6 +103,18 @@ export function JobCard({ job, onChanged, onError }) {
     }
   }
 
+  async function makeVideo() {
+    setBusy(true);
+    try {
+      await api.makeVideo(job.id);
+      onChanged?.();
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function toggleFrames() {
     if (frames) return setFrames(null);
 
@@ -237,6 +249,15 @@ export function JobCard({ job, onChanged, onError }) {
             <Button busy={busy} onClick={toggleFrames}>
               {frames ? 'Hide frames' : 'View frames'}
             </Button>
+            {job.video === 'ready'
+              ? <a className="btn" href={api.videoUrl(job.id, downloadToken)}>Download video</a>
+              : (
+                <Button busy={busy || job.video === 'encoding'} onClick={makeVideo}>
+                  {job.video === 'encoding' && 'Making video'}
+                  {job.video === 'failed' && 'Video failed — try again'}
+                  {!job.video && 'Make video'}
+                </Button>
+              )}
           </>
         )}
 

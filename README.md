@@ -145,6 +145,19 @@ Nothing to install.
 Jobs belong to the account rather than the machine, so someone can submit from one
 computer and download from another.
 
+Everything the farm carries — passwords, session tokens, whole scenes — crosses
+the network, so on anything but a trusted wire give the server a certificate:
+
+```
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout tls-key.pem -out tls-cert.pem \
+  -subj "/CN=rendernet" -addext "subjectAltName=DNS:rendernet"
+```
+
+Point `TLS_KEY` and `TLS_CERT` at the two files and the same port serves HTTPS.
+A self-signed certificate means each browser is warned once; a worker on another
+machine needs `NODE_EXTRA_CA_CERTS=/path/to/tls-cert.pem` to trust it.
+
 To confirm the workstation is reachable, open `http://rendernet:5500/api/health`
 from a *different* machine. `{"status":"ok","blenderAvailable":true}` means the
 firewall rule and the name are both working. It answers `degraded` instead when
@@ -196,7 +209,9 @@ Things that would otherwise surprise you.
 - **A queued job is told roughly when it will start**, not just its position.
   Every frame's render time is recorded, so the estimate is the median of what
   frames have actually cost on this machine, shared out between the workers
-  running. A finished job also reports its typical and slowest frame.
+  running. A finished job also reports its typical and slowest frame, worked out
+  once per job and kept until one of that job's own frames moves — the job list
+  is polled every couple of seconds and the frames table only ever grows.
 - **Several output formats can be ticked at once.** Blender renders the frame
   once and writes each one, so a second format costs disk rather than time, and
   they all arrive in the same ZIP. The first of them is what previews show,
@@ -206,6 +221,13 @@ Things that would otherwise surprise you.
   than the 32-bit a scene usually carries, which is the same picture at half the
   bytes on a disk several people share. Depth is one Blender setting shared by
   every format, so each is written with its own rather than inheriting the last.
+- **A video of the finished frames can be made on request**, since people want
+  to watch an animation rather than scrub 300 files. It is one ffmpeg pass over
+  the frames that arrived, so a job with gaps still makes a video of what it
+  has, and it lands beside the frames and travels in the same ZIP. Asked for
+  rather than automatic: encoding wants the same processor the renders do.
+  Without ffmpeg installed the farm renders exactly as before and says it cannot
+  make one.
 - **A scene is opened before it is queued** to see whether it reaches for
   textures, linked files or caches it did not bring. Those live on the artist's
   own machine, so on the farm they are simply absent and the frames come out
@@ -249,6 +271,7 @@ tree, so it is found however the server is started.
 | `BLENDER_PATH` | auto-detected | Blender executable. Required on Windows. |
 | `CYCLES_DEVICE` | `CPU` | `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI` or `METAL` |
 | `ALLOWED_ORIGINS` | *unset* | Origins allowed to call the API from a browser, comma-separated. Unset means same-origin only. |
+| `TLS_KEY` / `TLS_CERT` | *unset* | Private key and certificate. Set both to serve HTTPS; setting one alone stops the server rather than quietly serving plain HTTP. |
 | `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |
 | `USER_QUOTA_BYTES` | `10737418240` (10 GB) | Disk each user may hold in uploads and rendered frames |
 | `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |
@@ -264,6 +287,8 @@ tree, so it is found however the server is started.
 | `WORKER_SCRATCH_DIR` | a temp directory | Where a remote worker keeps scenes and frames |
 | `LEASE_TTL_MS` | `120000` | How long a worker's claim on a frame lasts before another may take it |
 | `PREFLIGHT_TIMEOUT_MS` | `120000` | How long the pre-render scene check may take before the job is queued anyway |
+| `FFMPEG_PATH` | auto-detected | ffmpeg executable, for making a video of the frames. Without it that button says so |
+| `VIDEO_FPS` | `24` | Frame rate for those videos |
 
 ---
 

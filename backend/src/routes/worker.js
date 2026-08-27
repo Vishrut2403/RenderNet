@@ -3,7 +3,6 @@ import multer from 'multer';
 import crypto from 'crypto';
 import fs from 'fs';
 import {
-  getJob,
   updateJobProgress,
   recordFrameUpload,
   recordFrameFailure,
@@ -11,6 +10,7 @@ import {
   renewFrameLease,
   releaseFrameLease
 } from '../queue.js';
+import { getJob } from '../job-views.js';
 import { getLease } from '../db.js';
 import path from 'path';
 import { dataPath } from '../paths.js';

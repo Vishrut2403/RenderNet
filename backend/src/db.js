@@ -99,6 +99,9 @@ addColumnIfMissing('jobs', 'exrCodec', "TEXT DEFAULT 'ZIP'");
 addColumnIfMissing('jobs', 'exrDepth', "TEXT DEFAULT '16'");
 addColumnIfMissing('jobs', 'jpegQuality', 'INTEGER DEFAULT 90');
 
+// Whether a video has been made of the finished frames.
+addColumnIfMissing('jobs', 'video', 'TEXT');
+
 // What the scene reaches for outside itself, checked before it is queued.
 addColumnIfMissing('jobs', 'assetCheck', 'TEXT');
 addColumnIfMissing('jobs', 'missingAssets', 'TEXT');
@@ -112,13 +115,20 @@ addColumnIfMissing('frames', 'leasedBy', 'TEXT');
 addColumnIfMissing('frames', 'leaseExpiresAt', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS idx_frames_lease ON frames(leaseId)');
 
+// Only the measured frames, which is what the timings read and a fraction of
+// the table while a job is still running.
+db.exec(
+  `CREATE INDEX IF NOT EXISTS idx_frames_duration ON frames(jobId, durationMs)
+   WHERE durationMs IS NOT NULL`
+);
+
 const COLUMNS = [
   'id', 'status', 'filePath', 'outputPath', 'outputFolder', 'frameStart', 'frameEnd',
   'renderEngine', 'originalFilename', 'owner', 'createdAt', 'startedAt', 'completedAt',
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
   'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality',
-  'assetCheck', 'missingAssets'
+  'assetCheck', 'missingAssets', 'video'
 ];
 
 const upsertJob = db.prepare(`
@@ -190,11 +200,15 @@ export function recentFrameDurations(limit = 200) {
   ).all(limit).map(row => row.durationMs);
 }
 
-export function frameDurationsByJob() {
+// One job's measured frames, which is all that job's timings depend on. The
+// farm-wide version of this - every duration in the database, read on every
+// poll of the job list - is what this replaced.
+export function frameDurationsFor(jobId) {
   return db.prepare(
-    `SELECT jobId, frame, durationMs FROM frames
-     WHERE durationMs IS NOT NULL ORDER BY jobId, frame`
-  ).all();
+    `SELECT frame, durationMs FROM frames
+      WHERE jobId = ? AND durationMs IS NOT NULL
+      ORDER BY durationMs, frame`
+  ).all(jobId);
 }
 
 export function countFramesByStatus(jobId) {

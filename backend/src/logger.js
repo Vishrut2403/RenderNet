@@ -133,7 +133,7 @@ export function requestLogger(req, res, next) {
 // Console rather than a logging call of its own: the server already says what
 // it is doing in eighty-odd places, and on the workstation those go to a
 // Task Scheduler window nobody sees.
-export function startFileLogging() {
+function startFileLogging() {
   if (patched) return;
   patched = true;
 

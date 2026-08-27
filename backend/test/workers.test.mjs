@@ -213,8 +213,10 @@ async function capabilities(results) {
     const waiting = await (await fetch(`${server.base}/jobs/${eevee.body.jobId}`, {
       headers: auth(token)
     })).json();
-    results.check('the one it cannot is left alone rather than failed',
-      waiting.completedFrames === 0 && waiting.failedFrames === 0 && waiting.status !== 'failed',
+    // Queued, not started: a job marked rendering that no worker will ever
+    // claim is a progress bar that never moves.
+    results.check('the one it cannot is left queued rather than failed or started',
+      waiting.status === 'pending' && waiting.completedFrames === 0 && waiting.failedFrames === 0,
       `${waiting.status}: ${waiting.completedFrames} done, ${waiting.failedFrames} failed`);
 
     const reported = await health();
