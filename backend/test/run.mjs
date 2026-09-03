@@ -10,6 +10,7 @@ import chunkedUpload from './chunked-upload.test.mjs';
 import workerCredentials from './worker-credentials.test.mjs';
 import testFrame from './test-frame.test.mjs';
 import tiles from './tiles.test.mjs';
+import downloads from './downloads.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -23,7 +24,8 @@ const suites = [
   ['Chunked uploads', chunkedUpload],
   ['Worker credentials', workerCredentials],
   ['Test frame before the rest', testFrame],
-  ['Tiled stills', tiles]
+  ['Tiled stills', tiles],
+  ['Downloads and persistence', downloads]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

@@ -1,5 +1,7 @@
 // End-to-end HTTP tests against a real server instance in a sandbox directory.
-// Render-dependent checks are skipped when Blender is unavailable.
+// What only a real Blender can answer is checked here and skipped without one;
+// what merely needs frames on disk lives in the downloads suite, which runs
+// everywhere.
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -309,17 +311,10 @@ export default async function run() {
 
     if (!blenderAvailable()) {
       console.log('\n  Rendering, downloads and persistence');
-      for (const name of ['render completes', 'frames written', 'download by header',
-        'download by query token', 'unauthenticated download rejected',
-        'cross-user download denied', 'traversal blocked',
-        'a token minted for another job does not open this one', 'frame listing by header',
-        'frame paths carry no token', 'session survives restart', 'job survives restart',
-        'progress survives restart', 'download survives restart',
+      for (const name of ['render completes', 'frames written',
         'every offered engine is one this Blender lists',
         'the EXR is written half float, not the 32-bit a scene defaults to',
         'a JPEG at quality 10 is smaller than the same frame at 90',
-        'a scoped token downloads the job it was minted for',
-        'a session token in the query string is refused',
         'a scene set to 16-bit PNG is still written at the 8 the form promises',
         'a scene reaching for a file it did not bring is stopped before rendering',
         'the frames are encoded into a playable video',
@@ -501,75 +496,6 @@ export default async function run() {
       results.check(`${engine} renders`, done.status === 'completed',
         `${done.status}: ${done.error || ''} ${JSON.stringify(done.frameErrors ?? [])}`);
     }
-
-    console.log('\n  Downloads');
-
-    const mint = async (id, token) => {
-      const res = await fetch(`${base}/download/${id}/token`, {
-        method: 'POST', headers: auth(token)
-      });
-      return { status: res.status, body: await res.json() };
-    };
-
-    const scoped = (await mint(jobId, adminToken)).body.token;
-    const frameUrl = `${base}/download/files/render_${jobId}/frame_0001.png`;
-
-    results.check('download by header',
-      await status(`${base}/download/${jobId}/zip`, { headers: auth(adminToken) }) === 200);
-    results.check('a scoped token downloads the job it was minted for',
-      await status(`${frameUrl}?token=${scoped}`) === 200);
-
-    // The whole point of the scoped token: a URL is copied, bookmarked and kept
-    // in history, so the one thing it must never carry is the session itself.
-    results.check('a session token in the query string is refused',
-      await status(`${frameUrl}?token=${adminToken}`) === 401);
-
-    const elsewhere = (await mint(multi.body.jobId, adminToken)).body.token;
-    results.check('a token minted for another job does not open this one',
-      await status(`${frameUrl}?token=${elsewhere}`) === 403);
-    results.check('a tampered token is refused',
-      await status(`${frameUrl}?token=${scoped.slice(0, -2)}xy`) === 401);
-
-    results.check('unauthenticated download rejected',
-      await status(`${base}/download/${jobId}/zip`) === 401);
-    results.check('cross-user download denied',
-      (await mint(jobId, userToken)).status === 403);
-    results.check('path traversal blocked',
-      await status(`${base}/download/files/render_${jobId}/..%2f..%2fusers.json?token=${scoped}`) === 404);
-
-    const listing = await (await fetch(`${base}/download/${jobId}/files`, {
-      headers: auth(adminToken)
-    })).json();
-    const listedFrames = listing.files.filter(file => file.filename.endsWith('.png'));
-
-    results.check('frame listing works with a header token', listedFrames.length === 2,
-      JSON.stringify(listing.files));
-    // The video is one of the job's outputs, so it is offered beside the frames
-    // and travels in the same ZIP.
-    results.check('and the video is offered with them',
-      !ffmpegAvailable() || listing.files.some(file =>
-        file.filename.endsWith('.mp4') && file.previewable === false),
-      JSON.stringify(listing.files));
-    // The browser composes the fetchable URL; baking in an origin and a token
-    // here breaks any deployment where the API is not same-origin.
-    results.check('frame paths are API-relative and carry no token',
-      listing.files.every(file =>
-        file.path === `/download/files/render_${jobId}/${file.filename}`)
-      && !JSON.stringify(listing).includes('token'),
-      JSON.stringify(listing.files));
-
-    console.log('\n  Persistence across restart');
-    await stopServer(server);
-    server = await startServer({ port: PORT, cwd: sandbox });
-
-    results.check('session survives restart',
-      await status(`${server.base}/jobs`, { headers: auth(adminToken) }) === 200);
-
-    const recovered = await (await fetch(`${server.base}/jobs/${jobId}`, { headers: auth(adminToken) })).json();
-    results.check('job record survives restart', recovered.status === 'completed', recovered.status);
-    results.check('progress survives restart', recovered.progress === 100, `got ${recovered.progress}`);
-    results.check('download still works after restart',
-      await status(`${server.base}/download/${jobId}/zip`, { headers: auth(adminToken) }) === 200);
 
   } finally {
     await stopServer(server);

@@ -314,14 +314,15 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd backend  && npm test        # 332 checks
+cd backend  && npm test        # 534 checks
 npm run lint                   # from the root, covers both packages
 ```
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
-touch real uploads, renders or accounts; render-dependent checks are skipped when
-Blender is absent, leaving 310 of the 332 still meaningful.
+touch real uploads, renders or accounts. A stand-in for Blender covers everything
+that only needs frames on disk, so without a real one installed just 13 of the
+534 skip — what is left are the checks on what Blender itself writes.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
 only place it is exercised on the platform the workstation actually runs. Windows
