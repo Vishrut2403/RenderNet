@@ -91,7 +91,10 @@ function sceneOverrides(renderEngine, { resolutionPercent, samples } = {}) {
 
 // Read lazily: the server may generate the secret at boot, after this import.
 function workerHeaders(extra = {}) {
-  return { 'x-worker-secret': process.env.WORKER_SECRET || '', ...extra };
+  // WORKER_SECRET is what a farm upgrading from the shared secret still has.
+  const token = process.env.WORKER_TOKEN || process.env.WORKER_SECRET || '';
+
+  return { 'x-worker-token': token, ...extra };
 }
 
 class RenderWorker {

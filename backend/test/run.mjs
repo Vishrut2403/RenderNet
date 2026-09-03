@@ -7,6 +7,7 @@ import security from './security.test.mjs';
 import api from './api.test.mjs';
 import paging from './paging.test.mjs';
 import chunkedUpload from './chunked-upload.test.mjs';
+import workerCredentials from './worker-credentials.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -17,7 +18,8 @@ const suites = [
   ['Security', security],
   ['API, rendering and persistence', api],
   ['Job list paging', paging],
-  ['Chunked uploads', chunkedUpload]
+  ['Chunked uploads', chunkedUpload],
+  ['Worker credentials', workerCredentials]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

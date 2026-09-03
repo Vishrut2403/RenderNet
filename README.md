@@ -38,7 +38,6 @@ The frontend build is what lets clients get away with only a browser — the API
 
 ```env
 PORT=5500
-WORKER_SECRET=paste-a-long-random-string
 SIGNUP_CODE=what-you-tell-your-team
 BLENDER_PATH=C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 CYCLES_DEVICE=CUDA
@@ -46,12 +45,6 @@ CYCLES_DEVICE=CUDA
 
 `backend/.env.example` is the same file with every option and its default in
 it; copy that rather than typing this out.
-
-Generate the secret with:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-```
 
 `BLENDER_PATH` is required on Windows, where Blender is not on `PATH` — match the
 version folder actually installed. On Linux and macOS it can be omitted if
@@ -184,8 +177,13 @@ Things that would otherwise surprise you.
   worker with nothing left to claim starts the next queued job rather than
   waiting, so the tail of one job does not leave the rest of the farm idle.
   A second machine joins by running `npm run worker` against the same API with
-  the same `WORKER_SECRET`: it downloads each scene over HTTP and renders in
-  its own scratch space. Nothing on the server has to know it is there.
+  a `WORKER_TOKEN` issued to it under Admin: it downloads each scene over HTTP
+  and renders in its own scratch space.
+- **Every machine renders under its own credential.** The workstation mints one
+  for itself at each start, so it needs nothing configured; every other machine
+  is issued one that is shown once and can be revoked on its own, without
+  disturbing the rest of the farm. A machine may only touch the claims it holds,
+  and may only download the scenes it is rendering.
 - **A frame only goes to a machine that can render it.** Every worker says which
   engines it offers when it asks for work, and is passed over for jobs using
   anything else. Without that, a machine whose Blender cannot render a job's
@@ -275,7 +273,8 @@ tree, so it is found however the server is started.
 | --- | --- | --- |
 | `PORT` | `5500` | API and UI listen port |
 | `SIGNUP_CODE` | *unset* | Code required to create an account. While unset, account creation is refused rather than left open. |
-| `WORKER_SECRET` | *generated per process* | Authenticates worker callbacks. Must be set explicitly for workers on other machines. |
+| `WORKER_TOKEN` | *minted at start* | Credential a worker authenticates with. Needed only on other machines; issue one under Admin. |
+| `WORKER_SECRET` | *unset* | The old farm-wide secret. Still accepted, and listed under Admin so it can be revoked once every machine has its own. |
 | `BLENDER_PATH` | auto-detected | Blender executable. Required on Windows. |
 | `CYCLES_DEVICE` | `CPU` | `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI` or `METAL` |
 | `ALLOWED_ORIGINS` | *unset* | Origins allowed to call the API from a browser, comma-separated. Unset means same-origin only. |

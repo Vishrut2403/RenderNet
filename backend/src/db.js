@@ -51,6 +51,17 @@ db.exec(`
     passwordResetAt TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS worker_tokens (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    tokenHash TEXT NOT NULL UNIQUE,
+    createdAt TEXT,
+    createdBy TEXT,
+    lastSeen TEXT,
+    revokedAt TEXT,
+    isLocal INTEGER NOT NULL DEFAULT 0
+  );
+
   CREATE TABLE IF NOT EXISTS frames (
     jobId INTEGER NOT NULL,
     frame INTEGER NOT NULL,
@@ -340,6 +351,45 @@ export function liveLeases() {
     `SELECT jobId, frame, leasedBy, leaseExpiresAt AS expiresAt
      FROM frames WHERE leaseExpiresAt > ? ORDER BY jobId, frame`
   ).all(stamp());
+}
+
+export function insertWorkerToken(row) {
+  db.prepare(
+    `INSERT INTO worker_tokens (id, name, tokenHash, createdAt, createdBy, isLocal)
+     VALUES (@id, @name, @tokenHash, @createdAt, @createdBy, @isLocal)`
+  ).run(row);
+}
+
+export function workerTokenByHash(tokenHash) {
+  return db.prepare(
+    'SELECT * FROM worker_tokens WHERE tokenHash = ? AND revokedAt IS NULL'
+  ).get(tokenHash) ?? null;
+}
+
+export function listWorkerTokens() {
+  return db.prepare(
+    `SELECT id, name, createdAt, createdBy, lastSeen, revokedAt, isLocal
+     FROM worker_tokens ORDER BY createdAt DESC`
+  ).all();
+}
+
+export function getWorkerToken(id) {
+  return db.prepare('SELECT * FROM worker_tokens WHERE id = ?').get(id) ?? null;
+}
+
+export function revokeWorkerToken(id) {
+  return db.prepare(
+    'UPDATE worker_tokens SET revokedAt = ? WHERE id = ? AND revokedAt IS NULL'
+  ).run(new Date().toISOString(), id).changes === 1;
+}
+
+export function touchWorkerToken(id) {
+  db.prepare('UPDATE worker_tokens SET lastSeen = ? WHERE id = ?')
+    .run(new Date().toISOString(), id);
+}
+
+export function deleteLocalWorkerTokens() {
+  return db.prepare('DELETE FROM worker_tokens WHERE isLocal = 1').run().changes;
 }
 
 export function getFailedFrames(jobId) {

@@ -16,7 +16,7 @@ const MINE = JOBS + 1 + 5;
 async function offerAnotherEngine(base) {
   await fetch(`${base}/worker/lease`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'x-worker-secret': SECRET },
+    headers: { 'Content-Type': 'application/json', 'x-worker-token': SECRET },
     body: JSON.stringify({ workerId: 'workbench-only', engines: ['BLENDER_WORKBENCH'] })
   });
 }

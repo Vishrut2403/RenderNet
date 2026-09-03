@@ -54,6 +54,99 @@ export function ChangePasswordModal({ onClose, notify, forced = false, onChanged
   );
 }
 
+function Machines({ notify }) {
+  const [machines, setMachines] = useState(null);
+  const [name, setName] = useState('');
+  const [issued, setIssued] = useState(null);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  function load() {
+    api.machines()
+      .then(result => setMachines(result.machines))
+      .catch(err => setError(err.message));
+  }
+
+  useEffect(load, []);
+
+  async function add(event) {
+    event.preventDefault();
+    setError('');
+    setBusy(true);
+
+    try {
+      setIssued(await api.addMachine(name));
+      setName('');
+      load();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(machine) {
+    setError('');
+
+    try {
+      await api.revokeMachine(machine.id);
+      notify(`${machine.name} can no longer render`, 'success');
+      load();
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <>
+      <h3 className="modal-section">Machines</h3>
+
+      {machines === null ? (
+        <p className="idle">Loading…</p>
+      ) : (
+        <ul className="user-list">
+          {machines.map(machine => (
+            <li key={machine.id}>
+              <div>
+                <strong>{machine.name}</strong>
+                <span className="user-meta">
+                  {machine.revokedAt
+                    ? `revoked ${relativeTime(machine.revokedAt)}`
+                    : machine.lastSeen
+                      ? `last asked for a frame ${relativeTime(machine.lastSeen)}`
+                      : 'never used'}
+                </span>
+              </div>
+              <div className="user-side">
+                {!machine.revokedAt && !machine.isLocal
+                  && <button className="linkish" onClick={() => revoke(machine)}>revoke</button>}
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {issued && (
+        <>
+          <p className="user-meta">
+            Copy this into WORKER_TOKEN on {issued.name}. It is not shown again.
+          </p>
+          <div className="log-tail token">{issued.token}</div>
+        </>
+      )}
+
+      <form onSubmit={add}>
+        <Field label="Add a machine" value={name} placeholder="Studio PC"
+          onChange={e => setName(e.target.value)} required />
+
+        <Alert>{error}</Alert>
+
+        <Button type="submit" variant="primary" busy={busy}>Issue a token</Button>
+      </form>
+    </>
+  );
+}
+
 export function AdminModal({ onClose, notify }) {
   const [users, setUsers] = useState(null);
   const [usage, setUsage] = useState({});
@@ -91,6 +184,8 @@ export function AdminModal({ onClose, notify }) {
 
   return (
     <Modal title="Admin" onClose={onClose}>
+      <Machines notify={notify} />
+
       <h3 className="modal-section">Users</h3>
 
       {users === null ? (

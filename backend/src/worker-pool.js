@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { localMachineToken } from './worker-tokens.js';
 
 const WORKER_MAIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'worker-main.js');
 const RESTART_DELAY_MS = 2000;
@@ -42,7 +43,7 @@ function launchWorker(index) {
   if (stopping) return;
 
   const child = spawn(process.execPath, [WORKER_MAIN], {
-    env: { ...process.env, WORKER_ID: `worker-${index}` },
+    env: { ...process.env, WORKER_ID: `worker-${index}`, WORKER_TOKEN: localMachineToken() },
     // Carries no messages. It closes when the server goes, which a server killed
     // outright cannot announce, and an orphan would claim frames from whatever
     // starts on that port next.

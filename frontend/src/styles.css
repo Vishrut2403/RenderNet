@@ -396,6 +396,9 @@ button, input, select { font: inherit; color: inherit; }
   white-space: pre;
 }
 
+/* A token has to be copied off the screen, so it wraps rather than scrolling. */
+.log-tail.token { white-space: pre-wrap; word-break: break-all; }
+
 .preview {
   margin: 14px 0 0;
   display: flex;

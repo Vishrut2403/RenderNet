@@ -38,6 +38,12 @@ export default async function run() {
   const { jobs } = await import('../src/job-store.js');
   const db = await import('../src/db.js');
   const workerRouter = (await import('../src/routes/worker.js')).default;
+  // index.js does this at boot; this suite mounts the router on its own.
+  const tokens = await import('../src/worker-tokens.js');
+  tokens.importSharedSecret();
+  // Frames may only be sent by the machine holding the claim, so the stand-in
+  // claims them as the machine whose token it sends.
+  const standIn = tokens.machineFor(SECRET).id;
 
   const app = express();
   app.use(express.json());
@@ -45,7 +51,7 @@ export default async function run() {
   const server = app.listen(PORT);
 
   const base = `http://127.0.0.1:${PORT}/api/worker`;
-  const secretHeader = { 'x-worker-secret': SECRET };
+  const secretHeader = { 'x-worker-token': SECRET };
   const json = { ...secretHeader, 'Content-Type': 'application/json' };
 
   const submit = scene => queue.addToQueue({
@@ -107,7 +113,7 @@ export default async function run() {
 
     res = await fetch(`${base}/jobs/${jobId}/progress`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-worker-secret': 'wrong-length-value' },
+      headers: { 'Content-Type': 'application/json', 'x-worker-token': 'wrong-length-value' },
       body: JSON.stringify({ currentFrame: 1 })
     });
     results.check('wrong secret is rejected', res.status === 401, `got ${res.status}`);
@@ -116,7 +122,7 @@ export default async function run() {
     // is what a raw timingSafeEqual comparison throws on.
     res = await fetch(`${base}/jobs/${jobId}/progress`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-worker-secret': 'tést-secret-abc123' },
+      headers: { 'Content-Type': 'application/json', 'x-worker-token': 'tést-secret-abc123' },
       body: JSON.stringify({ currentFrame: 1 })
     });
     results.check('multi-byte secret of the same length is rejected, not a server error',
@@ -145,7 +151,7 @@ export default async function run() {
 
     const claims = new Map();
     for (;;) {
-      const claim = db.leaseFrame(jobId, 'test-worker', 600_000);
+      const claim = db.leaseFrame(jobId, standIn, 600_000);
       if (!claim) break;
       claims.set(claim.frame, claim.leaseId);
     }
@@ -212,7 +218,7 @@ export default async function run() {
     // attempt is a fresh one - which is what lets another worker pick it up.
     const failFrame = async () => {
       if (!db.getLease(claims.get(4))) {
-        const again = db.leaseFrame(jobId, 'test-worker', 600_000);
+        const again = db.leaseFrame(jobId, standIn, 600_000);
         claims.set(again.frame, again.leaseId);
       }
 

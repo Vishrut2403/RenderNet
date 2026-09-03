@@ -1,6 +1,5 @@
 import express from 'express';
 import multer from 'multer';
-import crypto from 'crypto';
 import fs from 'fs';
 import {
   updateJobProgress,
@@ -11,40 +10,44 @@ import {
   releaseFrameLease
 } from '../queue.js';
 import { getJob } from '../job-views.js';
-import { getLease } from '../db.js';
+import { getLease, liveLeases } from '../db.js';
 import path from 'path';
 import { dataPath } from '../paths.js';
 import { parseFormats, primaryOf, extensionOf } from '../formats.js';
 import { announceWorker } from '../worker-registry.js';
+import { machineFor } from '../worker-tokens.js';
 
 const router = express.Router();
 
-// Read lazily: index.js may generate the secret at boot, after this import.
 function requireWorker(req, res, next) {
-  const expected = process.env.WORKER_SECRET;
+  const machine = machineFor(req.headers['x-worker-token']);
 
-  if (!expected) {
-    return res.status(503).json({ error: 'Worker callbacks are not configured' });
-  }
-
-  const provided = req.headers['x-worker-secret'];
-
-  if (typeof provided !== 'string') {
+  if (!machine) {
     return res.status(401).json({ error: 'Invalid worker credentials' });
   }
 
-  // Digests rather than the raw values: timingSafeEqual throws on a length
-  // mismatch, and header characters outside ASCII do not encode one byte each.
-  const match = crypto.timingSafeEqual(
-    crypto.createHash('sha256').update(provided).digest(),
-    crypto.createHash('sha256').update(expected).digest()
-  );
-
-  if (!match) {
-    return res.status(401).json({ error: 'Invalid worker credentials' });
-  }
-
+  req.machine = machine;
   next();
+}
+
+// One credential covers every worker process on a machine, so each names the
+// slot it is: the frames of one machine's slots never mix with another's.
+function identityOf(req) {
+  const slot = typeof req.body?.workerId === 'string'
+    ? req.body.workerId.replace(/[^\w.-]/g, '').slice(0, 64)
+    : '';
+
+  return slot ? `${req.machine.id}:${slot}` : req.machine.id;
+}
+
+function heldBy(lease, machineId) {
+  return lease.leasedBy === machineId || !!lease.leasedBy?.startsWith(`${machineId}:`);
+}
+
+function ownedLease(req) {
+  const lease = getLease(req.params.leaseId);
+
+  return lease && heldBy(lease, req.machine.id) ? lease : null;
 }
 
 // A worker whose claim has lapsed could otherwise upload over the frame somebody
@@ -56,6 +59,7 @@ function requireLease(req, res, next) {
   if (!lease
     || lease.jobId !== req.jobId
     || lease.frame !== Number(req.params.frame)
+    || !heldBy(lease, req.machine.id)
     || new Date(lease.expiresAt) <= new Date()) {
     return res.status(409).json({ error: `Frame ${req.params.frame} is not leased to you` });
   }
@@ -136,13 +140,13 @@ function validFrame(req, res, next) {
 router.use(requireWorker);
 
 router.post('/lease', (req, res) => {
-  const workerId = typeof req.body?.workerId === 'string' ? req.body.workerId : 'worker';
+  const workerId = identityOf(req);
 
   // Said again with every request rather than registered once: a worker that
   // stops asking stops counting, which is all the liveness this needs.
   announceWorker({
     workerId,
-    name: typeof req.body?.name === 'string' ? req.body.name : null,
+    name: req.machine.name,
     engines: req.body?.engines,
     device: typeof req.body?.device === 'string' ? req.body.device : null
   });
@@ -156,6 +160,10 @@ router.post('/lease', (req, res) => {
 });
 
 router.post('/leases/:leaseId/renew', (req, res) => {
+  if (!ownedLease(req)) {
+    return res.status(409).json({ error: 'Lease unknown', stopped: true });
+  }
+
   const result = renewFrameLease(req.params.leaseId);
 
   if (result.ok) return res.json({ expiresAt: result.expiresAt });
@@ -164,12 +172,19 @@ router.post('/leases/:leaseId/renew', (req, res) => {
 });
 
 router.post('/leases/:leaseId/release', (req, res) => {
+  if (!ownedLease(req)) return res.json({ released: false });
+
   res.json({ released: releaseFrameLease(req.params.leaseId) });
 });
 
 // For a worker on another machine. Worker-authenticated; the browser downloads
 // live under /api/download.
 router.get('/jobs/:id/blend', loadJob, (req, res) => {
+  // A machine is entitled to the scenes it is rendering and no others.
+  if (!liveLeases().some(lease => lease.jobId === req.jobId && heldBy(lease, req.machine.id))) {
+    return res.status(403).json({ error: `No claim on job ${req.jobId}` });
+  }
+
   const blend = dataPath(req.job.filePath);
 
   if (!req.job.filePath || !fs.existsSync(blend)) {

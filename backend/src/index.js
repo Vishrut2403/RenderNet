@@ -16,6 +16,8 @@ import { resumeInterruptedJobs, stopWorkers } from './queue.js';
 import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
 import logsRouter from './routes/logs.js';
+import machinesRouter from './routes/machines.js';
+import { importSharedSecret } from './worker-tokens.js';
 import { healthRouter } from './routes/health.js';
 import { ENGINES } from './engines.js';
 import {
@@ -23,7 +25,6 @@ import {
   DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY
 } from './formats.js';
 import { backupDatabase } from './db.js';
-import crypto from 'crypto';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
@@ -31,11 +32,11 @@ import {
   UPLOADS_DIR, PARTIALS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST, RETENTION_DAYS
 } from './paths.js';
 
-// Ephemeral, so an unconfigured deployment never ships a known credential.
-if (!process.env.WORKER_SECRET) {
-  process.env.WORKER_SECRET = crypto.randomBytes(32).toString('hex');
-  console.warn('WORKER_SECRET not set - generated a temporary one for this process.');
-  console.warn('Remote workers will not be able to authenticate until you set it in .env');
+// A farm still on the shared secret keeps working; it appears in the machine
+// list, where it can be revoked once every worker has a credential of its own.
+if (importSharedSecret()) {
+  console.warn('WORKER_SECRET is set: it now works as one shared machine credential.');
+  console.warn('Issue each machine its own under Admin and revoke the shared one.');
 }
 
 const app = express();
@@ -85,6 +86,7 @@ app.get('/api/engines', requireAuth, (req, res) => {
 });
 
 app.use('/api/logs', requireAuth, requireAdmin, logsRouter);
+app.use('/api/machines', requireAuth, requireAdmin, machinesRouter);
 
 app.post('/api/cleanup', requireAuth, requireAdmin, (req, res) => {
   cleanupOldFiles();

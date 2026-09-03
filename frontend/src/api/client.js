@@ -301,6 +301,12 @@ export const api = {
 
   listUsers: () => request('/auth/users'),
 
+  machines: () => request('/machines'),
+
+  addMachine: name => request('/machines', { method: 'POST', body: { name } }),
+
+  revokeMachine: id => request(`/machines/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+
   health: () => request('/health'),
 
   logs: () => request('/logs'),
