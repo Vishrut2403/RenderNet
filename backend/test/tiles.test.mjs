@@ -116,6 +116,44 @@ export default async function run() {
     results.check('leaving no half-made picture behind',
       !fs.existsSync(path.join(sandbox, failed.outputFolder, 'frame_0001.png')));
 
+    console.log('\n  When only the last step fails');
+
+    const unglued = await submitJob(base, admin, createFakeScene(sandbox, 'unglued.blend'),
+      { frameStart: 1, frameEnd: 1, tiles: 4, skipAssetCheck: true });
+    const stuck = await waitForJob(base, admin, unglued.body.jobId, 60000);
+
+    results.check('a still whose tiles will not go together fails',
+      stuck.status === 'failed', `${stuck.status}: ${stuck.error || ''}`);
+    results.check('and says that is what went wrong',
+      /put together/.test(stuck.error ?? ''), stuck.error);
+    results.check('but keeps every region it rendered',
+      fs.readdirSync(path.join(sandbox, stuck.outputFolder, 'tiles'))
+        .filter(name => name.endsWith('.png')).length === 4);
+
+    // The regions are all there, so asking again is asking for the last step
+    // rather than for the whole still to be rendered a second time.
+    const tiledAt = fs.statSync(
+      path.join(sandbox, stuck.outputFolder, 'tiles', 'tile_0001.png')).mtimeMs;
+
+    fs.writeFileSync(path.join(sandbox, 'uploads', 'glue'), '');
+
+    const retried = await fetch(`${base}/jobs/${unglued.body.jobId}/rerun`,
+      { method: 'POST', headers: auth(admin) });
+
+    results.check('and it can be asked to try putting them together again',
+      retried.status === 200, `${retried.status}: ${JSON.stringify(await retried.json())}`);
+
+    const glued = await waitForJob(base, admin, unglued.body.jobId, 60000);
+
+    results.check('which finishes the still',
+      glued.status === 'completed'
+      && fs.existsSync(path.join(sandbox, glued.outputFolder, 'frame_0001.png')),
+      `${glued.status}: ${glued.error || ''}`);
+    results.check('without rendering any of it a second time',
+      fs.statSync(path.join(sandbox, stuck.outputFolder, 'tiles', 'tile_0001.png')).mtimeMs
+        === tiledAt,
+      'the regions were rendered again');
+
     console.log('\n  What may be cut up');
 
     const range = await submitJob(base, admin, createFakeScene(sandbox, 'range.blend'),

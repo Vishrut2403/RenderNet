@@ -17,6 +17,7 @@ import { queueWaits as waitsFor, forgetTiming } from './estimates.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
 import { diskIsTooFull, heldForDisk, deleteJobFiles, forgetUsage } from './storage.js';
 import { isTiled, startComposite } from './composite.js';
+import { tilesPath } from './tiles.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
@@ -44,13 +45,16 @@ function reconcileFrames(job) {
   }
 
   let done = 0;
+  // A tiled still keeps its regions in a folder of their own, so looking for
+  // them beside the finished picture would find none and render them all again.
+  const folder = isTiled(job) ? tilesPath(job.outputFolder) : job.outputFolder;
 
   for (const frame of getFrames(job.id)) {
     if (frame.status !== 'done') continue;
 
     const present = job.outputFolder
       && frame.filename
-      && fs.existsSync(dataPath(job.outputFolder, frame.filename));
+      && fs.existsSync(dataPath(folder, frame.filename));
 
     if (present) done++;
     else markFramePending(job.id, frame.frame);
@@ -284,9 +288,15 @@ export function rerunJob(jobId) {
   forgetTiming(jobId);
   const retried = countFramesByStatus(jobId).pending;
 
-  if (retried === 0) {
+  // A tiled still whose regions all arrived but could not be put together needs
+  // the last step attempted again, not every region rendered a second time.
+  const compositeOnly = retried === 0 && isTiled(job) && job.composite === 'failed';
+
+  if (retried === 0 && !compositeOnly) {
     return { success: false, error: 'Every frame rendered; there is nothing to rerun' };
   }
+
+  if (isTiled(job)) job.composite = null;
 
   ensureDir(dataPath(job.outputFolder));
 

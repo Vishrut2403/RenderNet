@@ -134,7 +134,8 @@ const PNG_1X1 = Buffer.from(
 // (wait for stubbornIsUnkillable before cancelling; see below),
 // 'stalls' delivers its first frame and then never finishes another,
 // 'broken' exits non-zero with its complaint on stdout, 'flaky' does so for
-// one frame until a marker file says otherwise.
+// one frame until a marker file says otherwise, and 'unglued' refuses to put
+// a tiled still back together until one does.
 // The behaviour lives in a Node script, reached through a wrapper the platform
 // can actually execute: a shell script on POSIX, a .cmd on Windows. The .cmd
 // also puts the worker's own cmd.exe launch and process-tree kill under test,
@@ -180,8 +181,17 @@ function write(file) {
 // handed, and a record of what it was given.
 if (process.env.RENDERNET_TILE_SPEC) {
   const spec = JSON.parse(process.env.RENDERNET_TILE_SPEC);
-  fs.writeFileSync(path.join(path.dirname(valueOf('-b')), 'last-composite.txt'),
-    JSON.stringify(spec));
+  const beside = path.dirname(valueOf('-b'));
+  fs.writeFileSync(path.join(beside, 'last-composite.txt'), JSON.stringify(spec));
+
+  // 'unglued' cannot be put back together until a marker says otherwise, so a
+  // still whose tiles all arrived can fail at the last step and be asked again.
+  if (path.basename(valueOf('-b')).includes('unglued')
+      && !fs.existsSync(path.join(beside, 'glue'))) {
+    fs.writeSync(1, 'Error: the tiles could not be read\\n');
+    process.exit(1);
+  }
+
   write(spec.output);
   process.exit(0);
 }
