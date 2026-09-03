@@ -1,14 +1,25 @@
 // A job list that does not grow without bound, and the counts and dashboard
-// totals that have to keep working once it stops being the whole list. Runs
-// without Blender: nothing here needs a frame to be rendered.
+// totals that have to keep working once it stops being the whole list.
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, adminSession, signUp,
   login, auth, createFakeScene, submitJob
 } from './helpers.mjs';
 
 const PORT = 5598;
+const SECRET = 'test-worker-secret';
 const JOBS = 12;
 const MINE = JOBS + 1 + 5;
+
+// The counts here are only stable while every job stays queued, so the farm is
+// told its one machine renders something else: the queue then starts nothing,
+// whether or not this runner has Blender.
+async function offerAnotherEngine(base) {
+  await fetch(`${base}/worker/lease`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-worker-secret': SECRET },
+    body: JSON.stringify({ workerId: 'workbench-only', engines: ['BLENDER_WORKBENCH'] })
+  });
+}
 
 async function page(base, token, query = '') {
   const res = await fetch(`${base}/jobs${query}`, { headers: auth(token) });
@@ -19,7 +30,8 @@ async function queueJobs(base, token, scene, count) {
   const ids = [];
 
   for (let n = 0; n < count; n++) {
-    const { body } = await submitJob(base, token, scene, { frameStart: 1, frameEnd: 2 });
+    const { body } = await submitJob(base, token, scene,
+      { frameStart: 1, frameEnd: 2, skipAssetCheck: true });
     ids.push(body.jobId);
   }
 
@@ -39,6 +51,8 @@ export default async function run() {
     const admin = await adminSession(base);
     await signUp(base, 'painter', 'painter-password');
     const painter = await login(base, 'painter', 'painter-password');
+
+    await offerAnotherEngine(base);
 
     const scene = createFakeScene(sandbox, 'paged.blend');
     const mine = await queueJobs(base, painter, scene, JOBS);
@@ -90,7 +104,8 @@ export default async function run() {
     console.log('\n  A job arriving mid-walk');
 
     const held = await page(base, painter, '?limit=5');
-    await submitJob(base, painter, scene, { frameStart: 1, frameEnd: 2 });
+    await submitJob(base, painter, scene,
+      { frameStart: 1, frameEnd: 2, skipAssetCheck: true });
     const after = await page(base, painter, `?limit=5&before=${held.body.nextBefore}`);
 
     const shown = new Set(held.body.jobs.map(job => job.id));

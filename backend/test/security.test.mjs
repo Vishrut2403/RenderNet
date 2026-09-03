@@ -144,8 +144,11 @@ async function overTls(results) {
 
     const answered = await httpsGet(`${server.base}/health`, ca);
 
+    // Whether the farm itself is healthy is another test's business: a runner
+    // without Blender answers 'degraded' over a perfectly good connection.
     results.check('the server answers over HTTPS',
-      answered.status === 200 && JSON.parse(answered.body).status === 'ok', answered.body);
+      answered.status === 200 && typeof JSON.parse(answered.body).status === 'string',
+      answered.body);
     results.check('and says so for a year',
       answered.headers['strict-transport-security'] === 'max-age=31536000',
       answered.headers['strict-transport-security']);
