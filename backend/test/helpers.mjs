@@ -567,6 +567,7 @@ export function exrHeader(file) {
 
 export async function waitForJob(base, token, jobId, timeoutMs = 180000) {
   const deadline = Date.now() + timeoutMs;
+  let last = null;
 
   while (Date.now() < deadline) {
     const res = await fetch(`${base}/jobs/${jobId}`, { headers: auth(token) });
@@ -574,10 +575,13 @@ export async function waitForJob(base, token, jobId, timeoutMs = 180000) {
 
     if (['completed', 'failed', 'cancelled'].includes(job.status)) return job;
 
+    last = job;
     await sleep(1000);
   }
 
-  throw new Error(`Job ${jobId} did not settle within ${timeoutMs}ms`);
+  throw new Error(`Job ${jobId} did not settle within ${timeoutMs}ms: `
+    + `${last?.status} with ${last?.completedFrames ?? '?'} of `
+    + `${last?.totalFrames ?? '?'} frames`);
 }
 
 export function sleep(ms) {

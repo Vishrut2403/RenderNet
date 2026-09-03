@@ -27,7 +27,9 @@ export default async function run() {
       port: PORT,
       cwd: elsewhere,
       dataDir: sandbox,
-      env: { BLENDER_PATH: createFakeBlender(sandbox) }
+      // A lease whose release never lands is only reclaimed when it expires, and
+      // the waits below are shorter than the two minutes that takes by default.
+      env: { BLENDER_PATH: createFakeBlender(sandbox), LEASE_TTL_MS: '20000' }
     });
 
     const { base } = server;
