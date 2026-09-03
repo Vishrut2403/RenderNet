@@ -12,7 +12,7 @@ const DEFAULT_FPS = Number(process.env.VIDEO_FPS) || 24;
 
 let queued = Promise.resolve();
 
-function videoName(jobId) {
+export function videoName(jobId) {
   return `render_${jobId}.mp4`;
 }
 

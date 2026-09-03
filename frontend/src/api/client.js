@@ -347,8 +347,7 @@ export const api = {
 
   makeVideo: id => request(`/jobs/${id}/video`, { method: 'POST' }),
 
-  videoUrl: (id, token) =>
-    downloadUrl(`/download/files/render_${id}/render_${id}.mp4`, token),
+  videoUrl: (id, token) => downloadUrl(`/download/${id}/video`, token),
 
   allUsage: () => request('/jobs/usage/all'),
 

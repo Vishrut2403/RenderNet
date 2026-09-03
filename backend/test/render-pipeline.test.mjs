@@ -27,8 +27,8 @@ export default async function run() {
       port: PORT,
       cwd: elsewhere,
       dataDir: sandbox,
-      // A lease whose release never lands is only reclaimed when it expires, and
-      // the waits below are shorter than the two minutes that takes by default.
+      // A lease whose release never lands is only reclaimed when it expires, so
+      // the term is kept well inside the waits below.
       env: { BLENDER_PATH: createFakeBlender(sandbox), LEASE_TTL_MS: '20000' }
     });
 
@@ -1105,6 +1105,17 @@ export default async function run() {
     results.check('at the frame rate asked for',
       asked.includes('-r 24'), asked.split('\n')[0]);
 
+    // Downloaded by job rather than by filename, so the client never has to know
+    // how the file is named.
+    const minted = await fetch(`${videoServer.base}/download/${shot.body.jobId}/token`,
+      { method: 'POST', headers: auth(videoToken) });
+    const { token: downloadToken } = await minted.json();
+
+    const served = await fetch(
+      `${videoServer.base}/download/${shot.body.jobId}/video?token=${downloadToken}`);
+
+    results.check('and it downloads without the caller naming the file',
+      served.status === 200, String(served.status));
     const rejected = await makeVideo(shot.body.jobId, { fps: 0 });
     results.check('a frame rate outside 1 to 120 is refused', rejected.status === 400,
       String(rejected.status));
@@ -1132,6 +1143,14 @@ export default async function run() {
     const tooFew = await makeVideo(single.body.jobId);
     results.check('a job with one frame is turned down', tooFew.status === 409,
       String(tooFew.status));
+
+    const noVideo = await fetch(`${videoServer.base}/download/${single.body.jobId}/token`,
+      { method: 'POST', headers: auth(videoToken) });
+    const asking = await fetch(`${videoServer.base}/download/${single.body.jobId}` +
+      `/video?token=${(await noVideo.json()).token}`);
+
+    results.check('and a job with no video offers nothing to download',
+      asking.status === 404, String(asking.status));
 
   } finally {
     await stopServer(videoServer);

@@ -24,7 +24,9 @@ const renderQueue = [];
 const active = new Set();
 
 // The worker renews this while a frame is still rendering.
-const LEASE_TTL_MS = Number(process.env.LEASE_TTL_MS) || 2 * 60 * 1000;
+// Long enough that a worker misses six renewals before losing the frame, short
+// enough that a machine switched off mid-frame does not strand it for minutes.
+const LEASE_TTL_MS = Number(process.env.LEASE_TTL_MS) || 30 * 1000;
 
 const FAILFAST_FRAMES = 3;
 

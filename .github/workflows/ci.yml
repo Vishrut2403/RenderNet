@@ -27,6 +27,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Advisories below high are reported by the job log without failing it:
+      # a moderate one in a dev dependency should not stop a render farm being
+      # deployed, a high one in what serves the API should.
+      - name: Audit dependencies
+        run: |
+          npm audit --audit-level=high --prefix backend
+          npm audit --audit-level=high --prefix frontend
+
   test:
     name: ${{ matrix.os }} · node ${{ matrix.node }}
     runs-on: ${{ matrix.os }}
@@ -106,6 +114,11 @@ jobs:
       # every render-dependent check at once.
       - name: Check Blender runs
         run: blender --version
+
+      # Without it the encode test skips itself, and the video path is then
+      # covered nowhere.
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
 
       - name: Install backend
         working-directory: backend

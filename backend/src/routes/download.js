@@ -8,6 +8,7 @@ import { verifyToken, mustChangePassword, requireAuth } from '../auth.js';
 import { mintDownloadToken, readDownloadToken } from '../download-tokens.js';
 import { getLatestDoneFrame } from '../db.js';
 import { PREVIEWABLE_EXTENSIONS } from '../formats.js';
+import { videoName } from '../video.js';
 import { dataPath, RETENTION_DAYS } from '../paths.js';
 
 const router = express.Router();
@@ -188,6 +189,28 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
   }
 });
 
+
+// The client asks for the job's video, not for a filename it worked out itself.
+router.get('/:id/video', authenticateDownload, (req, res) => {
+  const jobId = Number(req.params.id);
+  const job = getJob(jobId);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (!canAccess(job, req)) {
+    return res.status(403).json({ error: 'Access denied' });
+  }
+
+  const file = dataPath(job.outputFolder, videoName(jobId));
+
+  if (job.video !== 'ready' || !fs.existsSync(file)) {
+    return res.status(404).json({ error: `Job ${jobId} has no video` });
+  }
+
+  res.download(file);
+});
 
 router.get('/:id/zip', authenticateDownload, (req, res) => {
   try {

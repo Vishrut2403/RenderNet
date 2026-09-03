@@ -298,7 +298,7 @@ tree, so it is found however the server is started.
 | `WORKER_ENGINES` | what Blender lists | Engines this machine will accept frames for, comma-separated. Narrow it where an engine cannot render headless |
 | `WORKER_REMOTE` | *unset* | Set to `1` on a worker not on the server's machine |
 | `WORKER_SCRATCH_DIR` | a temp directory | Where a remote worker keeps scenes and frames |
-| `LEASE_TTL_MS` | `120000` | How long a worker's claim on a frame lasts before another may take it |
+| `LEASE_TTL_MS` | `30000` | How long a worker's claim on a frame lasts before another may take it. A frame whose machine has gone is stranded until it runs out. |
 | `PREFLIGHT_TIMEOUT_MS` | `120000` | How long the pre-render scene check may take before the job is queued anyway |
 | `FFMPEG_PATH` | auto-detected | ffmpeg executable, for making a video of the frames. Without it that button says so |
 | `VIDEO_FPS` | `24` | Frame rate for those videos |
