@@ -9,6 +9,7 @@ import { mintDownloadToken, readDownloadToken } from '../download-tokens.js';
 import { getLatestDoneFrame } from '../db.js';
 import { PREVIEWABLE_EXTENSIONS } from '../formats.js';
 import { videoName } from '../video.js';
+import { isTiled, compositeName } from '../composite.js';
 import { dataPath, RETENTION_DAYS } from '../paths.js';
 
 const router = express.Router();
@@ -118,7 +119,13 @@ router.get('/:id/preview', authenticateDownload, (req, res) => {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  const latest = getLatestDoneFrame(job.id);
+  // A tiled still has nothing to show until its pieces are put together: the
+  // frames it delivers are regions, which on their own are not the picture.
+  const latest = isTiled(job)
+    ? (job.composite === 'ready'
+      ? { filename: compositeName(job), frame: job.frameStart }
+      : null)
+    : getLatestDoneFrame(job.id);
 
   if (!latest) {
     return res.status(404).json({ error: 'No frame rendered yet' });

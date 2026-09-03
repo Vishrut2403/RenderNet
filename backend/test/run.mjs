@@ -9,6 +9,7 @@ import paging from './paging.test.mjs';
 import chunkedUpload from './chunked-upload.test.mjs';
 import workerCredentials from './worker-credentials.test.mjs';
 import testFrame from './test-frame.test.mjs';
+import tiles from './tiles.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -21,7 +22,8 @@ const suites = [
   ['Job list paging', paging],
   ['Chunked uploads', chunkedUpload],
   ['Worker credentials', workerCredentials],
-  ['Test frame before the rest', testFrame]
+  ['Test frame before the rest', testFrame],
+  ['Tiled stills', tiles]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

@@ -184,6 +184,11 @@ Things that would otherwise surprise you.
   is issued one that is shown once and can be revoked on its own, without
   disturbing the rest of the farm. A machine may only touch the claims it holds,
   and may only download the scenes it is rendering.
+- **A heavy still can be split across machines.** A single frame submitted in
+  tiles is cut into regions, each claimed and rendered like any other unit of
+  work, and Blender puts them back into one image when they have all arrived.
+  It only pays off with more than one machine free: splitting a still on one
+  workstation is the same work with more steps.
 - **A test frame can be rendered first.** A job submitted with one renders that
   frame alone and then stops, holding the rest of the range until its owner has
   looked at the frame and approved it. A wrong camera or a missing material

@@ -24,12 +24,14 @@ export function Upload({ onSubmitted, notify }) {
   const [urgent, setUrgent] = useState(false);
   const [skipAssetCheck, setSkipAssetCheck] = useState(false);
   const [testFirst, setTestFirst] = useState(false);
+  const [tiles, setTiles] = useState(0);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef(null);
 
   const frameCount = Math.max(0, Number(frameEnd) - Number(frameStart) + 1);
+  const single = frameCount === 1;
 
   useEffect(() => {
     let current = true;
@@ -79,7 +81,8 @@ export function Upload({ onSubmitted, notify }) {
         {
           frameStart, frameEnd, renderEngine: engine, priority: urgent,
           resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality,
-          skipAssetCheck, testFrame: testFirst ? frameStart : null
+          skipAssetCheck, testFrame: testFirst ? frameStart : null,
+          tiles: single ? tiles : 0
         },
         setProgress
       );
@@ -255,6 +258,23 @@ export function Upload({ onSubmitted, notify }) {
           </span>
         </span>
       </label>
+
+      {single && (
+        <label className="field">
+          <span className="field-label">Split this frame across machines</span>
+          <select value={tiles} onChange={e => setTiles(Number(e.target.value))}>
+            <option value={0}>No — one machine renders it</option>
+            {[2, 4, 6, 9, 12, 16].map(count => (
+              <option key={count} value={count}>{count} tiles</option>
+            ))}
+          </select>
+          <span className="field-hint">
+            A single heavy still is cut into regions that render at the same time
+            on different machines, and put back together into one image. Worth it
+            only when more than one machine is free.
+          </span>
+        </label>
+      )}
 
       <label className="check">
         <input

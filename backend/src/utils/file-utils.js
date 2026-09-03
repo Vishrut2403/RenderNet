@@ -30,10 +30,15 @@ export function freeBytes(dir) {
   }
 }
 
+// Files only: a tiled still keeps its pieces in a folder beside them, and a
+// directory name in the listing would be offered as a download and added to
+// the ZIP as one.
 export function getFilesInDirectory(dirPath) {
   try {
     if (!fs.existsSync(dirPath)) return [];
-    return fs.readdirSync(dirPath);
+    return fs.readdirSync(dirPath, { withFileTypes: true })
+      .filter(entry => entry.isFile())
+      .map(entry => entry.name);
   } catch (error) {
     console.error(`Failed to read directory ${dirPath}:`, error.message);
     return [];

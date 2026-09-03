@@ -161,6 +161,31 @@ if (valueOf('-E') === 'help') {
   process.exit(0);
 }
 
+// Each format gets its own leading bytes. Writing the same image into every
+// extension would hide a file being served or recorded as the wrong format,
+// which is the mistake worth catching.
+const CONTENT = {
+  '.png': Buffer.from('${PNG_1X1.toString('base64')}', 'base64'),
+  '.jpg': Buffer.from('ffd8ffe000104a46494600010100000100010000', 'hex'),
+  '.exr': Buffer.from('762f3101020000006368616e6e656c7300', 'hex')
+};
+
+function write(file) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, CONTENT[path.extname(file)] || CONTENT['.png']);
+}
+
+// Putting tiles back together is another thing the real Blender is asked to do,
+// so the stand-in answers it the same way: one file, made from the tiles it was
+// handed, and a record of what it was given.
+if (process.env.RENDERNET_TILE_SPEC) {
+  const spec = JSON.parse(process.env.RENDERNET_TILE_SPEC);
+  fs.writeFileSync(path.join(path.dirname(valueOf('-b')), 'last-composite.txt'),
+    JSON.stringify(spec));
+  write(spec.output);
+  process.exit(0);
+}
+
 const scene = path.basename(valueOf('-b') || '');
 
 // The asset check opens the scene with a script and renders nothing, so there
@@ -222,20 +247,6 @@ const delay = scene.includes('hang') || scene.includes('stubborn') ? 60000
   : scene.includes('stalls') ? (frame === 1 ? 0 : 60000)
   : scene.includes('slow') ? 2000
   : 0;
-
-// Each format gets its own leading bytes. Writing the same image into every
-// extension would hide a file being served or recorded as the wrong format,
-// which is the mistake worth catching.
-const CONTENT = {
-  '.png': Buffer.from('${PNG_1X1.toString('base64')}', 'base64'),
-  '.jpg': Buffer.from('ffd8ffe000104a46494600010100000100010000', 'hex'),
-  '.exr': Buffer.from('762f3101020000006368616e6e656c7300', 'hex')
-};
-
-function write(file) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, CONTENT[path.extname(file)] || CONTENT['.png']);
-}
 
 setTimeout(() => {
   write(target);
@@ -497,7 +508,7 @@ export async function status(url, options) {
 
 export async function submitJob(base, token, blendPath, {
   frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples, formats,
-  exrCodec, exrDepth, jpegQuality, skipAssetCheck, testFrame
+  exrCodec, exrDepth, jpegQuality, skipAssetCheck, testFrame, tiles
 }) {
   const form = new FormData();
   form.set('blend', new Blob([fs.readFileSync(blendPath)]), path.basename(blendPath));
@@ -513,6 +524,7 @@ export async function submitJob(base, token, blendPath, {
   if (jpegQuality !== undefined) form.set('jpegQuality', String(jpegQuality));
   if (skipAssetCheck) form.set('skipAssetCheck', '1');
   if (testFrame !== undefined) form.set('testFrame', String(testFrame));
+  if (tiles !== undefined) form.set('tiles', String(tiles));
 
   const res = await fetch(`${base}/upload`, { method: 'POST', headers: auth(token), body: form });
   return { status: res.status, body: await res.json() };

@@ -118,6 +118,11 @@ addColumnIfMissing('jobs', 'video', 'TEXT');
 addColumnIfMissing('jobs', 'testFrame', 'INTEGER');
 addColumnIfMissing('jobs', 'approval', 'TEXT');
 
+// A still cut into regions rendered separately, and how putting them back
+// together went.
+addColumnIfMissing('jobs', 'tiles', 'INTEGER');
+addColumnIfMissing('jobs', 'composite', 'TEXT');
+
 // What the scene reaches for outside itself, checked before it is queued.
 addColumnIfMissing('jobs', 'assetCheck', 'TEXT');
 addColumnIfMissing('jobs', 'missingAssets', 'TEXT');
@@ -144,7 +149,7 @@ const COLUMNS = [
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
   'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality',
-  'assetCheck', 'missingAssets', 'video', 'testFrame', 'approval'
+  'assetCheck', 'missingAssets', 'video', 'testFrame', 'approval', 'tiles', 'composite'
 ];
 
 const upsertJob = db.prepare(`

@@ -6,6 +6,7 @@ import fetch from 'node-fetch';
 import { findBlenderExecutable, renderableEngines } from './utils/blender-check.js';
 import { launch, terminate } from './utils/process-control.js';
 import { primaryOf, extrasOf, extensionOf } from './formats.js';
+import { GRID_PYTHON } from './tiles.js';
 
 const BLENDER_PATH = process.env.BLENDER_PATH || findBlenderExecutable() || 'blender';
 const API_URL = process.env.API_URL || 'http://localhost:5500';
@@ -22,6 +23,26 @@ const SCRATCH_DIR = process.env.WORKER_SCRATCH_DIR
 // Blender writes one format per render; the rest are saved from the finished
 // Render Result. A file rather than --python-expr because a command line cannot
 // carry newlines through cmd.exe on Windows.
+const TILE_SCRIPT = `import bpy, os
+${GRID_PYTHON}
+
+index = int(os.environ['RENDERNET_TILE_INDEX'])
+count = int(os.environ['RENDERNET_TILE_COUNT'])
+
+scene = bpy.context.scene
+width, height = frame_size(scene)
+region = region_of(index, count, width, height)
+
+# Cropped, so each worker sends back only its own pixels rather than a
+# full-size frame that is empty everywhere else.
+scene.render.use_border = True
+scene.render.use_crop_to_border = True
+scene.render.border_min_x = region['x0'] / width
+scene.render.border_max_x = region['x1'] / width
+scene.render.border_min_y = region['y0'] / height
+scene.render.border_max_y = region['y1'] / height
+`;
+
 const OUTPUT_SCRIPT = `import bpy, os
 
 PRIMARY = os.environ.get('RENDERNET_PRIMARY_FORMAT', '')
@@ -224,15 +245,17 @@ class RenderWorker {
     // Named per frame: workers sharing a job share the folder, and one of them
     // rewriting the file another is reading would break that render.
     const outputScript = path.join(outputDir, `output_${frame}.py`);
-    fs.writeFileSync(outputScript, OUTPUT_SCRIPT);
+    fs.writeFileSync(outputScript, lease.tile ? TILE_SCRIPT + OUTPUT_SCRIPT : OUTPUT_SCRIPT);
 
-    console.log(`\n🎬 Job ${jobId}, frame ${frame} (${renderEngine})`);
+    console.log(lease.tile
+      ? `\n🎬 Job ${jobId}, tile ${lease.tile.index} of ${lease.tile.of} (${renderEngine})`
+      : `\n🎬 Job ${jobId}, frame ${frame} (${renderEngine})`);
 
     this.startRenewing(lease);
 
     try {
       const produced = await this.renderSingleFrame(
-        blendPath, frame, outputDir, renderEngine,
+        blendPath, lease.sceneFrame ?? frame, outputDir, renderEngine,
         { resolutionPercent: lease.resolutionPercent, samples: lease.samples },
         {
           primary,
@@ -240,7 +263,8 @@ class RenderWorker {
           outputScript,
           exrCodec: lease.exrCodec,
           exrDepth: lease.exrDepth,
-          jpegQuality: lease.jpegQuality
+          jpegQuality: lease.jpegQuality,
+          tile: lease.tile
         }
       );
 
@@ -315,9 +339,10 @@ class RenderWorker {
     return new Promise((resolve, reject) => {
       // '####' pads the frame number to four digits; a single '#' does not pad
       // at all, so the written and expected names never agree.
-      const outputPattern = path.join(outputDir, 'frame_####');
-      const { primary = 'PNG', extras = [], outputScript } = output;
-      const stem = path.join(outputDir, `frame_${frame.toString().padStart(4, '0')}`);
+      const { primary = 'PNG', extras = [], outputScript, tile = null } = output;
+      const prefix = tile ? `tile_${tile.index}_` : 'frame_';
+      const outputPattern = path.join(outputDir, `${prefix}####`);
+      const stem = path.join(outputDir, `${prefix}${frame.toString().padStart(4, '0')}`);
       const expectedFile = stem + extensionOf(primary);
 
       const args = [
@@ -358,7 +383,9 @@ class RenderWorker {
         RENDERNET_EXTRA_FORMATS: extras.map(id => `${id}:${extensionOf(id)}`).join(','),
         RENDERNET_EXR_CODEC: output.exrCodec ?? '',
         RENDERNET_EXR_DEPTH: output.exrDepth ?? '',
-        RENDERNET_JPEG_QUALITY: output.jpegQuality == null ? '' : String(output.jpegQuality)
+        RENDERNET_JPEG_QUALITY: output.jpegQuality == null ? '' : String(output.jpegQuality),
+        RENDERNET_TILE_INDEX: tile ? String(tile.index) : '',
+        RENDERNET_TILE_COUNT: tile ? String(tile.of) : ''
       };
 
       const blender = launch(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'], env });

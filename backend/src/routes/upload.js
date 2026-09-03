@@ -10,6 +10,7 @@ import {
 } from '../upload-sessions.js';
 import { usageFor } from '../storage.js';
 import { ENGINE_IDS } from '../engines.js';
+import { MAX_TILES } from '../tiles.js';
 import {
   FORMAT_IDS, normaliseFormats, EXR_CODEC_IDS, EXR_DEPTH_IDS,
   DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY
@@ -136,6 +137,18 @@ function queueUpload(file, body, owner) {
     }
   }
 
+  const tiles = body.tiles === undefined || body.tiles === '' ? null : Number(body.tiles);
+
+  if (tiles !== null) {
+    if (!Number.isInteger(tiles) || tiles < 2 || tiles > MAX_TILES) {
+      return refuse(400, `tiles must be a whole number from 2 to ${MAX_TILES}`);
+    }
+
+    if (start !== end) {
+      return refuse(400, 'Only a single frame can be split into tiles');
+    }
+  }
+
   const renderEngine = body.renderEngine || 'CYCLES';
 
   if (!ENGINE_IDS.includes(renderEngine)) {
@@ -185,6 +198,10 @@ function queueUpload(file, body, owner) {
     return refuse(400, 'jpegQuality must be a whole number from 1 to 100');
   }
 
+  if (tiles !== null && formats.length > 1) {
+    return refuse(400, 'A tiled still is put back together in one format, so choose one');
+  }
+
   const jobId = addToQueue({
     filePath: path.join('uploads', file.filename),
     frameStart: start,
@@ -200,7 +217,8 @@ function queueUpload(file, body, owner) {
     exrDepth,
     jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY,
     skipAssetCheck: body.skipAssetCheck === '1',
-    testFrame
+    testFrame,
+    tiles
   });
 
   return {

@@ -144,9 +144,16 @@ export function JobCard({ job, onChanged, onError }) {
   // currentFrame is the last frame finished, so the one in flight is the next.
   const inFlight = Math.min(job.frameEnd, (job.currentFrame ?? job.frameStart - 1) + 1);
 
-  const label = active
-    ? `Rendering frame ${inFlight} of ${job.frameEnd}`
-    : `${job.completedFrames} of ${job.totalFrames} frames`;
+  // A tiled still counts regions of one frame, not frames.
+  const tiled = job.tiles > 1;
+
+  const label = tiled
+    ? (job.composite === 'running'
+      ? 'Putting the tiles together'
+      : `${job.completedFrames} of ${job.tiles} tiles`)
+    : active
+      ? `Rendering frame ${inFlight} of ${job.frameEnd}`
+      : `${job.completedFrames} of ${job.totalFrames} frames`;
 
   // Zero once the job is next up, where "starts in 0 seconds" reads worse than
   // nothing.
@@ -167,7 +174,10 @@ export function JobCard({ job, onChanged, onError }) {
         <div>
           <h3 className="job-title">{job.originalFilename || 'Untitled'}</h3>
           <div className="job-sub">
-            #{job.id} · {job.renderEngine} · frames {job.frameStart}–{job.frameEnd} ·{' '}
+            #{job.id} · {job.renderEngine} ·{' '}
+            {tiled
+              ? `frame ${job.frameStart} in ${job.tiles} tiles`
+              : `frames ${job.frameStart}–${job.frameEnd}`} ·{' '}
             {relativeTime(job.createdAt)}
             {job.owner && <> · <span className="owner">{job.owner}</span></>}
             {job.priority > 0 && <> · <span className="urgent">urgent</span></>}

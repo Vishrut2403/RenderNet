@@ -14,6 +14,8 @@ import { getLease, liveLeases } from '../db.js';
 import path from 'path';
 import { dataPath } from '../paths.js';
 import { parseFormats, primaryOf, extensionOf } from '../formats.js';
+import { isTiled } from '../composite.js';
+import { tileName, tilesPath } from '../tiles.js';
 import { announceWorker } from '../worker-registry.js';
 import { machineFor } from '../worker-tokens.js';
 
@@ -97,7 +99,11 @@ function requireRendering(req, res, next) {
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     try {
-      const folder = dataPath(req.job.outputFolder);
+      // Tiles are working parts, not output: kept aside so the listing and the
+      // ZIP show the finished picture rather than the pieces of it.
+      const folder = isTiled(req.job)
+        ? dataPath(tilesPath(req.job.outputFolder))
+        : dataPath(req.job.outputFolder);
       fs.mkdirSync(folder, { recursive: true });
       cb(null, folder);
     } catch (error) {
@@ -116,7 +122,9 @@ const storage = multer.diskStorage({
       return;
     }
 
-    cb(null, `frame_${String(frame).padStart(4, '0')}${extension}`);
+    cb(null, isTiled(req.job)
+      ? tileName(frame) + extension
+      : `frame_${String(frame).padStart(4, '0')}${extension}`);
   }
 });
 
@@ -128,9 +136,15 @@ const upload = multer({
 function validFrame(req, res, next) {
   const frame = Number(req.params.frame);
 
-  if (!Number.isInteger(frame) || frame < req.job.frameStart || frame > req.job.frameEnd) {
+  // A tiled still is claimed by region, so the number names a tile rather than
+  // a frame of the scene.
+  const [lowest, highest] = isTiled(req.job)
+    ? [1, req.job.tiles]
+    : [req.job.frameStart, req.job.frameEnd];
+
+  if (!Number.isInteger(frame) || frame < lowest || frame > highest) {
     return res.status(400).json({
-      error: `Frame ${req.params.frame} is outside job range ${req.job.frameStart}-${req.job.frameEnd}`
+      error: `Frame ${req.params.frame} is outside job range ${lowest}-${highest}`
     });
   }
 

@@ -16,6 +16,7 @@ import { checkAssets, missingAssetsMessage } from './preflight.js';
 import { queueWaits as waitsFor, forgetTiming } from './estimates.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
 import { diskIsTooFull, heldForDisk, deleteJobFiles, forgetUsage } from './storage.js';
+import { isTiled, startComposite } from './composite.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
@@ -38,7 +39,8 @@ let lastFailure = null;
 // renders/ by hand.
 function reconcileFrames(job) {
   if (getFrames(job.id).length === 0 && Number.isInteger(job.frameStart)) {
-    createFrames(job.id, job.frameStart, job.frameEnd);
+    if (isTiled(job)) createFrames(job.id, 1, job.tiles);
+    else createFrames(job.id, job.frameStart, job.frameEnd);
   }
 
   let done = 0;
@@ -132,7 +134,7 @@ export function addToQueue(jobData) {
     startedAt: null,
     completedAt: null,
     error: null,
-    totalFrames: jobData.frameEnd - jobData.frameStart + 1,
+    totalFrames: jobData.tiles ?? jobData.frameEnd - jobData.frameStart + 1,
     currentFrame: null,
     progress: 0,
     completedFrames: 0,
@@ -148,7 +150,9 @@ export function addToQueue(jobData) {
     exrDepth: jobData.exrDepth || DEFAULT_EXR_DEPTH,
     jpegQuality: jobData.jpegQuality ?? DEFAULT_JPEG_QUALITY,
     testFrame: jobData.testFrame ?? null,
-    approval: jobData.testFrame ? 'testing' : null
+    approval: jobData.testFrame ? 'testing' : null,
+    tiles: jobData.tiles ?? null,
+    composite: null
   };
 
   // Queued straight away so it has a position and an estimate like any other,
@@ -156,7 +160,10 @@ export function addToQueue(jobData) {
   if (!jobData.skipAssetCheck) job.assetCheck = 'checking';
 
   jobs.set(jobId, job);
-  createFrames(jobId, job.frameStart, job.frameEnd);
+  // A tiled still is claimed a region at a time, so its units of work are the
+  // tiles rather than the one frame they all belong to.
+  if (isTiled(job)) createFrames(jobId, 1, job.tiles);
+  else createFrames(jobId, job.frameStart, job.frameEnd);
   if (job.testFrame) holdFramesExcept(jobId, job.testFrame);
   saveJob(job);
   forgetUsage(job.owner);
@@ -468,7 +475,9 @@ function leaseFromActive(workerId) {
         samples: job.samples,
         exrCodec: job.exrCodec,
         exrDepth: job.exrDepth,
-        jpegQuality: job.jpegQuality
+        jpegQuality: job.jpegQuality,
+        sceneFrame: isTiled(job) ? job.frameStart : lease.frame,
+        tile: isTiled(job) ? { index: lease.frame, of: job.tiles } : null
       };
     }
   }
@@ -559,12 +568,14 @@ function settleJob(jobId) {
   saveJob(job);
 
   if (counts.done === 0 && counts.failed >= FAILFAST_FRAMES) {
-    failJob(jobId, `The first ${counts.failed} frames all failed`);
+    failJob(jobId, `The first ${counts.failed} ${isTiled(job) ? 'tiles' : 'frames'} all failed`);
     return;
   }
 
   if (counts.pending > 0) return;
   if (liveLeases().some(lease => lease.jobId === jobId)) return;
+
+  if (isTiled(job)) return settleTiles(job, counts);
 
   // A test frame that rendered is not a finished job: the rest of the range is
   // still held, waiting for whoever asked for it to look at the frame.
@@ -581,6 +592,24 @@ function settleJob(jobId) {
   }
 
   completeJob(jobId, { successfulFrames: counts.done, failedFrames: counts.failed });
+}
+
+// Every region has to arrive: a still with one tile missing is not a picture,
+// so a tile that runs out of attempts fails the job rather than leaving a hole.
+function settleTiles(job, counts) {
+  if (counts.failed > 0) {
+    failJob(job.id, `${counts.failed} of ${job.tiles} tiles failed to render`);
+    return;
+  }
+
+  if (job.composite) return;
+
+  console.log(`Job ${job.id}: all ${job.tiles} tiles in, putting them together`);
+
+  startComposite(job.id, error => {
+    if (error) failJob(job.id, `The tiles could not be put together: ${error}`);
+    else completeJob(job.id, { successfulFrames: counts.done, failedFrames: 0 });
+  });
 }
 
 function jobFilesExist(job) {
