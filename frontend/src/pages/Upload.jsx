@@ -23,6 +23,7 @@ export function Upload({ onSubmitted, notify }) {
   const [samples, setSamples] = useState('');
   const [urgent, setUrgent] = useState(false);
   const [skipAssetCheck, setSkipAssetCheck] = useState(false);
+  const [testFirst, setTestFirst] = useState(false);
   const [progress, setProgress] = useState(null);
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
@@ -78,7 +79,7 @@ export function Upload({ onSubmitted, notify }) {
         {
           frameStart, frameEnd, renderEngine: engine, priority: urgent,
           resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality,
-          skipAssetCheck
+          skipAssetCheck, testFrame: testFirst ? frameStart : null
         },
         setProgress
       );
@@ -251,6 +252,23 @@ export function Upload({ onSubmitted, notify }) {
           <span className="check-hint">
             Goes ahead of everything queued, and pauses whatever is rendering now.
             The paused job keeps its finished frames and carries on afterwards.
+          </span>
+        </span>
+      </label>
+
+      <label className="check">
+        <input
+          type="checkbox"
+          checked={testFirst}
+          disabled={frameCount < 2}
+          onChange={e => setTestFirst(e.target.checked)}
+        />
+        <span>
+          <strong>Render frame {frameStart} first and wait</strong>
+          <span className="check-hint">
+            The rest of the range is held back until you have looked at that frame
+            and approved it, so a wrong camera or a missing material costs one
+            frame rather than the whole range.
           </span>
         </span>
       </label>

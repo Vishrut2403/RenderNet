@@ -184,6 +184,11 @@ Things that would otherwise surprise you.
   is issued one that is shown once and can be revoked on its own, without
   disturbing the rest of the farm. A machine may only touch the claims it holds,
   and may only download the scenes it is rendering.
+- **A test frame can be rendered first.** A job submitted with one renders that
+  frame alone and then stops, holding the rest of the range until its owner has
+  looked at the frame and approved it. A wrong camera or a missing material
+  costs one frame rather than five hundred, and the farm renders whatever is
+  queued behind it while it waits.
 - **A frame only goes to a machine that can render it.** Every worker says which
   engines it offers when it asks for work, and is passed over for jobs using
   anything else. Without that, a machine whose Blender cannot render a job's

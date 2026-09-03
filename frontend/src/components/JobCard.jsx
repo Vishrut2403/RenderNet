@@ -91,6 +91,18 @@ export function JobCard({ job, onChanged, onError }) {
     }
   }
 
+  async function approve() {
+    setBusy(true);
+    try {
+      await api.approveJob(job.id);
+      onChanged?.();
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function rerun() {
     setBusy(true);
     try {
@@ -139,6 +151,7 @@ export function JobCard({ job, onChanged, onError }) {
   // Zero once the job is next up, where "starts in 0 seconds" reads worse than
   // nothing.
   const waitsFor = job.status === 'pending' && job.startsIn > 0;
+  const waitingOnMe = job.approval === 'waiting';
 
   // Only the frames that failed are retried, so there has to be one.
   const retryable = (done || job.status === 'failed') && job.frameErrors?.length > 0;
@@ -177,12 +190,21 @@ export function JobCard({ job, onChanged, onError }) {
             />
           </a>
           <figcaption>
-            {active ? `Frame ${job.currentFrame ?? job.completedFrames}, rendering` : 'Last frame rendered'}
+            {waitingOnMe ? `Frame ${job.testFrame}, waiting on you`
+              : active ? `Frame ${job.currentFrame ?? job.completedFrames}, rendering`
+                : 'Last frame rendered'}
           </figcaption>
         </figure>
       )}
 
-      {job.status === 'pending' && (
+      {waitingOnMe && (
+        <p className="job-note">
+          Frame {job.testFrame} is rendered. Approve to render the other{' '}
+          {job.totalFrames - job.completedFrames} frames, or cancel to stop here.
+        </p>
+      )}
+
+      {job.status === 'pending' && !waitingOnMe && (
         <p className="job-note">
           {job.pausedBy
             ? `Paused for ${job.pausedBy}'s urgent job — resumes with ${job.completedFrames} frame${job.completedFrames === 1 ? '' : 's'} already done`
@@ -261,11 +283,19 @@ export function JobCard({ job, onChanged, onError }) {
           </>
         )}
 
+        {waitingOnMe && (
+          <Button variant="primary" busy={busy} onClick={approve}>
+            Render the rest
+          </Button>
+        )}
+
         {(job.status === 'pending' || active) && (
           <>
-            <Button busy={busy} onClick={prioritise}>
-              {job.priority > 0 ? 'Make normal' : 'Mark urgent'}
-            </Button>
+            {!waitingOnMe && (
+              <Button busy={busy} onClick={prioritise}>
+                {job.priority > 0 ? 'Make normal' : 'Mark urgent'}
+              </Button>
+            )}
             <Button variant="danger" busy={busy} onClick={cancel}>Cancel</Button>
           </>
         )}

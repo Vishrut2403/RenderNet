@@ -497,7 +497,7 @@ export async function status(url, options) {
 
 export async function submitJob(base, token, blendPath, {
   frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples, formats,
-  exrCodec, exrDepth, jpegQuality, skipAssetCheck
+  exrCodec, exrDepth, jpegQuality, skipAssetCheck, testFrame
 }) {
   const form = new FormData();
   form.set('blend', new Blob([fs.readFileSync(blendPath)]), path.basename(blendPath));
@@ -512,6 +512,7 @@ export async function submitJob(base, token, blendPath, {
   if (exrDepth !== undefined) form.set('exrDepth', String(exrDepth));
   if (jpegQuality !== undefined) form.set('jpegQuality', String(jpegQuality));
   if (skipAssetCheck) form.set('skipAssetCheck', '1');
+  if (testFrame !== undefined) form.set('testFrame', String(testFrame));
 
   const res = await fetch(`${base}/upload`, { method: 'POST', headers: auth(token), body: form });
   return { status: res.status, body: await res.json() };

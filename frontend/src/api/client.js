@@ -107,7 +107,7 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true, 
 // a JSON body the same way.
 function uploadSettings({
   frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats,
-  exrCodec, exrDepth, jpegQuality, skipAssetCheck
+  exrCodec, exrDepth, jpegQuality, skipAssetCheck, testFrame
 }) {
   const settings = {
     frameStart: String(frameStart),
@@ -127,6 +127,7 @@ function uploadSettings({
 
   if (formats?.includes('JPEG')) settings.jpegQuality = String(jpegQuality);
   if (skipAssetCheck) settings.skipAssetCheck = '1';
+  if (testFrame) settings.testFrame = String(testFrame);
 
   return settings;
 }
@@ -300,6 +301,8 @@ export const api = {
     request('/auth/change-password', { method: 'POST', body: { oldPassword, newPassword } }),
 
   listUsers: () => request('/auth/users'),
+
+  approveJob: id => request(`/jobs/${id}/approve`, { method: 'POST' }),
 
   machines: () => request('/machines'),
 

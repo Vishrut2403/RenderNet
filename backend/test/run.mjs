@@ -8,6 +8,7 @@ import api from './api.test.mjs';
 import paging from './paging.test.mjs';
 import chunkedUpload from './chunked-upload.test.mjs';
 import workerCredentials from './worker-credentials.test.mjs';
+import testFrame from './test-frame.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -19,7 +20,8 @@ const suites = [
   ['API, rendering and persistence', api],
   ['Job list paging', paging],
   ['Chunked uploads', chunkedUpload],
-  ['Worker credentials', workerCredentials]
+  ['Worker credentials', workerCredentials],
+  ['Test frame before the rest', testFrame]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

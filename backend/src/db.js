@@ -113,6 +113,11 @@ addColumnIfMissing('jobs', 'jpegQuality', 'INTEGER DEFAULT 90');
 // Whether a video has been made of the finished frames.
 addColumnIfMissing('jobs', 'video', 'TEXT');
 
+// The frame rendered on its own first, and where its owner's answer has got to:
+// 'testing', 'waiting' for them, or 'approved'.
+addColumnIfMissing('jobs', 'testFrame', 'INTEGER');
+addColumnIfMissing('jobs', 'approval', 'TEXT');
+
 // What the scene reaches for outside itself, checked before it is queued.
 addColumnIfMissing('jobs', 'assetCheck', 'TEXT');
 addColumnIfMissing('jobs', 'missingAssets', 'TEXT');
@@ -139,7 +144,7 @@ const COLUMNS = [
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
   'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality',
-  'assetCheck', 'missingAssets', 'video'
+  'assetCheck', 'missingAssets', 'video', 'testFrame', 'approval'
 ];
 
 const upsertJob = db.prepare(`
@@ -181,6 +186,20 @@ export const createFrames = db.transaction((jobId, frameStart, frameEnd) => {
     });
   }
 });
+
+// Held rather than deleted, so the job keeps its full range and its progress
+// denominator while only the test frame can be claimed.
+export function holdFramesExcept(jobId, frame) {
+  return db.prepare(
+    `UPDATE frames SET status = 'held' WHERE jobId = ? AND frame != ? AND status = 'pending'`
+  ).run(jobId, frame).changes;
+}
+
+export function releaseHeldFrames(jobId) {
+  return db.prepare(
+    `UPDATE frames SET status = 'pending' WHERE jobId = ? AND status = 'held'`
+  ).run(jobId).changes;
+}
 
 export function getFrames(jobId) {
   return db.prepare('SELECT * FROM frames WHERE jobId = ? ORDER BY frame').all(jobId);

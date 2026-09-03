@@ -122,6 +122,20 @@ function queueUpload(file, body, owner) {
     return refuse(400, `Frame range exceeds the ${MAX_FRAMES} frame limit`);
   }
 
+  const testFrame = body.testFrame === undefined || body.testFrame === ''
+    ? null
+    : Number(body.testFrame);
+
+  if (testFrame !== null) {
+    if (!Number.isInteger(testFrame) || testFrame < start || testFrame > end) {
+      return refuse(400, `testFrame must be a whole frame from ${start} to ${end}`);
+    }
+
+    if (start === end) {
+      return refuse(400, 'A single-frame job has nothing to hold back for approval');
+    }
+  }
+
   const renderEngine = body.renderEngine || 'CYCLES';
 
   if (!ENGINE_IDS.includes(renderEngine)) {
@@ -185,7 +199,8 @@ function queueUpload(file, body, owner) {
     exrCodec,
     exrDepth,
     jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY,
-    skipAssetCheck: body.skipAssetCheck === '1'
+    skipAssetCheck: body.skipAssetCheck === '1',
+    testFrame
   });
 
   return {

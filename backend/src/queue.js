@@ -7,7 +7,8 @@ import {
   saveJob, deleteJob,
   createFrames, getFrames, countFramesByStatus,
   markFrameDone, markFramePending, markFrameAttemptFailed, resetFailedFrames,
-  leaseFrame, renewLease, releaseLease, getLease, liveLeases, clearJobLeases
+  leaseFrame, renewLease, releaseLease, getLease, liveLeases, clearJobLeases,
+  holdFramesExcept, releaseHeldFrames
 } from './db.js';
 import { DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY } from './formats.js';
 import { workerCanRender, engineIsOffered, machines } from './worker-registry.js';
@@ -62,6 +63,8 @@ export function resumeInterruptedJobs() {
 
   for (const job of jobs.values()) {
     if (job.status !== 'rendering' && job.status !== 'pending') continue;
+    // Nothing to resume: it is waiting for a person, not for a worker.
+    if (job.approval === 'waiting') continue;
 
     const done = reconcileFrames(job);
 
@@ -141,7 +144,9 @@ export function addToQueue(jobData) {
     formats: jobData.formats || 'PNG',
     exrCodec: jobData.exrCodec || DEFAULT_EXR_CODEC,
     exrDepth: jobData.exrDepth || DEFAULT_EXR_DEPTH,
-    jpegQuality: jobData.jpegQuality ?? DEFAULT_JPEG_QUALITY
+    jpegQuality: jobData.jpegQuality ?? DEFAULT_JPEG_QUALITY,
+    testFrame: jobData.testFrame ?? null,
+    approval: jobData.testFrame ? 'testing' : null
   };
 
   // Queued straight away so it has a position and an estimate like any other,
@@ -150,6 +155,7 @@ export function addToQueue(jobData) {
 
   jobs.set(jobId, job);
   createFrames(jobId, job.frameStart, job.frameEnd);
+  if (job.testFrame) holdFramesExcept(jobId, job.testFrame);
   saveJob(job);
   forgetUsage(job.owner);
   renderQueue.push(jobId);
@@ -214,6 +220,33 @@ function preemptFor(job) {
   whenWorkersLetGo(running.id);
 
   return true;
+}
+
+export function approveJob(jobId) {
+  const job = jobs.get(jobId);
+
+  if (!job) return { success: false, error: 'Job not found' };
+
+  if (job.approval !== 'waiting') {
+    return { success: false, error: `Job ${jobId} is not waiting on a test frame` };
+  }
+
+  releaseHeldFrames(jobId);
+
+  job.approval = 'approved';
+  job.error = null;
+  // The test frame already counts as progress, so the restart rule starts from
+  // where this leaves off rather than treating it as a job that has done nothing.
+  job.framesAtResume = countFramesByStatus(jobId).done;
+  saveJob(job);
+
+  renderQueue.push(jobId);
+
+  console.log(`Job ${jobId} approved: rendering the remaining frames`);
+
+  if (!preemptFor(job)) processQueue();
+
+  return { success: true, message: 'Rendering the rest of the frames' };
 }
 
 export function rerunJob(jobId) {
@@ -530,6 +563,20 @@ function settleJob(jobId) {
 
   if (counts.pending > 0) return;
   if (liveLeases().some(lease => lease.jobId === jobId)) return;
+
+  // A test frame that rendered is not a finished job: the rest of the range is
+  // still held, waiting for whoever asked for it to look at the frame.
+  if (job.approval === 'testing' && counts.done > 0) {
+    job.status = 'pending';
+    job.approval = 'waiting';
+    job.startedAt = null;
+    job.currentFrame = null;
+    saveJob(job);
+    releaseSlot(jobId);
+
+    console.log(`Job ${jobId} rendered its test frame and is waiting to be approved`);
+    return;
+  }
 
   completeJob(jobId, { successfulFrames: counts.done, failedFrames: counts.failed });
 }
