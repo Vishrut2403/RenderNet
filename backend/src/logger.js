@@ -119,12 +119,16 @@ export function requestLogger(req, res, next) {
   // download authenticates by query string and that token must not be written
   // down.
   const requestPath = req.path;
+  // Read now for a second reason: a request whose connection dies mid-body -
+  // an upload chunk cut off - has no socket left to take an address from once
+  // the response finishes, and reading it there brings the server down.
+  const from = req.ip ?? '?';
 
   res.on('finish', () => {
     if (!worthRecording(method, requestPath, res.statusCode)) return;
 
     console.log(`${method} ${requestPath} ${res.statusCode} ${Date.now() - started}ms `
-      + `user=${req.user?.username ?? 'anonymous'} ip=${req.ip ?? '?'}`);
+      + `user=${req.user?.username ?? 'anonymous'} ip=${from}`);
   });
 
   next();

@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { api } from '../api/client';
 import { usePolling, jobsInterval } from '../hooks/usePolling';
 import { useJobFinished } from '../hooks/useJobFinished';
@@ -57,36 +58,32 @@ function ActiveJob({ job, now, workers }) {
 }
 
 export function Dashboard({ notify }) {
-  const jobsPoll = usePolling(api.jobs, result => jobsInterval(result?.jobs));
+  // One request for what this page shows rather than every job the user has:
+  // the totals are counted server-side, so the payload does not grow with them.
+  const summaryPoll = usePolling(api.jobsSummary, result => jobsInterval(result?.rendering));
   const queuePoll = usePolling(api.queueStatus, result => (result?.isRendering ? 2000 : 10000));
   const healthPoll = usePolling(api.health, () => 15000);
 
-  const jobs = jobsPoll.data?.jobs || [];
+  const summary = summaryPoll.data;
   const queue = queuePoll.data;
   const problems = healthPoll.data?.problems ?? [];
 
-  useJobFinished(jobsPoll.data?.jobs);
-  const usage = jobsPoll.data?.usage;
+  const counts = summary?.counts ?? {};
+  const rendering = useMemo(() => summary?.rendering ?? [], [summary]);
+  const recent = useMemo(() => summary?.recent ?? [], [summary]);
+  const watched = useMemo(() => [...rendering, ...recent], [rendering, recent]);
 
-  const tally = jobs.reduce((acc, job) => {
-    acc[job.status] = (acc[job.status] || 0) + 1;
-    return acc;
-  }, {});
+  useJobFinished(summary ? watched : null);
 
-  const rendering = jobs.filter(job => job.status === 'rendering');
-  const recent = [...jobs].sort((a, b) => b.id - a.id).slice(0, 3);
-  const framesRendered = jobs.reduce((sum, job) => sum + (job.completedFrames || 0), 0);
+  const usage = summary?.usage;
+  const framesRendered = summary?.framesRendered ?? 0;
 
   const now = useNow(rendering.length > 0);
   const workers = queue?.workers ?? [];
   const elsewhere = Math.max((queue?.activeJobs?.length ?? 0) - rendering.length, 0);
   const otherJobs = `${elsewhere} other job${elsewhere === 1 ? '' : 's'}`;
 
-  const finished = jobs.filter(job => job.status === 'completed' && job.startedAt && job.completedAt);
-  const totalRenderMs = finished.reduce(
-    (sum, job) => sum + (new Date(job.completedAt) - new Date(job.startedAt)),
-    0
-  );
+  const totalRenderMs = summary?.renderMs ?? 0;
 
   return (
     <div className="stack">
@@ -100,11 +97,11 @@ export function Dashboard({ notify }) {
       )}
 
       <div className="stats">
-        <Stat label="Total jobs" value={jobs.length} />
-        <Stat label="Rendering" value={tally.rendering || 0} tone="active" />
+        <Stat label="Total jobs" value={counts.all ?? 0} />
+        <Stat label="Rendering" value={counts.rendering || 0} tone="active" />
         <Stat label="Queued" value={queue?.queueLength ?? 0} />
-        <Stat label="Completed" value={tally.completed || 0} tone="done" />
-        <Stat label="Failed" value={tally.failed || 0} tone="fail" />
+        <Stat label="Completed" value={counts.completed || 0} tone="done" />
+        <Stat label="Failed" value={counts.failed || 0} tone="fail" />
         <Stat label="Frames rendered" value={framesRendered} />
         <Stat label="Render time" value={totalRenderMs ? formatDuration(totalRenderMs) : '—'} />
       </div>
@@ -166,7 +163,7 @@ export function Dashboard({ notify }) {
             <JobCard
               key={job.id}
               job={job}
-              onChanged={jobsPoll.refresh}
+              onChanged={summaryPoll.refresh}
               onError={message => notify(message, 'error')}
             />
           ))

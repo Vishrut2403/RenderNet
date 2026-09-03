@@ -349,11 +349,16 @@ export function getFailedFrames(jobId) {
   ).all(jobId);
 }
 
-export function getAllFailedFrames() {
+// Built per call because the number of placeholders varies; the caller pages
+// first, so the list is bounded by the page size.
+export function getFailedFramesIn(jobIds) {
+  if (jobIds.length === 0) return [];
+
   return db.prepare(
     `SELECT jobId, frame, error, updatedAt FROM frames
-     WHERE status = 'failed' ORDER BY jobId, frame`
-  ).all();
+     WHERE status = 'failed' AND jobId IN (${jobIds.map(() => '?').join(',')})
+     ORDER BY jobId, frame`
+  ).all(...jobIds);
 }
 
 // Jobs written before frames were tracked individually have no rows at all.

@@ -20,6 +20,7 @@ export function dataPath(...segments) {
 }
 
 export const UPLOADS_DIR = dataPath('uploads');
+export const PARTIALS_DIR = dataPath('partials');
 export const RENDERS_DIR = dataPath('renders');
 export const SCRATCH_DIR = dataPath('worker-tmp');
 export const USERS_FILE = dataPath('users.json');
@@ -36,6 +37,19 @@ export const USER_QUOTA_BYTES = Number(process.env.USER_QUOTA_BYTES) || 10 * 102
 // Quotas divide the disk between people; this is what stops the disk itself
 // running out. A full disk fails every frame of every job rather than one.
 export const MIN_FREE_BYTES = Number(process.env.MIN_FREE_BYTES) || 5 * 1024 * 1024 * 1024;
+
+// A scene above the chunking threshold is sent in pieces and can be picked up
+// where it stopped.
+export const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES) || 2 * 1024 * 1024 * 1024;
+export const MAX_CHUNK_BYTES = Number(process.env.MAX_CHUNK_BYTES) || 16 * 1024 * 1024;
+export const UPLOAD_CHUNK_BYTES = Math.min(
+  Number(process.env.UPLOAD_CHUNK_BYTES) || 8 * 1024 * 1024,
+  MAX_CHUNK_BYTES
+);
+
+// An upload nobody came back to finish is holding disk the quota does not yet
+// count against it.
+export const PARTIAL_TTL_MS = Number(process.env.PARTIAL_TTL_MS) || 6 * 60 * 60 * 1000;
 
 export const BACKUPS_DIR = dataPath('backups');
 

@@ -35,6 +35,7 @@ export default async function run() {
 
   const queue = await import('../src/queue.js');
   const views = await import('../src/job-views.js');
+  const { jobs } = await import('../src/job-store.js');
   const db = await import('../src/db.js');
   const workerRouter = (await import('../src/routes/worker.js')).default;
 
@@ -277,7 +278,7 @@ export default async function run() {
 
   } finally {
     // Stops the stand-in Blender still sitting on its first frame.
-    for (const job of views.getAllJobs()) {
+    for (const job of jobs.values()) {
       if (job.status === 'rendering' || job.status === 'pending') queue.cancelJob(job.id);
     }
 

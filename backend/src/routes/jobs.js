@@ -2,16 +2,48 @@ import express from 'express';
 import {
   cancelJob, getQueueStatus, getQueuePosition, deleteJobAndFiles, setJobPriority, rerunJob
 } from '../queue.js';
-import { getJob, getAllJobs } from '../job-views.js';
+import { getJob, listJobs, jobsSummary, DEFAULT_PAGE, MAX_PAGE } from '../job-views.js';
 import { usageFor, usageByOwner } from '../storage.js';
 import { startVideo } from '../video.js';
 import { requireAdmin } from '../auth.js';
 
 const router = express.Router();
 
+const STATUSES = ['pending', 'rendering', 'completed', 'failed', 'cancelled'];
+
 function canAccess(job, user) {
   return job.owner === user.username || user.role === 'admin';
 }
+
+function pageRequest(query) {
+  const status = query.status === undefined || query.status === 'all' ? null : query.status;
+
+  if (status !== null && !STATUSES.includes(status)) {
+    return { error: `status must be all or one of ${STATUSES.join(', ')}` };
+  }
+
+  const limit = query.limit === undefined ? DEFAULT_PAGE : Number(query.limit);
+
+  if (!Number.isInteger(limit) || limit < 1 || limit > MAX_PAGE) {
+    return { error: `limit must be a whole number from 1 to ${MAX_PAGE}` };
+  }
+
+  const before = query.before === undefined ? null : Number(query.before);
+
+  if (before !== null && (!Number.isInteger(before) || before < 1)) {
+    return { error: 'before must be a job id' };
+  }
+
+  return { status, limit, before };
+}
+
+// Declared before /:id, which would otherwise take "summary" for a job id.
+router.get('/summary', (req, res) => {
+  res.json({
+    ...jobsSummary(req.user),
+    usage: usageFor(req.user.username)
+  });
+});
 
 router.get('/:id', (req, res) => {
   const jobId = Number(req.params.id);
@@ -34,10 +66,17 @@ router.get('/:id', (req, res) => {
 });
 
 router.get('/', (req, res) => {
-  const visible = getAllJobs().filter(job => canAccess(job, req.user));
+  const asked = pageRequest(req.query);
+
+  if (asked.error) {
+    return res.status(400).json({ error: asked.error });
+  }
+
+  const page = listJobs({ viewer: req.user, ...asked });
+
   res.json({
-    total: visible.length,
-    jobs: visible,
+    total: page.counts.all,
+    ...page,
     usage: usageFor(req.user.username)
   });
 });

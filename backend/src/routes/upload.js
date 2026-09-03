@@ -5,6 +5,9 @@ import { deleteFile, freeBytes } from '../utils/file-utils.js';
 import { addToQueue } from '../queue.js';
 import { getJob } from '../job-views.js';
 import { DATA_DIR, UPLOADS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
+import {
+  openSession, sessionFor, describeSession, appendChunk, finishSession, abortSession
+} from '../upload-sessions.js';
 import { usageFor } from '../storage.js';
 import { ENGINE_IDS } from '../engines.js';
 import {
@@ -85,118 +88,202 @@ function roomOnDisk(req, res, next) {
   next();
 }
 
-router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded' });
-    }
+function withSession(req, res, next) {
+  const session = sessionFor(req.params.id, req.user.username);
 
-    const start = Number(req.body.frameStart);
-    const end = Number(req.body.frameEnd);
+  if (!session) {
+    return res.status(404).json({ error: 'No such upload' });
+  }
 
-    if (!Number.isInteger(start) || !Number.isInteger(end)) {
-      return res.status(400).json({ error: 'frameStart and frameEnd must be integers' });
-    }
+  req.session = session;
+  next();
+}
 
-    if (start < 0 || end < start) {
-      return res.status(400).json({ error: 'Frame range must be positive and end must not precede start' });
-    }
+// Shared by the single request and the last step of a chunked upload: the bytes
+// are on disk either way by this point, and only the settings differ.
+function queueUpload(file, body, owner) {
+  const refuse = (status, error) => {
+    deleteFile(file.path);
+    return { status, body: { error } };
+  };
 
-    if (end - start + 1 > MAX_FRAMES) {
-      return res.status(400).json({ error: `Frame range exceeds the ${MAX_FRAMES} frame limit` });
-    }
+  const start = Number(body.frameStart);
+  const end = Number(body.frameEnd);
 
-    const renderEngine = req.body.renderEngine || 'CYCLES';
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    return refuse(400, 'frameStart and frameEnd must be integers');
+  }
 
-    if (!ENGINE_IDS.includes(renderEngine)) {
-      return res.status(400).json({ error: `Unsupported render engine: ${renderEngine}` });
-    }
+  if (start < 0 || end < start) {
+    return refuse(400, 'Frame range must be positive and end must not precede start');
+  }
 
-    const { bytes } = usageFor(req.user.username, { fresh: true });
+  if (end - start + 1 > MAX_FRAMES) {
+    return refuse(400, `Frame range exceeds the ${MAX_FRAMES} frame limit`);
+  }
 
-    if (bytes + req.file.size > USER_QUOTA_BYTES) {
-      deleteFile(req.file.path);
-      return res.status(413).json({
-        error: `That would put you at ${gigabytes(bytes + req.file.size)} of your `
-          + `${gigabytes(USER_QUOTA_BYTES)}. Delete a finished job first.`
-      });
-    }
+  const renderEngine = body.renderEngine || 'CYCLES';
 
-    const resolution = optionalInteger(req.body.resolutionPercent, { min: 1, max: 100 });
+  if (!ENGINE_IDS.includes(renderEngine)) {
+    return refuse(400, `Unsupported render engine: ${renderEngine}`);
+  }
 
-    if (!resolution.ok) {
-      deleteFile(req.file.path);
-      return res.status(400).json({ error: 'resolutionPercent must be a whole number from 1 to 100' });
-    }
+  const { bytes } = usageFor(owner, { fresh: true });
 
-    const samples = optionalInteger(req.body.samples, { min: 1, max: MAX_SAMPLES });
+  if (bytes + file.size > USER_QUOTA_BYTES) {
+    return refuse(413, `That would put you at ${gigabytes(bytes + file.size)} of your `
+      + `${gigabytes(USER_QUOTA_BYTES)}. Delete a finished job first.`);
+  }
 
-    if (!samples.ok) {
-      deleteFile(req.file.path);
-      return res.status(400).json({ error: `samples must be a whole number from 1 to ${MAX_SAMPLES}` });
-    }
+  const resolution = optionalInteger(body.resolutionPercent, { min: 1, max: 100 });
 
-    // Sent as one comma-separated field: a repeated field arrives as a string
-    // when one box is ticked and an array when several are, and that is a
-    // needless difference to handle.
-    const chosen = (req.body.formats ?? 'PNG').split(',').map(id => id.trim()).filter(Boolean);
-    const formats = normaliseFormats(chosen);
+  if (!resolution.ok) {
+    return refuse(400, 'resolutionPercent must be a whole number from 1 to 100');
+  }
 
-    if (formats.length === 0 || chosen.some(id => !FORMAT_IDS.includes(id))) {
-      deleteFile(req.file.path);
-      return res.status(400).json({
-        error: `Pick at least one output format from ${FORMAT_IDS.join(', ')}`
-      });
-    }
+  const samples = optionalInteger(body.samples, { min: 1, max: MAX_SAMPLES });
 
-    const exrCodec = req.body.exrCodec || DEFAULT_EXR_CODEC;
-    const exrDepth = String(req.body.exrDepth || DEFAULT_EXR_DEPTH);
+  if (!samples.ok) {
+    return refuse(400, `samples must be a whole number from 1 to ${MAX_SAMPLES}`);
+  }
 
-    if (!EXR_CODEC_IDS.includes(exrCodec) || !EXR_DEPTH_IDS.includes(exrDepth)) {
-      deleteFile(req.file.path);
-      return res.status(400).json({
-        error: `OpenEXR takes one of ${EXR_CODEC_IDS.join(', ')} at ${EXR_DEPTH_IDS.join(' or ')} bits`
-      });
-    }
+  // Sent as one comma-separated field: a repeated field arrives as a string
+  // when one box is ticked and an array when several are, and that is a
+  // needless difference to handle.
+  const chosen = (body.formats ?? 'PNG').split(',').map(id => id.trim()).filter(Boolean);
+  const formats = normaliseFormats(chosen);
 
-    const jpegQuality = optionalInteger(req.body.jpegQuality, { min: 1, max: 100 });
+  if (formats.length === 0 || chosen.some(id => !FORMAT_IDS.includes(id))) {
+    return refuse(400, `Pick at least one output format from ${FORMAT_IDS.join(', ')}`);
+  }
 
-    if (!jpegQuality.ok) {
-      deleteFile(req.file.path);
-      return res.status(400).json({ error: 'jpegQuality must be a whole number from 1 to 100' });
-    }
+  const exrCodec = body.exrCodec || DEFAULT_EXR_CODEC;
+  const exrDepth = String(body.exrDepth || DEFAULT_EXR_DEPTH);
 
-    const jobId = addToQueue({
-      filePath: path.join('uploads', req.file.filename),
-      frameStart: start,
-      frameEnd: end,
-      renderEngine,
-      owner: req.user.username,
-      originalFilename: path.basename(req.file.originalname),
-      priority: Number(req.body.priority) === 1 ? 1 : 0,
-      resolutionPercent: resolution.value ?? 100,
-      samples: samples.value,
-      formats: formats.join(','),
-      exrCodec,
-      exrDepth,
-      jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY,
-      skipAssetCheck: req.body.skipAssetCheck === '1'
-    });
+  if (!EXR_CODEC_IDS.includes(exrCodec) || !EXR_DEPTH_IDS.includes(exrDepth)) {
+    return refuse(400, `OpenEXR takes one of ${EXR_CODEC_IDS.join(', ')} `
+      + `at ${EXR_DEPTH_IDS.join(' or ')} bits`);
+  }
 
-    res.json({
+  const jpegQuality = optionalInteger(body.jpegQuality, { min: 1, max: 100 });
+
+  if (!jpegQuality.ok) {
+    return refuse(400, 'jpegQuality must be a whole number from 1 to 100');
+  }
+
+  const jobId = addToQueue({
+    filePath: path.join('uploads', file.filename),
+    frameStart: start,
+    frameEnd: end,
+    renderEngine,
+    owner,
+    originalFilename: path.basename(file.originalname),
+    priority: Number(body.priority) === 1 ? 1 : 0,
+    resolutionPercent: resolution.value ?? 100,
+    samples: samples.value,
+    formats: formats.join(','),
+    exrCodec,
+    exrDepth,
+    jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY,
+    skipAssetCheck: body.skipAssetCheck === '1'
+  });
+
+  return {
+    status: 200,
+    body: {
       success: true,
       message: 'Job added to render queue',
       jobId,
       // Null when it started straight away, or when nothing has been rendered
       // yet to work an estimate from.
       startsIn: getJob(jobId)?.startsIn ?? null
-    });
+    }
+  };
+}
 
+router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const result = queueUpload(req.file, req.body, req.user.username);
+
+    res.status(result.status).json(result.body);
   } catch (error) {
     console.error('Upload error:', error);
     deleteFile(req.file?.path);
     res.status(500).json({ error: error.message });
   }
+});
+
+router.post('/session', roomOnDisk, withinQuota, (req, res) => {
+  const opened = openSession({
+    owner: req.user.username,
+    filename: req.body?.filename,
+    size: Number(req.body?.size)
+  });
+
+  if (opened.error) {
+    return res.status(opened.status).json({ error: opened.error });
+  }
+
+  res.status(201).json(describeSession(opened.session));
+});
+
+// The client asks how much arrived before sending anything, so an upload
+// interrupted an hour ago carries on from where it stopped.
+router.get('/session/:id', withSession, (req, res) => {
+  res.json(describeSession(req.session));
+});
+
+router.put('/session/:id', withSession, async (req, res) => {
+  const offset = Number(req.query.offset);
+
+  if (!Number.isInteger(offset) || offset < 0) {
+    return res.status(400).json({ error: 'offset must be a whole number of bytes' });
+  }
+
+  const written = await appendChunk(req.session, offset, req);
+
+  if (written.error) {
+    return res.status(written.status).json({ error: written.error, received: written.received });
+  }
+
+  res.json(written);
+});
+
+router.post('/session/:id/finish', (req, res) => {
+  const session = sessionFor(req.params.id, req.user.username);
+
+  if (!session) {
+    return res.status(404).json({ error: 'No such upload' });
+  }
+
+  if (session.busy) {
+    return res.status(409).json({ error: 'A chunk of this upload is still arriving' });
+  }
+
+  const assembled = finishSession(session);
+
+  if (assembled.error) {
+    return res.status(assembled.status).json({ error: assembled.error, received: assembled.received });
+  }
+
+  try {
+    const result = queueUpload(assembled.file, req.body ?? {}, req.user.username);
+
+    res.status(result.status).json(result.body);
+  } catch (error) {
+    console.error('Upload error:', error);
+    deleteFile(assembled.file.path);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+router.delete('/session/:id', withSession, (req, res) => {
+  abortSession(req.session);
+  res.json({ success: true });
 });
 
 // Multer rejects (wrong type, too large) surface here, not in the handler

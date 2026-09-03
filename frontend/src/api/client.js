@@ -1,5 +1,10 @@
 const BASE = import.meta.env.VITE_API_URL || '/api';
 
+// Above this a file is sent in pieces and can be resumed.
+const CHUNKED_ABOVE = 32 * 1024 * 1024;
+const CHUNK_ATTEMPTS = 3;
+const RESUME_KEY = 'rendernet.upload';
+
 let onUnauthorized = () => {};
 let onPasswordChangeRequired = () => {};
 
@@ -49,9 +54,10 @@ function downloadUrl(path, token) {
 }
 
 class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, received) {
     super(message);
     this.status = status;
+    this.received = received;
   }
 }
 
@@ -97,6 +103,188 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true, 
   return expect === 'text' ? payload.text : payload;
 }
 
+// Strings whichever way the file goes up: the server reads a multipart form and
+// a JSON body the same way.
+function uploadSettings({
+  frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats,
+  exrCodec, exrDepth, jpegQuality, skipAssetCheck
+}) {
+  const settings = {
+    frameStart: String(frameStart),
+    frameEnd: String(frameEnd),
+    renderEngine,
+    resolutionPercent: String(resolutionPercent),
+    formats: (formats ?? ['PNG']).join(','),
+    priority: priority ? '1' : '0'
+  };
+
+  if (samples) settings.samples = String(samples);
+
+  if (formats?.includes('OPEN_EXR')) {
+    settings.exrCodec = exrCodec;
+    settings.exrDepth = String(exrDepth);
+  }
+
+  if (formats?.includes('JPEG')) settings.jpegQuality = String(jpegQuality);
+  if (skipAssetCheck) settings.skipAssetCheck = '1';
+
+  return settings;
+}
+
+function send(xhr, payload, onLoaded) {
+  // XHR rather than fetch: upload progress events have no fetch equivalent.
+  return new Promise((resolve, reject) => {
+    xhr.setRequestHeader('Authorization', `Bearer ${getToken()}`);
+
+    xhr.upload.addEventListener('progress', event => {
+      if (event.lengthComputable) onLoaded?.(event.loaded);
+    });
+
+    xhr.addEventListener('load', () => {
+      const body = parseOrEmpty(xhr.responseText);
+
+      if (xhr.status === 401) {
+        clearSession();
+        onUnauthorized();
+        return reject(new ApiError('Session expired', 401));
+      }
+
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(body);
+
+      reject(new ApiError(body.error || `Upload failed (${xhr.status})`, xhr.status, body.received));
+    });
+
+    xhr.addEventListener('error', () => reject(new ApiError('Network error during upload', 0)));
+
+    xhr.send(payload);
+  });
+}
+
+function singleRequest(file, options, onProgress) {
+  const form = new FormData();
+  form.append('blend', file);
+
+  for (const [name, value] of Object.entries(uploadSettings(options))) {
+    form.append(name, value);
+  }
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', `${BASE}/upload`);
+
+  return send(xhr, form, loaded => onProgress?.((loaded / file.size) * 100));
+}
+
+function putChunk(uploadId, offset, piece, onLoaded) {
+  const xhr = new XMLHttpRequest();
+  xhr.open('PUT', `${BASE}/upload/session/${uploadId}?offset=${offset}`);
+  xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+  return send(xhr, piece, onLoaded);
+}
+
+function remember(file, uploadId) {
+  try {
+    localStorage.setItem(RESUME_KEY, JSON.stringify({
+      uploadId, name: file.name, size: file.size, lastModified: file.lastModified
+    }));
+  } catch {
+    // Resuming after a reload is a convenience; private windows do without it.
+  }
+}
+
+function forget() {
+  try {
+    localStorage.removeItem(RESUME_KEY);
+  } catch {
+    // As above.
+  }
+}
+
+function remembered(file) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null');
+
+    if (stored?.name !== file.name) return null;
+    if (stored.size !== file.size || stored.lastModified !== file.lastModified) return null;
+
+    return stored.uploadId;
+  } catch {
+    return null;
+  }
+}
+
+// The same file picked again after a reload or a dropped connection carries on
+// from the byte the server last acknowledged. A session the server no longer
+// has - it was swept, or the server restarted - simply starts again.
+async function openUpload(file) {
+  const previous = remembered(file);
+
+  if (previous) {
+    try {
+      return await request(`/upload/session/${previous}`);
+    } catch {
+      forget();
+    }
+  }
+
+  const started = await request('/upload/session', {
+    method: 'POST',
+    body: { filename: file.name, size: file.size }
+  });
+
+  remember(file, started.uploadId);
+
+  return started;
+}
+
+function pause(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function sendChunks(file, session, onProgress) {
+  let offset = session.received;
+  let attempt = 0;
+
+  while (offset < file.size) {
+    const end = Math.min(offset + session.chunkSize, file.size);
+
+    try {
+      const written = await putChunk(session.uploadId, offset, file.slice(offset, end),
+        loaded => onProgress?.(((offset + loaded) / file.size) * 100));
+
+      offset = written.received;
+      attempt = 0;
+    } catch (error) {
+      // Not a failure to retry: the server is saying where this should start.
+      if (error.status === 409 && Number.isInteger(error.received)) {
+        offset = error.received;
+        continue;
+      }
+
+      if (error.status >= 400 || ++attempt >= CHUNK_ATTEMPTS) throw error;
+
+      await pause(attempt * 1000);
+    }
+  }
+}
+
+async function upload(file, options, onProgress) {
+  if (file.size <= CHUNKED_ABOVE) return singleRequest(file, options, onProgress);
+
+  const session = await openUpload(file);
+
+  await sendChunks(file, session, onProgress);
+
+  const queued = await request(`/upload/session/${session.uploadId}/finish`, {
+    method: 'POST',
+    body: uploadSettings(options)
+  });
+
+  forget();
+
+  return queued;
+}
+
 export const api = {
   login: (username, password) =>
     request('/auth/login', { method: 'POST', body: { username, password }, auth: false }),
@@ -123,7 +311,17 @@ export const api = {
   resetPassword: (targetUsername, newPassword) =>
     request('/auth/admin/reset-password', { method: 'POST', body: { targetUsername, newPassword } }),
 
-  jobs: () => request('/jobs'),
+  jobs: ({ status, before, limit } = {}) => {
+    const query = new URLSearchParams();
+
+    if (status && status !== 'all') query.set('status', status);
+    if (before) query.set('before', before);
+    if (limit) query.set('limit', limit);
+
+    return request(`/jobs${query.size ? `?${query}` : ''}`);
+  },
+
+  jobsSummary: () => request('/jobs/summary'),
 
   job: id => request(`/jobs/${id}`),
 
@@ -167,58 +365,5 @@ export const api = {
   previewUrl: (id, delivered, token) =>
     `${downloadUrl(`/download/${id}/preview`, token)}&v=${delivered}`,
 
-  upload(file, {
-    frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats,
-    exrCodec, exrDepth, jpegQuality, skipAssetCheck
-  }, onProgress) {
-    // XHR rather than fetch: upload progress events have no fetch equivalent.
-    return new Promise((resolve, reject) => {
-      const form = new FormData();
-      form.append('blend', file);
-      form.append('frameStart', frameStart);
-      form.append('frameEnd', frameEnd);
-      form.append('renderEngine', renderEngine);
-      form.append('resolutionPercent', resolutionPercent);
-      if (samples) form.append('samples', samples);
-      form.append('formats', (formats ?? ['PNG']).join(','));
-      if (formats?.includes('OPEN_EXR')) {
-        form.append('exrCodec', exrCodec);
-        form.append('exrDepth', exrDepth);
-      }
-      if (formats?.includes('JPEG')) form.append('jpegQuality', jpegQuality);
-      form.append('priority', priority ? 1 : 0);
-      if (skipAssetCheck) form.append('skipAssetCheck', '1');
-
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', `${BASE}/upload`);
-      xhr.setRequestHeader('Authorization', `Bearer ${getToken()}`);
-
-      xhr.upload.addEventListener('progress', event => {
-        if (event.lengthComputable) onProgress?.((event.loaded / event.total) * 100);
-      });
-
-      xhr.addEventListener('load', () => {
-        let payload = {};
-        try {
-          payload = JSON.parse(xhr.responseText);
-        } catch {
-          // fall through to the status check below
-        }
-
-        if (xhr.status === 401) {
-          clearSession();
-          onUnauthorized();
-          reject(new ApiError('Session expired', 401));
-          return;
-        }
-
-        if (xhr.status >= 200 && xhr.status < 300) resolve(payload);
-        else reject(new ApiError(payload.error || `Upload failed (${xhr.status})`, xhr.status));
-      });
-
-      xhr.addEventListener('error', () => reject(new ApiError('Network error during upload', 0)));
-
-      xhr.send(form);
-    });
-  }
+  upload
 };

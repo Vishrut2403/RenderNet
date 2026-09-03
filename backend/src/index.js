@@ -27,7 +27,9 @@ import crypto from 'crypto';
 import https from 'https';
 import fs from 'fs';
 import path from 'path';
-import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST, RETENTION_DAYS } from './paths.js';
+import {
+  UPLOADS_DIR, PARTIALS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST, RETENTION_DAYS
+} from './paths.js';
 
 // Ephemeral, so an unconfigured deployment never ships a known credential.
 if (!process.env.WORKER_SECRET) {
@@ -45,6 +47,7 @@ app.use(express.json());
 app.use(requestLogger);
 
 ensureDir(UPLOADS_DIR);
+ensureDir(PARTIALS_DIR);
 ensureDir(RENDERS_DIR);
 ensureDir(SCRATCH_DIR);
 

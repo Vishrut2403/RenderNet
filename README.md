@@ -249,10 +249,18 @@ Things that would otherwise surprise you.
 - **A download link carries a token for that job alone**, good for ten minutes,
   because a link is copied, bookmarked and left in history. The session token is
   refused in a query string: it goes in the `Authorization` header or nowhere.
-- **Cancelling deletes that job's files.** Uploads are capped at 500MB and 2000
-  frames; engines are `CYCLES`, `BLENDER_EEVEE` and `BLENDER_WORKBENCH`, and
-  output formats are PNG, JPEG and OpenEXR with ZIP, PIZ, DWAA or no
-  compression.
+- **A file over 32MB goes up in pieces**, and the server answers each one with
+  how much it now holds. A transfer that dies - a closed laptop, a dropped
+  connection - carries on from that byte rather than starting the scene again.
+  Anything smaller is one request, as before.
+- **The job list is paged**, twenty-five at a time, oldest reachable through
+  "show older". The counts on the filter tabs and the dashboard's totals are
+  worked out over every job on the server, so they stay right whatever is on
+  screen.
+- **Cancelling deletes that job's files.** A single request carries 500MB, a
+  chunked one 2GB, and a job 2000 frames; engines are `CYCLES`,
+  `BLENDER_EEVEE` and `BLENDER_WORKBENCH`, and output formats are PNG, JPEG and
+  OpenEXR with ZIP, PIZ, DWAA or no compression.
 
 One thing it does not do: the frontend has no automated tests in the repo.
 
@@ -274,6 +282,7 @@ tree, so it is found however the server is started.
 | `TLS_KEY` / `TLS_CERT` | *unset* | Private key and certificate. Set both to serve HTTPS; setting one alone stops the server rather than quietly serving plain HTTP. |
 | `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |
 | `USER_QUOTA_BYTES` | `10737418240` (10 GB) | Disk each user may hold in uploads and rendered frames |
+| `MAX_UPLOAD_BYTES` | `2147483648` (2 GB) | Largest scene a chunked upload may carry |
 | `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |
 | `MIN_FREE_BYTES` | `5368709120` (5 GB) | Disk kept spare; below it uploads are refused and the queue holds |
 | `DB_BACKUPS_KEPT` | `7` | Database snapshots kept in `backups/`, one taken per start |

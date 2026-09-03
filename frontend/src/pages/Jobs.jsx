@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import { usePolling, jobsInterval } from '../hooks/usePolling';
 import { useJobFinished } from '../hooks/useJobFinished';
@@ -6,29 +6,55 @@ import { JobCard } from '../components/JobCard';
 import { Alert, EmptyState } from '../components/ui';
 
 const FILTERS = ['all', 'rendering', 'pending', 'completed', 'failed', 'cancelled'];
+const PAGE = 25;
 
 export function Jobs({ notify }) {
   const [filter, setFilter] = useState('all');
+  const [older, setOlder] = useState([]);
+  const [cursor, setCursor] = useState(null);
+  const [loadingMore, setLoadingMore] = useState(false);
+
+  const newest = useCallback(() => api.jobs({ status: filter, limit: PAGE }), [filter]);
 
   const { data, error, loading, refresh } = usePolling(
-    api.jobs,
-    result => jobsInterval(result?.jobs)
+    newest,
+    result => jobsInterval(result?.jobs),
+    [filter]
   );
 
-  const jobs = useMemo(
-    () => [...(data?.jobs || [])].sort((a, b) => b.id - a.id),
-    [data]
-  );
+  useEffect(() => {
+    setOlder([]);
+    setCursor(null);
+  }, [filter]);
 
   useJobFinished(data?.jobs);
 
-  const counts = useMemo(() => {
-    const tally = { all: jobs.length };
-    for (const job of jobs) tally[job.status] = (tally[job.status] || 0) + 1;
-    return tally;
-  }, [jobs]);
+  // Only the newest page is polled; the pages behind it hold jobs that have
+  // long since stopped changing.
+  const jobs = useMemo(() => {
+    const page = data?.jobs ?? [];
+    const shown = new Set(page.map(job => job.id));
 
-  const visible = filter === 'all' ? jobs : jobs.filter(job => job.status === filter);
+    return [...page, ...older.filter(job => !shown.has(job.id))];
+  }, [data, older]);
+
+  const counts = data?.counts ?? {};
+  const nextBefore = older.length > 0 ? cursor : data?.nextBefore ?? null;
+
+  const loadMore = async () => {
+    setLoadingMore(true);
+
+    try {
+      const page = await api.jobs({ status: filter, before: nextBefore, limit: PAGE });
+
+      setOlder(current => [...current, ...page.jobs]);
+      setCursor(page.nextBefore);
+    } catch (failure) {
+      notify(failure.message, 'error');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   if (loading) return <div className="panel">Loading jobs…</div>;
 
@@ -50,12 +76,12 @@ export function Jobs({ notify }) {
         ))}
       </div>
 
-      {visible.length === 0 ? (
-        <EmptyState title={jobs.length ? `No ${filter} jobs` : 'No renders yet'}>
-          {jobs.length ? 'Try a different filter.' : 'Upload a .blend file to queue your first render.'}
+      {jobs.length === 0 ? (
+        <EmptyState title={counts.all ? `No ${filter} jobs` : 'No renders yet'}>
+          {counts.all ? 'Try a different filter.' : 'Upload a .blend file to queue your first render.'}
         </EmptyState>
       ) : (
-        visible.map(job => (
+        jobs.map(job => (
           <JobCard
             key={job.id}
             job={job}
@@ -63,6 +89,12 @@ export function Jobs({ notify }) {
             onError={message => notify(message, 'error')}
           />
         ))
+      )}
+
+      {nextBefore && (
+        <button className="btn" onClick={loadMore} disabled={loadingMore}>
+          {loadingMore ? 'Loading…' : `Show older (${jobs.length} of ${counts[filter] ?? counts.all})`}
+        </button>
       )}
     </div>
   );

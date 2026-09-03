@@ -5,6 +5,7 @@ import { getActiveJobPaths } from './storage.js';
 import { purgeExpiredSessions } from './db.js';
 import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, RETENTION_DAYS } from './paths.js';
 import { pruneOldLogs } from './logger.js';
+import { sweepPartials } from './upload-sessions.js';
 
 // The workstation is switched off nightly, so in practice this gets one pass. A
 // file that disappears mid-pass must not cost the rest of it.
@@ -77,6 +78,7 @@ export function cleanupOldFiles() {
     const prunedJobs = pruneOldJobs(cutoff);
     const prunedSessions = purgeExpiredSessions();
     const prunedLogs = pruneOldLogs();
+    const prunedPartials = sweepPartials();
 
     if (prunedJobs || prunedSessions) {
       console.log(`Pruned ${prunedJobs} job record(s) and ${prunedSessions} expired session(s)`);
@@ -84,6 +86,10 @@ export function cleanupOldFiles() {
 
     if (prunedLogs) {
       console.log(`Pruned ${prunedLogs} old log file(s)`);
+    }
+
+    if (prunedPartials) {
+      console.log(`Removed ${prunedPartials} abandoned part-upload(s)`);
     }
 
     console.log('Cleanup complete!');

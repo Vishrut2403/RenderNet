@@ -5,6 +5,8 @@ import workers from './workers.test.mjs';
 import health from './health.test.mjs';
 import security from './security.test.mjs';
 import api from './api.test.mjs';
+import paging from './paging.test.mjs';
+import chunkedUpload from './chunked-upload.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -13,7 +15,9 @@ const suites = [
   ['Workers', workers],
   ['Health endpoint', health],
   ['Security', security],
-  ['API, rendering and persistence', api]
+  ['API, rendering and persistence', api],
+  ['Job list paging', paging],
+  ['Chunked uploads', chunkedUpload]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };
