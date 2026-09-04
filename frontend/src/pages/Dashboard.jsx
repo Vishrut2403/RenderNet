@@ -159,14 +159,16 @@ export function Dashboard({ notify }) {
             Your most recent jobs will appear here.
           </EmptyState>
         ) : (
-          recent.map(job => (
-            <JobCard
-              key={job.id}
-              job={job}
-              onChanged={summaryPoll.refresh}
-              onError={message => notify(message, 'error')}
-            />
-          ))
+          <div className="job-list">
+            {recent.map(job => (
+              <JobCard
+                key={job.id}
+                job={job}
+                onChanged={summaryPoll.refresh}
+                onError={message => notify(message, 'error')}
+              />
+            ))}
+          </div>
         )}
       </section>
     </div>

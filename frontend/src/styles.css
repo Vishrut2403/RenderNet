@@ -1,22 +1,25 @@
-/* Palette taken from the desktop wallpaper: flat warm grey, one steel-blue
-   accent. No gradients anywhere — surfaces are separated by hairlines. */
+/* Cool greys and one steel-blue accent, at the hue every terminal theme on this
+   desk sits near — Nord 264, Tokyo Night 280, these 266. The ladder from
+   background to hairline is deliberately wide: the ground drops away and the
+   panels, borders and status colours climb, so a surface edge is visible
+   without a shadow behind it. No gradients anywhere. */
 :root {
-  --bg: #2b2b2c;
-  --surface: #333334;
-  --surface-2: #3a3a3c;
-  --line: #454547;
-  --line-soft: #3d3d3f;
+  --bg: #171d2b;
+  --surface: #212838;
+  --surface-2: #2b3346;
+  --line: #414c66;
+  --line-soft: #333c51;
 
-  --text: #e4e4e4;
-  --text-2: #a8a8a9;
-  --text-3: #79797b;
+  --text: #eef2fc;
+  --text-2: #b6bfd4;
+  --text-3: #7e8799;
 
-  --accent: #709dc2;
-  --accent-dim: #4d7392;
+  --accent: #84b6e4;
+  --accent-dim: #5d8cb8;
 
-  --ok: #85a583;
-  --warn: #c2a56f;
-  --bad: #bd8181;
+  --ok: #7cc283;
+  --warn: #dfb264;
+  --bad: #e07d7d;
 
   --r: 5px;
 }
@@ -58,7 +61,7 @@ button, input, select { font: inherit; color: inherit; }
 .brand-sub { margin: 4px 0 28px; color: var(--text-3); font-size: 14px; }
 
 .content {
-  width: min(1060px, 100%);
+  width: min(1440px, 100%);
   margin: 0 auto;
   padding: 40px 32px 96px;
   flex: 1;
@@ -107,6 +110,7 @@ button, input, select { font: inherit; color: inherit; }
   position: absolute; left: 0; right: 0; bottom: -21px;
   height: 1px;
   background: transparent;
+  transition: background .14s;
 }
 
 .tabs-main button.active::after { background: var(--text); }
@@ -177,7 +181,28 @@ button, input, select { font: inherit; color: inherit; }
   color: var(--text-3); font-weight: 500;
 }
 
-.upload-panel { display: flex; flex-direction: column; gap: 18px; }
+/* What to render on one side, how to run it on the other; the file and the
+   submit span both. */
+.upload-panel {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 18px 28px;
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  align-items: start;
+}
+
+.upload-what, .upload-how {
+  display: flex; flex-direction: column; gap: 18px;
+  min-width: 0;
+}
+
+@media (min-width: 900px) {
+  .upload-panel { grid-template-columns: 1.15fr 1fr; }
+  .dropzone, .upload-go { grid-column: 1 / -1; }
+}
+
+.upload-go { display: flex; flex-direction: column; gap: 14px; align-items: start; }
 
 .field { display: block; margin-bottom: 14px; }
 .field-label { display: block; margin-bottom: 6px; font-size: 13px; color: var(--text-3); }
@@ -355,7 +380,7 @@ button, input, select { font: inherit; color: inherit; }
 .progress-fill {
   height: 100%;
   background: var(--accent);
-  transition: width .35s ease;
+  transition: width .35s ease, background .3s ease;
 }
 
 .progress-done { background: var(--ok); }
@@ -543,18 +568,15 @@ button, input, select { font: inherit; color: inherit; }
 .check {
   display: flex;
   gap: 10px;
-  align-items: flex-start;
-  padding: 12px 14px;
+  align-items: center;
+  padding: 11px 14px;
   border: 1px solid var(--line);
   border-radius: var(--r);
   background: var(--surface-2);
   cursor: pointer;
 }
 
-.check input { margin-top: 3px; flex: none; }
-.check > span { display: flex; flex-direction: column; gap: 3px; }
-.check strong { font-size: 14px; font-weight: 600; }
-.check-hint { font-size: 13px; color: var(--text-3); line-height: 1.5; }
+.check input { flex: none; }
 
 .modal-note {
   margin: 0 0 1.1rem;
@@ -644,3 +666,65 @@ button, input, select { font: inherit; color: inherit; }
 .problems { border-color: var(--bad); }
 .problems ul { margin: 0; padding-left: 18px; color: var(--text-2); font-size: 14px; }
 .problems li { margin-top: 6px; line-height: 1.5; }
+
+/* ---------- motion ----------
+
+   Only for things arriving. A card that is merely re-rendered by a poll keeps
+   its key and so never replays this; what animates is a job that was not there
+   a moment ago, or a frame that has just been fetched. */
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(3px); }
+  to   { opacity: 1; transform: none; }
+}
+
+@keyframes appear {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.job, .panel { animation: rise .18s ease-out both; }
+
+.frame-grid a { animation: appear .22s ease-out both; }
+
+/* Frames are fetched in one go, so a flat fade would land as a single flash.
+   The stagger is capped: past a dozen the wait would be worse than the pop. */
+.frame-grid a:nth-child(2) { animation-delay: .02s; }
+.frame-grid a:nth-child(3) { animation-delay: .04s; }
+.frame-grid a:nth-child(4) { animation-delay: .06s; }
+.frame-grid a:nth-child(5) { animation-delay: .08s; }
+.frame-grid a:nth-child(6) { animation-delay: .10s; }
+.frame-grid a:nth-child(7) { animation-delay: .12s; }
+.frame-grid a:nth-child(8) { animation-delay: .14s; }
+.frame-grid a:nth-child(n+9) { animation-delay: .16s; }
+
+.preview img { animation: appear .25s ease-out both; }
+
+.alert, .job-note, .job-error { animation: appear .16s ease-out both; }
+
+/* Asked for rather than assumed: a render farm is watched for a long time, and
+   somebody who has turned motion down means it. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+  }
+}
+
+/* ---------- wide screens ----------
+
+   Columns rather than a grid: cards differ wildly in height — a failure is four
+   lines, a finished job carries a thumbnail and a metrics row — and a grid row
+   leaves the short one trailing a gap the height of its neighbour. 560 is the
+   narrowest a metrics row reads at. */
+
+.job-list {
+  columns: 560px;
+  column-gap: 14px;
+}
+
+.job-list > * {
+  break-inside: avoid;
+  margin-bottom: 14px;
+}

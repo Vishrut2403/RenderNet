@@ -2,9 +2,9 @@
 // Ordered deliberately: the first one a job selects becomes its primary, and a
 // browser can show a PNG or a JPEG where it cannot show an EXR.
 export const FORMATS = [
-  { id: 'PNG', label: 'PNG — lossless, 8-bit', extension: '.png' },
-  { id: 'JPEG', label: 'JPEG — small, lossy', extension: '.jpg' },
-  { id: 'OPEN_EXR', label: 'OpenEXR — for compositing', extension: '.exr' }
+  { id: 'PNG', label: 'PNG', extension: '.png' },
+  { id: 'JPEG', label: 'JPEG', extension: '.jpg' },
+  { id: 'OPEN_EXR', label: 'OpenEXR', extension: '.exr' }
 ];
 
 export const FORMAT_IDS = FORMATS.map(format => format.id);
@@ -12,10 +12,10 @@ export const FORMAT_IDS = FORMATS.map(format => format.id);
 // A useful few of Blender's eleven: lossless by default, one lossy choice for
 // when the frames are only ever going to be watched.
 export const EXR_CODECS = [
-  { id: 'ZIP', label: 'ZIP — lossless' },
-  { id: 'PIZ', label: 'PIZ — lossless, smaller on grainy renders' },
-  { id: 'DWAA', label: 'DWAA — lossy, far smaller' },
-  { id: 'NONE', label: 'None — uncompressed' }
+  { id: 'ZIP', label: 'ZIP' },
+  { id: 'PIZ', label: 'PIZ' },
+  { id: 'DWAA', label: 'DWAA' },
+  { id: 'NONE', label: 'None' }
 ];
 
 export const EXR_DEPTHS = [

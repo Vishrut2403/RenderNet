@@ -141,194 +141,175 @@ export function Upload({ onSubmitted, notify }) {
         ) : (
           <>
             <strong>Drop a .blend file here</strong>
-            <span>or click to browse — up to 500MB</span>
+            <span>or click to browse</span>
           </>
         )}
       </div>
 
-      <div className="row">
-        <Field
-          label="Start frame"
-          type="number"
-          min="0"
-          value={frameStart}
-          onChange={e => setFrameStart(e.target.value)}
-          required
-        />
-        <Field
-          label="End frame"
-          type="number"
-          min="0"
-          value={frameEnd}
-          onChange={e => setFrameEnd(e.target.value)}
-          required
-        />
-        <label className="field">
-          <span className="field-label">Render engine</span>
-          <select
-            value={engine}
-            onChange={e => setEngine(e.target.value)}
-            disabled={engines.length === 0}
-          >
-            {engines.map(({ id, label }) => (
-              <option key={id} value={id}>{label}</option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      <div className="row">
-        <Field
-          label="Resolution %"
-          type="number"
-          min="1"
-          max="100"
-          value={resolutionPercent}
-          onChange={e => setResolutionPercent(e.target.value)}
-          required
-        />
-        <Field
-          label="Samples"
-          type="number"
-          min="1"
-          placeholder="scene default"
-          value={samples}
-          onChange={e => setSamples(e.target.value)}
-          disabled={engine !== 'CYCLES'}
-        />
-      </div>
-
-      <fieldset className="formats">
-        <legend className="field-label">Output formats</legend>
-        {formats.map(({ id, label }) => (
-          <label key={id} className="check check-inline">
-            <input
-              type="checkbox"
-              checked={chosen.includes(id)}
-              onChange={e => setChosen(current => (
-                e.target.checked ? [...current, id] : current.filter(name => name !== id)
-              ))}
-            />
-            <span>{label}</span>
-          </label>
-        ))}
-      </fieldset>
-
-      {chosen.includes('OPEN_EXR') && (
+      <div className="upload-what">
         <div className="row">
+          <Field
+            label="Start frame"
+            type="number"
+            min="0"
+            value={frameStart}
+            onChange={e => setFrameStart(e.target.value)}
+            required
+          />
+          <Field
+            label="End frame"
+            type="number"
+            min="0"
+            value={frameEnd}
+            onChange={e => setFrameEnd(e.target.value)}
+            required
+          />
           <label className="field">
-            <span className="field-label">EXR compression</span>
-            <select value={exrCodec} onChange={e => setExrCodec(e.target.value)}>
-              {exrCodecs.map(({ id, label }) => (
-                <option key={id} value={id}>{label}</option>
-              ))}
-            </select>
-          </label>
-          <label className="field">
-            <span className="field-label">EXR colour depth</span>
-            <select value={exrDepth} onChange={e => setExrDepth(e.target.value)}>
-              {exrDepths.map(({ id, label }) => (
+            <span className="field-label">Render engine</span>
+            <select
+              value={engine}
+              onChange={e => setEngine(e.target.value)}
+              disabled={engines.length === 0}
+            >
+              {engines.map(({ id, label }) => (
                 <option key={id} value={id}>{label}</option>
               ))}
             </select>
           </label>
         </div>
-      )}
 
-      {chosen.includes('JPEG') && (
         <div className="row">
           <Field
-            label="JPEG quality"
+            label="Resolution %"
             type="number"
             min="1"
             max="100"
-            value={jpegQuality}
-            onChange={e => setJpegQuality(e.target.value)}
+            value={resolutionPercent}
+            onChange={e => setResolutionPercent(e.target.value)}
+            required
+          />
+          <Field
+            label="Samples"
+            type="number"
+            min="1"
+            placeholder="scene default"
+            value={samples}
+            onChange={e => setSamples(e.target.value)}
+            disabled={engine !== 'CYCLES'}
           />
         </div>
-      )}
 
-      <label className="check">
-        <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} />
-        <span>
-          <strong>Urgent</strong>
-          <span className="check-hint">
-            Goes ahead of everything queued, and pauses whatever is rendering now.
-            The paused job keeps its finished frames and carries on afterwards.
-          </span>
-        </span>
-      </label>
+        <fieldset className="formats">
+          <legend className="field-label">Output formats</legend>
+          {formats.map(({ id, label }) => (
+            <label key={id} className="check check-inline">
+              <input
+                type="checkbox"
+                checked={chosen.includes(id)}
+                onChange={e => setChosen(current => (
+                  e.target.checked ? [...current, id] : current.filter(name => name !== id)
+                ))}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </fieldset>
 
-      {single && (
-        <label className="field">
-          <span className="field-label">Split this frame across machines</span>
-          <select value={tiles} onChange={e => setTiles(Number(e.target.value))}>
-            <option value={0}>No — one machine renders it</option>
-            {[2, 4, 6, 9, 12, 16].map(count => (
-              <option key={count} value={count}>{count} tiles</option>
-            ))}
-          </select>
-          <span className="field-hint">
-            A single heavy still is cut into regions that render at the same time
-            on different machines, and put back together into one image. Worth it
-            only when more than one machine is free.
-          </span>
+        {chosen.includes('OPEN_EXR') && (
+          <div className="row">
+            <label className="field">
+              <span className="field-label">EXR compression</span>
+              <select value={exrCodec} onChange={e => setExrCodec(e.target.value)}>
+                {exrCodecs.map(({ id, label }) => (
+                  <option key={id} value={id}>{label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span className="field-label">EXR colour depth</span>
+              <select value={exrDepth} onChange={e => setExrDepth(e.target.value)}>
+                {exrDepths.map(({ id, label }) => (
+                  <option key={id} value={id}>{label}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+
+        {chosen.includes('JPEG') && (
+          <div className="row">
+            <Field
+              label="JPEG quality"
+              type="number"
+              min="1"
+              max="100"
+              value={jpegQuality}
+              onChange={e => setJpegQuality(e.target.value)}
+            />
+          </div>
+        )}
+      </div>
+
+      <div className="upload-how">
+        <label className="check">
+          <input type="checkbox" checked={urgent} onChange={e => setUrgent(e.target.checked)} />
+          <span>Urgent</span>
         </label>
-      )}
 
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={testFirst}
-          disabled={frameCount < 2}
-          onChange={e => setTestFirst(e.target.checked)}
-        />
-        <span>
-          <strong>Render frame {frameStart} first and wait</strong>
-          <span className="check-hint">
-            The rest of the range is held back until you have looked at that frame
-            and approved it, so a wrong camera or a missing material costs one
-            frame rather than the whole range.
-          </span>
-        </span>
-      </label>
+        {single && (
+          <label className="field">
+            <span className="field-label">Split this frame across machines</span>
+            <select value={tiles} onChange={e => setTiles(Number(e.target.value))}>
+              <option value={0}>No</option>
+              {[2, 4, 6, 9, 12, 16].map(count => (
+                <option key={count} value={count}>{count} tiles</option>
+              ))}
+            </select>
+          </label>
+        )}
 
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={skipAssetCheck}
-          onChange={e => setSkipAssetCheck(e.target.checked)}
-        />
-        <span>
-          <strong>Render even if files are missing</strong>
-          <span className="check-hint">
-            The scene is opened before it is queued to see whether it reaches for
-            textures it did not bring. Tick this to render anyway — untextured, if
-            they really are missing.
-          </span>
-        </span>
-      </label>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={testFirst}
+            disabled={frameCount < 2}
+            onChange={e => setTestFirst(e.target.checked)}
+          />
+          <span>Render frame {frameStart} first and wait</span>
+        </label>
 
-      <p className="hint">
-        {frameCount > 0
-          ? `${frameCount} frame${frameCount === 1 ? '' : 's'} will be rendered`
-          : 'Invalid frame range'}
-        {Number(resolutionPercent) !== 100 && ` at ${resolutionPercent}% resolution`}
-        {engine === 'CYCLES' && samples && ` with ${samples} samples`}
-        {chosen.includes('OPEN_EXR') && `, EXR at ${exrDepth}-bit ${exrCodec}`}
-        {chosen.includes('JPEG') && `, JPEG at quality ${jpegQuality}`}
-      </p>
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={skipAssetCheck}
+            onChange={e => setSkipAssetCheck(e.target.checked)}
+          />
+          <span>Render even if files are missing</span>
+        </label>
+      </div>
 
-      <Alert>{error}</Alert>
+      <div className="upload-go">
+        <p className="hint">
+          {frameCount > 0
+            ? `${frameCount} frame${frameCount === 1 ? '' : 's'} will be rendered`
+            : 'Invalid frame range'}
+          {Number(resolutionPercent) !== 100 && ` at ${resolutionPercent}% resolution`}
+          {engine === 'CYCLES' && samples && ` with ${samples} samples`}
+          {chosen.includes('OPEN_EXR') && `, EXR at ${exrDepth}-bit ${exrCodec}`}
+          {chosen.includes('JPEG') && `, JPEG at quality ${jpegQuality}`}
+        </p>
 
-      {progress !== null && (
-        <ProgressBar value={progress} label="Uploading" />
-      )}
+        <Alert>{error}</Alert>
 
-      <Button type="submit" variant="primary" busy={progress !== null}
-        disabled={!file || !engine || chosen.length === 0}>
-        Queue render
-      </Button>
+        {progress !== null && (
+          <ProgressBar value={progress} label="Uploading" />
+        )}
+
+        <Button type="submit" variant="primary" busy={progress !== null}
+          disabled={!file || !engine || chosen.length === 0}>
+          Queue render
+        </Button>
+      </div>
     </form>
   );
 }

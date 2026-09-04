@@ -81,14 +81,16 @@ export function Jobs({ notify }) {
           {counts.all ? 'Try a different filter.' : 'Upload a .blend file to queue your first render.'}
         </EmptyState>
       ) : (
-        jobs.map(job => (
-          <JobCard
-            key={job.id}
-            job={job}
-            onChanged={refresh}
-            onError={message => notify(message, 'error')}
-          />
-        ))
+        <div className="job-list">
+          {jobs.map(job => (
+            <JobCard
+              key={job.id}
+              job={job}
+              onChanged={refresh}
+              onError={message => notify(message, 'error')}
+            />
+          ))}
+        </div>
       )}
 
       {nextBefore && (

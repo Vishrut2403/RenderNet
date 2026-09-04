@@ -252,9 +252,11 @@ cd backend  && npm test        # 534 checks
 npm run lint                   # from the root, covers both packages
 ```
 
-`tools/demo/` fills a farm with work to look at: `seed.mjs` submits jobs against
-a running server in every state the UI can show, using a turntable scene the two
-Python scripts build. Point it at a throwaway `DATA_DIR` rather than a real one.
+`npm run demo` from the root brings up a farm to look at — its own data
+directory and database, filled on first run with a job in every state the UI can
+show, from a turntable scene under `tools/demo/`. It runs in the foreground, so
+Ctrl+C stops it; `npm run demo:seed` adds more work and `npm run demo:reset`
+throws it all away.
 
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
