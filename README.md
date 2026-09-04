@@ -16,7 +16,74 @@ flowchart LR
     A -->|"ZIP download"| B
 ```
 
-The renderer runs as a separate `RenderWorker` reporting back over HTTP rather than through in-process callbacks — the same boundary a worker on another machine would use. Jobs are tracked frame by frame in SQLite, so a render interrupted by the machine being switched off resumes at the frames it never delivered instead of starting over.
+The renderer runs as a separate `RenderWorker` reporting back over HTTP rather than through in-process callbacks — the same boundary a worker on another machine would use.
+
+<!-- Screenshots: drop them in here as ![Jobs](docs/jobs.png) once taken.
+     tools/demo/ builds a scene and fills a farm with jobs to photograph. -->
+
+---
+
+## What it does
+
+- Takes a `.blend` from a browser — engine, frame range, resolution, samples,
+  output formats — and hands the frames back as a ZIP or as a video.
+- Spreads a job across as many machines as you point at it, a frame at a time.
+- Splits a single heavy still into tiles rendered at once and puts it back together.
+- Renders one frame first and holds the rest until its owner approves it.
+- Opens a scene before queueing it to see whether it brought its textures.
+- Survives the workstation being switched off mid-render.
+- Accounts, per-user disk quotas, per-machine credentials, scoped download
+  links, and HTTPS when you give it a certificate.
+
+---
+
+## How it works
+
+The parts that took the most thought.
+
+**Frames are claimed, not handed out.** A worker asks for one frame and holds a
+claim on it with an expiry, renewed while it renders. A worker that dies loses
+the claim and the frame returns to circulation; a frame can only be uploaded by
+whoever holds the claim on it. The server, not the worker, decides when a job is
+done — only the frames on disk are downloadable, and a worker that died halfway
+is in no position to report.
+
+**An interrupted render resumes rather than restarting.** Frames are tracked
+individually, so switching the machine off mid-job costs the frame in flight,
+not the evening. A job is only given up on if it is interrupted repeatedly
+*without ever completing a frame*.
+
+**Renderers are separate processes.** The server starts `WORKER_SLOTS` of them
+and restarts any that die. A worker with nothing left to claim starts the next
+queued job rather than waiting, so the tail of one job does not leave the farm
+idle. A second machine joins by running `npm run worker` against the same API:
+it downloads each scene over HTTP and renders in its own scratch space. Every
+worker says which engines it offers, and is passed over for jobs using anything
+else — otherwise a machine that cannot render a job's engine would take its
+frames, fail every attempt, and stop the job for everybody.
+
+**Every machine renders under its own credential.** The workstation mints one
+for itself at each start, so it needs nothing configured; every other machine is
+issued one that is shown once and can be revoked on its own. A machine may only
+touch the claims it holds, and may only download the scenes it is rendering.
+
+**A heavy still can be split across machines.** A single frame submitted in
+tiles is cut into regions, each claimed and rendered like any other unit of
+work, and Blender puts them back into one image once they have all arrived. It
+only pays off with more than one machine free: splitting a still on one
+workstation is the same work with more steps.
+
+**A test frame can be rendered first.** The rest of the range is held back until
+its owner has looked at that frame and approved it, so a wrong camera or a
+missing material costs one frame rather than five hundred. The farm renders
+whatever is queued behind it while it waits.
+
+**The list is paged and big uploads are chunked.** Jobs are read twenty-five at
+a time through a cursor on the job id rather than an offset, so a job arriving
+mid-scroll cannot push a row into view twice; the filter counts are worked out
+over every job, so they stay right whatever is on screen. A file over 32MB goes
+up in pieces, each answered with how much the server now holds, so a transfer
+that dies carries on from that byte.
 
 ---
 
@@ -43,41 +110,23 @@ BLENDER_PATH=C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 CYCLES_DEVICE=CUDA
 ```
 
-`backend/.env.example` is the same file with every option and its default in
-it; copy that rather than typing this out.
+Copy `backend/.env.example`, which carries every option and its default, rather
+than typing this out. `BLENDER_PATH` is required on Windows and optional
+wherever `blender` is on `PATH`; drop `CYCLES_DEVICE` without an NVIDIA card, or
+use `OPTIX` on RTX.
 
-`BLENDER_PATH` is required on Windows, where Blender is not on `PATH` — match the
-version folder actually installed. On Linux and macOS it can be omitted if
-`blender` is on `PATH`. Drop `CYCLES_DEVICE` without an NVIDIA card, or use
-`OPTIX` on RTX.
-
-**Without `SIGNUP_CODE` nobody can create an account.** That is deliberate —
-anyone who can reach the port could otherwise sign up — but it does have to be set
+**Without `SIGNUP_CODE` nobody can create an account** — deliberate, since
+anyone who can reach the port could otherwise sign up, but it has to be set
 before your team can register.
 
-**3. Start it and read the output**
+**3. Start it** with `npm start` from `backend/`. The output tells you whether
+step 2 worked — it names the Blender it found, the data directory and the URL.
 
-```bash
-cd ../backend && npm start
-```
-
-All three lines matter; they tell you whether step 2 worked:
-
-```
-Blender found: /usr/bin/blender
-    Port: 5500  , BlenderPath: Found
-    Data:  /home/you/RenderNet/backend
-    UI:    http://localhost:5500
-```
-
-**4. Take the admin account**
-
-Open the UI and sign in as `admin` / `admin123`. It immediately requires a new
-password and refuses everything else until one is set — that is the intended path,
-not a fault. The same applies to anyone whose password an admin resets later.
-
-Five wrong passwords lock a username out for fifteen minutes; restarting the
-server clears it.
+**4. Take the admin account.** Sign in as `admin` / `admin123`. It immediately
+requires a new password and refuses everything else until one is set — that is
+the intended path, not a fault, and the same applies to anyone whose password an
+admin resets later. Five wrong passwords lock a username out for fifteen
+minutes; restarting the server clears it.
 
 ---
 
@@ -109,21 +158,17 @@ powercfg /change hibernate-timeout-ac 0
 | Arguments | `C:\RenderNet\backend\src\index.js` |
 | Settings | tick *If the task fails, restart every 1 minute* |
 
-Use `node.exe` rather than `npm`, which is a `.cmd` wrapper and behaves awkwardly
-under Task Scheduler. *At log on* rather than *At startup* keeps the server in the
-interactive session, where GPU rendering behaves as it does when Blender is
-launched by hand. The working directory does not matter: data paths and `.env` are
-resolved from the source tree, not from wherever the task starts.
-
-The database is snapshotted to `backups/` on every start, keeping the last
-seven.
+Use `node.exe` rather than `npm`, a `.cmd` wrapper that behaves awkwardly under
+Task Scheduler, and *At log on* rather than *At startup*, which keeps the server
+in the interactive session where GPU rendering behaves as it does by hand. The
+working directory does not matter: data paths and `.env` resolve from the source
+tree. The database is snapshotted to `backups/` on every start, keeping seven.
 
 Nothing reads that window, so everything printed also goes to a dated file in
-`logs/` under the data directory, kept for a month, along with a line per
-request recording who did what. The job list the dashboard polls is left out, or
-it would be the whole file. An admin can read them from the
-Logs entry in the account menu, or over the API: `GET /api/logs` lists them,
-`GET /api/logs/<name>` returns the last 200 lines, `?lines=1000` for more.
+`logs/` under the data directory, kept for a month, with a line per request
+recording who did what. The job list the dashboard polls is left out, or it
+would be the whole file. An admin reads them from the Logs entry in the account
+menu, or over the API at `GET /api/logs`.
 
 ---
 
@@ -152,63 +197,31 @@ A self-signed certificate means each browser is warned once; a worker on another
 machine needs `NODE_EXTRA_CA_CERTS=/path/to/tls-cert.pem` to trust it.
 
 To confirm the workstation is reachable, open `http://rendernet:5500/api/health`
-from a *different* machine. `{"status":"ok","blenderAvailable":true}` means the
-firewall rule and the name are both working. It answers `degraded` instead when
-Blender is missing or the disk is too full to render, and signing in first adds
-the queue depth, the free disk, every job in flight with the worker holding each
-frame, and the last failure — one URL that answers "is the farm actually
-working?" rather than "is the process up?".
+from a *different* machine: `{"status":"ok","blenderAvailable":true}` means the
+firewall rule and the name both work, and `degraded` means Blender is missing or
+the disk is too full to render. Signed in it also carries the queue depth, free
+disk, every job in flight with the worker holding each frame, and the last
+failure — one URL answering "is the farm working?" rather than "is the process
+up?".
 
 ---
 
-## Behaviour worth knowing
+## Worth knowing
 
 Things that would otherwise surprise you.
 
-- **An interrupted render resumes rather than restarting.** Frames are tracked
-  individually, so switching the machine off mid-job costs the frame in flight,
-  not the evening. A job is only given up on if it is interrupted repeatedly
-  *without ever completing a frame*.
 - **A failed frame gets three attempts**, since causes like a momentary memory
   shortage rarely repeat. But a job whose first three frames all fail stops
   immediately instead of working through the range.
-- **Renderers are separate processes.** The server starts `WORKER_SLOTS` of
-  them and restarts any that die. They share whichever jobs are running, and a
-  worker with nothing left to claim starts the next queued job rather than
-  waiting, so the tail of one job does not leave the rest of the farm idle.
-  A second machine joins by running `npm run worker` against the same API with
-  a `WORKER_TOKEN` issued to it under Admin: it downloads each scene over HTTP
-  and renders in its own scratch space.
-- **Every machine renders under its own credential.** The workstation mints one
-  for itself at each start, so it needs nothing configured; every other machine
-  is issued one that is shown once and can be revoked on its own, without
-  disturbing the rest of the farm. A machine may only touch the claims it holds,
-  and may only download the scenes it is rendering.
-- **A heavy still can be split across machines.** A single frame submitted in
-  tiles is cut into regions, each claimed and rendered like any other unit of
-  work, and Blender puts them back into one image when they have all arrived.
-  It only pays off with more than one machine free: splitting a still on one
-  workstation is the same work with more steps.
-- **A test frame can be rendered first.** A job submitted with one renders that
-  frame alone and then stops, holding the rest of the range until its owner has
-  looked at the frame and approved it. A wrong camera or a missing material
-  costs one frame rather than five hundred, and the farm renders whatever is
-  queued behind it while it waits.
-- **A frame only goes to a machine that can render it.** Every worker says which
-  engines it offers when it asks for work, and is passed over for jobs using
-  anything else. Without that, a machine whose Blender cannot render a job's
-  engine would take its frames, fail all three attempts on each, and the
-  fail-fast would stop the job for everybody. A job nobody present can render
-  waits rather than failing, and health says so by name.
-- **Frames are claimed, not handed out.** A worker asks for one frame at a time
-  and holds a claim on it with an expiry, renewed while the frame renders. A
-  worker that dies loses its claim and the frame returns to circulation, and a
-  frame can only be uploaded by whoever holds the claim on it. The server, not
-  the worker, decides when a job is finished: only the frames on disk are
-  downloadable, and a worker that died halfway is in no position to report.
-- **Each user holds 10 GB** across uploads and frames, and is expected to delete
-  finished jobs once downloaded. The 14-day sweep is a backstop, not the limit.
-  Anything still queued or rendering is never swept, however old.
+- **A scene is opened before it is queued** to see whether it reaches for
+  textures, linked files or caches it did not bring. Those live on the artist's
+  own machine, so on the farm they are simply absent and the frames come out
+  untextured rather than failing. A job missing files is stopped with the list
+  and told to pack them (`File → External Data → Pack Resources`). Tick "render
+  even if files are missing" to go ahead anyway. If the check cannot run, the
+  job renders: a broken check must not be able to stop the farm.
+- **Rerunning a job retries only the frames that failed**, keeping the ones that
+  worked and reusing the uploaded `.blend`.
 - **Any user can mark a job urgent**, which pauses whatever is rendering. The
   paused job keeps its finished frames and carries on afterwards, and both cards
   say what happened — visible rather than restricted.
@@ -216,55 +229,30 @@ Things that would otherwise surprise you.
   scene that came out wrong is caught at frame 30 rather than at frame 500.
 - **A queued job is told roughly when it will start**, not just its position.
   Every frame's render time is recorded, so the estimate is the median of what
-  frames have actually cost on this machine, shared out between the workers
-  running. A finished job also reports its typical and slowest frame, worked out
-  once per job and kept until one of that job's own frames moves — the job list
-  is polled every couple of seconds and the frames table only ever grows.
+  frames have actually cost on this machine, shared between the workers running.
+  A finished job also reports its typical and slowest frame.
 - **Several output formats can be ticked at once.** Blender renders the frame
-  once and writes each one, so a second format costs disk rather than time, and
-  they all arrive in the same ZIP. The first of them is what previews show,
-  which is why a browser-friendly one sorts ahead of OpenEXR.
-- **How each format is written is a choice, not the scene's.** OpenEXR takes a
-  codec and a colour depth, JPEG a quality. EXR defaults to half float rather
-  than the 32-bit a scene usually carries, which is the same picture at half the
-  bytes on a disk several people share. Depth is one Blender setting shared by
-  every format, so each is written with its own rather than inheriting the last.
-- **A video of the finished frames can be made on request**, since people want
-  to watch an animation rather than scrub 300 files. It is one ffmpeg pass over
-  the frames that arrived, so a job with gaps still makes a video of what it
-  has, and it lands beside the frames and travels in the same ZIP. Asked for
-  rather than automatic: encoding wants the same processor the renders do.
-  Without ffmpeg installed the farm renders exactly as before and says it cannot
-  make one.
-- **A scene is opened before it is queued** to see whether it reaches for
-  textures, linked files or caches it did not bring. Those live on the artist's
-  own machine, so on the farm they are simply absent and the frames come out
-  untextured rather than failing. A job missing files is stopped with the list
-  and told to pack them (`File → External Data → Pack Resources`), before a
-  worker has spent anything on it. Tick "render even if files are missing" to
-  go ahead anyway. If the check cannot run, the job renders: a broken check must
-  not be able to stop the farm.
-- **Rerunning a job retries only the frames that failed**, keeping the ones that
-  worked. The uploaded `.blend` is reused, so nothing is uploaded twice.
+  once and writes each, so a second format costs disk rather than time and they
+  all arrive in the same ZIP. How each is written is a choice rather than the
+  scene's: OpenEXR takes a codec and a colour depth — half float by default,
+  the same picture at half the bytes — and JPEG a quality.
+- **A video of the finished frames can be made on request.** It is one ffmpeg
+  pass over the frames that arrived, so a job with gaps still makes a video of
+  what it has. Asked for rather than automatic: encoding wants the same
+  processor the renders do. Without ffmpeg the farm renders exactly as before
+  and says it cannot make one.
 - **Resolution and Cycles samples can be overridden at submit time**, for a
-  cheap test pass without editing the scene. Blender has no flag for either, so
-  they are applied to the loaded scene before the frame is rendered.
-- **The disk itself is guarded, not just each person's share.** Below
-  `MIN_FREE_BYTES` uploads are refused and queued work is held rather than
-  failed, because deleting one finished job is all it takes to free it.
-- **The browser can notify you when a job lands**, since people submit in the
-  evening and rarely watch the tab. It asks the first time you queue something.
+  cheap test pass without editing the scene.
+- **Each user holds 10 GB** across uploads and frames, and is expected to delete
+  finished jobs once downloaded. The 14-day sweep is a backstop, not the limit;
+  anything still queued or rendering is never swept, however old. The disk
+  itself is guarded too: below `MIN_FREE_BYTES` uploads are refused and queued
+  work is held rather than failed, because deleting one finished job frees it.
 - **A download link carries a token for that job alone**, good for ten minutes,
   because a link is copied, bookmarked and left in history. The session token is
   refused in a query string: it goes in the `Authorization` header or nowhere.
-- **A file over 32MB goes up in pieces**, and the server answers each one with
-  how much it now holds. A transfer that dies - a closed laptop, a dropped
-  connection - carries on from that byte rather than starting the scene again.
-  Anything smaller is one request, as before.
-- **The job list is paged**, twenty-five at a time, oldest reachable through
-  "show older". The counts on the filter tabs and the dashboard's totals are
-  worked out over every job on the server, so they stay right whatever is on
-  screen.
+- **The browser can notify you when a job lands**, since people submit in the
+  evening and rarely watch the tab.
 - **Cancelling deletes that job's files.** A single request carries 500MB, a
   chunked one 2GB, and a job 2000 frames; engines are `CYCLES`,
   `BLENDER_EEVEE` and `BLENDER_WORKBENCH`, and output formats are PNG, JPEG and
@@ -318,18 +306,22 @@ cd backend  && npm test        # 534 checks
 npm run lint                   # from the root, covers both packages
 ```
 
+`tools/demo/` fills a farm with work to look at: `seed.mjs` submits jobs against
+a running server in every state the UI can show, using a turntable scene the two
+Python scripts build. Point it at a throwaway `DATA_DIR` rather than a real one.
+
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts. A stand-in for Blender covers everything
 that only needs frames on disk, so without a real one installed just 13 of the
 534 skip — what is left are the checks on what Blender itself writes.
 
-CI runs the whole suite on Linux and Windows against Node 22 and 24, which is the
-only place it is exercised on the platform the workstation actually runs. Windows
-differs where it matters most: it has no signals, so cancelling a render means
-killing a process tree with `taskkill` rather than escalating SIGTERM to SIGKILL.
-That path and the quoting that carries a Blender path through `cmd.exe` are also
-checked directly from any OS, so a mistake in either shows up before CI does.
+CI runs the whole suite on Linux and Windows against Node 22 and 24 — the only
+place it meets the platform the workstation actually runs. Windows differs where
+it matters most: with no signals, cancelling a render means killing a process
+tree with `taskkill` rather than escalating SIGTERM to SIGKILL. That path and the
+quoting that carries a Blender path through `cmd.exe` are also checked directly
+from any OS, so a mistake in either shows up before CI does.
 
 ---
 

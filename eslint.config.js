@@ -23,7 +23,7 @@ export default [
   },
 
   {
-    files: ['backend/**/*.{js,mjs}'],
+    files: ['backend/**/*.{js,mjs}', 'tools/**/*.{js,mjs}'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'module',
