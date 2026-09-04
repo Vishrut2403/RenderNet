@@ -4,6 +4,8 @@
 
 A self-hosted Blender render farm for a shared workstation. One machine does the rendering; everyone else submits `.blend` files and collects finished frames from a browser, with nothing to install.
 
+![The job list, with a render in flight and finished jobs above it](docs/jobs.png)
+
 ```mermaid
 flowchart LR
     B[Browser] -->|"upload .blend"| A[Express API]
@@ -17,9 +19,6 @@ flowchart LR
 ```
 
 The renderer runs as a separate `RenderWorker` reporting back over HTTP rather than through in-process callbacks — the same boundary a worker on another machine would use.
-
-<!-- Screenshots: drop them in here as ![Jobs](docs/jobs.png) once taken.
-     tools/demo/ builds a scene and fills a farm with jobs to photograph. -->
 
 ---
 
@@ -43,10 +42,9 @@ The parts that took the most thought.
 
 **Frames are claimed, not handed out.** A worker asks for one frame and holds a
 claim on it with an expiry, renewed while it renders. A worker that dies loses
-the claim and the frame returns to circulation; a frame can only be uploaded by
-whoever holds the claim on it. The server, not the worker, decides when a job is
-done — only the frames on disk are downloadable, and a worker that died halfway
-is in no position to report.
+the claim and the frame returns to circulation, and only the holder may upload
+it. The server decides when a job is done, not the worker — a worker that died
+halfway is in no position to report.
 
 **An interrupted render resumes rather than restarting.** Frames are tracked
 individually, so switching the machine off mid-job costs the frame in flight,
@@ -54,13 +52,12 @@ not the evening. A job is only given up on if it is interrupted repeatedly
 *without ever completing a frame*.
 
 **Renderers are separate processes.** The server starts `WORKER_SLOTS` of them
-and restarts any that die. A worker with nothing left to claim starts the next
-queued job rather than waiting, so the tail of one job does not leave the farm
-idle. A second machine joins by running `npm run worker` against the same API:
-it downloads each scene over HTTP and renders in its own scratch space. Every
-worker says which engines it offers, and is passed over for jobs using anything
-else — otherwise a machine that cannot render a job's engine would take its
-frames, fail every attempt, and stop the job for everybody.
+and restarts any that die; one with nothing left to claim starts the next queued
+job rather than waiting. A second machine joins by running `npm run worker`
+against the same API, fetching each scene over HTTP. Every worker says which
+engines it offers and is passed over for jobs using anything else.
+
+![The dashboard, naming each machine and the frame it is holding](docs/dashboard.png)
 
 **Every machine renders under its own credential.** The workstation mints one
 for itself at each start, so it needs nothing configured; every other machine is
@@ -77,6 +74,8 @@ workstation is the same work with more steps.
 its owner has looked at that frame and approved it, so a wrong camera or a
 missing material costs one frame rather than five hundred. The farm renders
 whatever is queued behind it while it waits.
+
+![A job holding 47 frames back until its first is approved](docs/approval.png)
 
 **The list is paged and big uploads are chunked.** Jobs are read twenty-five at
 a time through a cursor on the job id rather than an offset, so a job arriving
@@ -180,6 +179,8 @@ Nothing to install.
 2. **Create account** — username, password, and the signup code
 3. Sign in and upload a `.blend`
 
+![The upload form: frame range, engine, formats, tiling and the test frame](docs/upload.png)
+
 Jobs belong to the account rather than the machine, so someone can submit from one
 computer and download from another.
 
@@ -203,62 +204,6 @@ the disk is too full to render. Signed in it also carries the queue depth, free
 disk, every job in flight with the worker holding each frame, and the last
 failure — one URL answering "is the farm working?" rather than "is the process
 up?".
-
----
-
-## Worth knowing
-
-Things that would otherwise surprise you.
-
-- **A failed frame gets three attempts**, since causes like a momentary memory
-  shortage rarely repeat. But a job whose first three frames all fail stops
-  immediately instead of working through the range.
-- **A scene is opened before it is queued** to see whether it reaches for
-  textures, linked files or caches it did not bring. Those live on the artist's
-  own machine, so on the farm they are simply absent and the frames come out
-  untextured rather than failing. A job missing files is stopped with the list
-  and told to pack them (`File → External Data → Pack Resources`). Tick "render
-  even if files are missing" to go ahead anyway. If the check cannot run, the
-  job renders: a broken check must not be able to stop the farm.
-- **Rerunning a job retries only the frames that failed**, keeping the ones that
-  worked and reusing the uploaded `.blend`.
-- **Any user can mark a job urgent**, which pauses whatever is rendering. The
-  paused job keeps its finished frames and carries on afterwards, and both cards
-  say what happened — visible rather than restricted.
-- **A job card shows the last frame rendered while it is still rendering**, so a
-  scene that came out wrong is caught at frame 30 rather than at frame 500.
-- **A queued job is told roughly when it will start**, not just its position.
-  Every frame's render time is recorded, so the estimate is the median of what
-  frames have actually cost on this machine, shared between the workers running.
-  A finished job also reports its typical and slowest frame.
-- **Several output formats can be ticked at once.** Blender renders the frame
-  once and writes each, so a second format costs disk rather than time and they
-  all arrive in the same ZIP. How each is written is a choice rather than the
-  scene's: OpenEXR takes a codec and a colour depth — half float by default,
-  the same picture at half the bytes — and JPEG a quality.
-- **A video of the finished frames can be made on request.** It is one ffmpeg
-  pass over the frames that arrived, so a job with gaps still makes a video of
-  what it has. Asked for rather than automatic: encoding wants the same
-  processor the renders do. Without ffmpeg the farm renders exactly as before
-  and says it cannot make one.
-- **Resolution and Cycles samples can be overridden at submit time**, for a
-  cheap test pass without editing the scene.
-- **Each user holds 10 GB** across uploads and frames, and is expected to delete
-  finished jobs once downloaded. The 14-day sweep is a backstop, not the limit;
-  anything still queued or rendering is never swept, however old. The disk
-  itself is guarded too: below `MIN_FREE_BYTES` uploads are refused and queued
-  work is held rather than failed, because deleting one finished job frees it.
-- **A download link carries a token for that job alone**, good for ten minutes,
-  because a link is copied, bookmarked and left in history. The session token is
-  refused in a query string: it goes in the `Authorization` header or nowhere.
-- **The browser can notify you when a job lands**, since people submit in the
-  evening and rarely watch the tab.
-- **Cancelling deletes that job's files.** A single request carries 500MB, a
-  chunked one 2GB, and a job 2000 frames; engines are `CYCLES`,
-  `BLENDER_EEVEE` and `BLENDER_WORKBENCH`, and output formats are PNG, JPEG and
-  OpenEXR with ZIP, PIZ, DWAA or no compression.
-
-One thing it does not do: the frontend has no automated tests in the repo.
 
 ---
 
@@ -314,7 +259,8 @@ Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts. A stand-in for Blender covers everything
 that only needs frames on disk, so without a real one installed just 13 of the
-534 skip — what is left are the checks on what Blender itself writes.
+534 skip — what is left are the checks on what Blender itself writes. The
+frontend has no automated tests in the repo.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24 — the only
 place it meets the platform the workstation actually runs. Windows differs where
