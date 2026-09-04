@@ -277,7 +277,21 @@ async function upload(file, options, onProgress) {
 
   await sendChunks(file, session, onProgress);
 
-  const queued = await request(`/upload/session/${session.uploadId}/finish`, {
+  return queuePrepared(session.uploadId, options);
+}
+
+// Sends the file the moment it is chosen, whatever its size, leaving it on the
+// workstation to be read and then queued.
+async function prepareUpload(file, onProgress) {
+  const session = await openUpload(file);
+
+  await sendChunks(file, session, onProgress);
+
+  return session.uploadId;
+}
+
+async function queuePrepared(uploadId, options) {
+  const queued = await request(`/upload/session/${uploadId}/finish`, {
     method: 'POST',
     body: uploadSettings(options)
   });
@@ -380,5 +394,19 @@ export const api = {
   previewUrl: (id, delivered, token) =>
     `${downloadUrl(`/download/${id}/preview`, token)}&v=${delivered}`,
 
-  upload
+  upload,
+  prepareUpload,
+  queuePrepared,
+
+  inspectUpload: uploadId =>
+    request(`/upload/session/${uploadId}/inspect`, { method: 'POST' }),
+
+  // Nobody is waiting on the answer: a session left behind is swept anyway.
+  // Forgotten as well as dropped, or the next pick would try to carry on from
+  // bytes that are no longer there.
+  abortUpload: uploadId => {
+    forget();
+
+    return request(`/upload/session/${uploadId}`, { method: 'DELETE' }).catch(() => {});
+  }
 };

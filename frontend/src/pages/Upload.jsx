@@ -26,12 +26,22 @@ export function Upload({ onSubmitted, notify }) {
   const [testFirst, setTestFirst] = useState(false);
   const [tiles, setTiles] = useState(0);
   const [progress, setProgress] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [prepared, setPrepared] = useState(null);
+  const [reading, setReading] = useState(false);
+  const [scene, setScene] = useState(null);
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef(null);
+  // Fields the artist has set for themselves; the scene fills in the rest.
+  const edited = useRef(new Set());
+  // Only the file picked most recently may write to the form: an earlier one
+  // whose upload is still finishing has been replaced.
+  const picked = useRef(0);
 
   const frameCount = Math.max(0, Number(frameEnd) - Number(frameStart) + 1);
   const single = frameCount === 1;
+  const busy = progress !== null || submitting;
 
   useEffect(() => {
     let current = true;
@@ -53,6 +63,57 @@ export function Upload({ onSubmitted, notify }) {
     return () => { current = false; };
   }, []);
 
+  function apply(settings) {
+    const fill = (name, setter, value) => {
+      if (value === null || value === undefined) return;
+      if (edited.current.has(name)) return;
+      setter(value);
+    };
+
+    fill('frameStart', setFrameStart, settings.frameStart);
+    fill('frameEnd', setFrameEnd, settings.frameEnd);
+    fill('engine', setEngine, settings.renderEngine);
+    fill('resolutionPercent', setResolutionPercent, settings.resolutionPercent);
+    fill('samples', setSamples, settings.samples);
+    fill('formats', value => setChosen([value]), settings.format);
+  }
+
+  // Sent as soon as it is chosen rather than on submit, so it can be read while
+  // the rest of the form is being filled in.
+  async function prepare(selected) {
+    const run = ++picked.current;
+
+    setProgress(0);
+    setScene(null);
+    setReading(false);
+
+    try {
+      const uploadId = await api.prepareUpload(selected, value => {
+        if (picked.current === run) setProgress(value);
+      });
+
+      if (picked.current !== run) return api.abortUpload(uploadId);
+
+      setPrepared(uploadId);
+      setProgress(null);
+      setReading(true);
+
+      const report = await api.inspectUpload(uploadId);
+
+      if (picked.current !== run) return;
+
+      setScene(report);
+      if (report.read) apply(report.settings);
+    } catch (err) {
+      // The file goes up with the form instead.
+      if (picked.current !== run) return;
+      setProgress(null);
+      setError(err.message);
+    } finally {
+      if (picked.current === run) setReading(false);
+    }
+  }
+
   function pick(selected) {
     if (!selected) return;
 
@@ -61,8 +122,26 @@ export function Upload({ onSubmitted, notify }) {
       return;
     }
 
+    // The same file chosen a second time is already on its way up.
+    if (file && selected.name === file.name && selected.size === file.size
+      && selected.lastModified === file.lastModified) return;
+
     setError('');
     setFile(selected);
+
+    if (prepared) api.abortUpload(prepared);
+    setPrepared(null);
+
+    prepare(selected);
+  }
+
+  function clear() {
+    picked.current++;
+    setFile(null);
+    setPrepared(null);
+    setScene(null);
+    edited.current.clear();
+    if (inputRef.current) inputRef.current.value = '';
   }
 
   async function submit(event) {
@@ -73,19 +152,19 @@ export function Upload({ onSubmitted, notify }) {
     if (frameCount < 1) return setError('End frame must not precede start frame');
     if (chosen.length === 0) return setError('Choose at least one output format');
 
-    setProgress(0);
+    const settings = {
+      frameStart, frameEnd, renderEngine: engine, priority: urgent,
+      resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality,
+      skipAssetCheck, testFrame: testFirst ? frameStart : null,
+      tiles: single ? tiles : 0
+    };
+
+    setSubmitting(true);
 
     try {
-      const result = await api.upload(
-        file,
-        {
-          frameStart, frameEnd, renderEngine: engine, priority: urgent,
-          resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality,
-          skipAssetCheck, testFrame: testFirst ? frameStart : null,
-          tiles: single ? tiles : 0
-        },
-        setProgress
-      );
+      const result = prepared
+        ? await api.queuePrepared(prepared, settings)
+        : await api.upload(file, settings, setProgress);
 
       notify(
         result.startsIn > 0
@@ -94,14 +173,27 @@ export function Upload({ onSubmitted, notify }) {
         'success'
       );
       askToNotify();
-      setFile(null);
-      if (inputRef.current) inputRef.current.value = '';
+      clear();
       onSubmitted?.();
     } catch (err) {
       setError(err.message);
     } finally {
+      setSubmitting(false);
       setProgress(null);
     }
+  }
+
+  const labelOf = (list, id) => list.find(item => item.id === id)?.label ?? id;
+
+  function facts({ active, settings }) {
+    const parts = [active, `frames ${settings.frameStart}–${settings.frameEnd}`];
+
+    if (settings.renderEngine) parts.push(labelOf(engines, settings.renderEngine));
+    if (settings.resolutionPercent) parts.push(`${settings.resolutionPercent}%`);
+    if (settings.samples) parts.push(`${settings.samples} samples`);
+    if (settings.format) parts.push(labelOf(formats, settings.format));
+
+    return parts.join(' · ');
   }
 
   return (
@@ -146,10 +238,24 @@ export function Upload({ onSubmitted, notify }) {
         )}
       </div>
 
-      <div className="upload-what">
+      {(reading || scene) && (
+        <div className="scene-read">
+          <span className="scene-facts">
+            {reading && 'Reading the scene…'}
+            {!reading && scene?.read && facts(scene)}
+            {!reading && scene && !scene.read && 'The scene could not be read'}
+          </span>
+          {!reading && scene?.warnings?.map(note => (
+            <span key={note} className="scene-note">{note}</span>
+          ))}
+        </div>
+      )}
+
+      <div className="upload-what" onChangeCapture={e => edited.current.add(e.target.name)}>
         <div className="row">
           <Field
             label="Start frame"
+            name="frameStart"
             type="number"
             min="0"
             value={frameStart}
@@ -158,6 +264,7 @@ export function Upload({ onSubmitted, notify }) {
           />
           <Field
             label="End frame"
+            name="frameEnd"
             type="number"
             min="0"
             value={frameEnd}
@@ -167,6 +274,7 @@ export function Upload({ onSubmitted, notify }) {
           <label className="field">
             <span className="field-label">Render engine</span>
             <select
+              name="engine"
               value={engine}
               onChange={e => setEngine(e.target.value)}
               disabled={engines.length === 0}
@@ -181,6 +289,7 @@ export function Upload({ onSubmitted, notify }) {
         <div className="row">
           <Field
             label="Resolution %"
+            name="resolutionPercent"
             type="number"
             min="1"
             max="100"
@@ -190,6 +299,7 @@ export function Upload({ onSubmitted, notify }) {
           />
           <Field
             label="Samples"
+            name="samples"
             type="number"
             min="1"
             placeholder="scene default"
@@ -205,6 +315,7 @@ export function Upload({ onSubmitted, notify }) {
             <label key={id} className="check check-inline">
               <input
                 type="checkbox"
+                name="formats"
                 checked={chosen.includes(id)}
                 onChange={e => setChosen(current => (
                   e.target.checked ? [...current, id] : current.filter(name => name !== id)
@@ -305,8 +416,8 @@ export function Upload({ onSubmitted, notify }) {
           <ProgressBar value={progress} label="Uploading" />
         )}
 
-        <Button type="submit" variant="primary" busy={progress !== null}
-          disabled={!file || !engine || chosen.length === 0}>
+        <Button type="submit" variant="primary" busy={busy}
+          disabled={!file || !engine || chosen.length === 0 || busy}>
           Queue render
         </Button>
       </div>

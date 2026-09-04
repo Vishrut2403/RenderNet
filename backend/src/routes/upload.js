@@ -3,6 +3,7 @@ import multer from 'multer';
 import path from 'path';
 import { deleteFile, freeBytes } from '../utils/file-utils.js';
 import { addToQueue } from '../queue.js';
+import { readScene } from '../preflight.js';
 import { getJob } from '../job-views.js';
 import { DATA_DIR, UPLOADS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
 import {
@@ -284,6 +285,78 @@ router.put('/session/:id', withSession, async (req, res) => {
   }
 
   res.json(written);
+});
+
+// The scene's settings in the vocabulary this route accepts: an engine or a
+// format the farm does not offer is left out.
+function offeredSettings(scene) {
+  const engine = ENGINE_IDS.includes(scene.engine) ? scene.engine : null;
+  const percent = scene.resolutionPercent;
+
+  return {
+    frameStart: scene.frameStart,
+    frameEnd: scene.frameEnd,
+    frameStep: scene.frameStep,
+    renderEngine: engine,
+    resolutionPercent: percent >= 1 && percent <= 100 ? percent : null,
+    samples: engine === 'CYCLES' ? scene.samples : null,
+    format: FORMAT_IDS.includes(scene.format) ? scene.format : null,
+    width: scene.width,
+    height: scene.height,
+    camera: scene.camera
+  };
+}
+
+// What the form cannot carry across from the scene.
+function warningsFor(scene, settings, scenes) {
+  const notes = [];
+
+  if (!settings.renderEngine) notes.push(`This farm does not run ${scene.engine}`);
+  if (!settings.format) notes.push(`This farm does not write ${scene.format}`);
+  if (!scene.camera) notes.push(`${scene.name} has no camera`);
+  if (scene.frameStep > 1) notes.push(`Frame step ${scene.frameStep} is not applied`);
+  if (scenes.length > 1) notes.push(`${scenes.length} scenes; ${scene.name} renders`);
+
+  return notes;
+}
+
+function readingOf(report) {
+  const active = report.scenes.find(scene => scene.name === report.active) ?? report.scenes[0];
+
+  if (!active) return { read: false, scenes: [], active: null, settings: null, warnings: [] };
+
+  const settings = offeredSettings(active);
+
+  return {
+    read: true,
+    scenes: report.scenes.map(scene => scene.name),
+    active: active.name,
+    settings,
+    warnings: warningsFor(active, settings, report.scenes)
+  };
+}
+
+// Blender is given the partial file where it lies: it goes by what is inside a
+// file rather than by its extension, and every byte is there once the last
+// chunk has landed.
+router.post('/session/:id/inspect', withSession, async (req, res) => {
+  const { session } = req;
+
+  if (session.busy || session.received !== session.size) {
+    return res.status(409).json({
+      error: `Only ${session.received} of ${session.size} bytes have arrived`
+    });
+  }
+
+  // Once per upload: every reading costs a Blender, and the file cannot change
+  // underneath one.
+  if (!session.reading) {
+    session.reading = readScene(session.path)
+      .then(readingOf)
+      .catch(() => ({ read: false, scenes: [], active: null, settings: null, warnings: [] }));
+  }
+
+  res.json(await session.reading);
 });
 
 router.post('/session/:id/finish', (req, res) => {

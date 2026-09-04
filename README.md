@@ -29,7 +29,8 @@ The renderer runs as a separate `RenderWorker` reporting back over HTTP rather t
 - Spreads a job across as many machines as you point at it, a frame at a time.
 - Splits a single heavy still into tiles rendered at once and puts it back together.
 - Renders one frame first and holds the rest until its owner approves it.
-- Opens a scene before queueing it to see whether it brought its textures.
+- Opens a scene as soon as it is chosen, to fill the form in from it and to
+  see whether it brought its textures.
 - Survives the workstation being switched off mid-render.
 - Accounts, per-user disk quotas, per-machine credentials, scoped download
   links, and HTTPS when you give it a certificate.
@@ -85,6 +86,15 @@ tiles is cut into regions, each claimed and rendered like any other unit of
 work, and Blender puts them back into one image once they have all arrived. It
 only pays off with more than one machine free: splitting a still on one
 workstation is the same work with more steps.
+
+**The form fills itself in from the scene.** A file is sent the moment it is
+chosen rather than on submit, so the workstation can open it in Blender while
+the rest of the form is being filled in, and answer with the frame range,
+engine, resolution, samples and format the scene was saved with. A field the
+artist has already set is left alone. Anything this farm cannot honour — an
+engine it does not run, a frame step it does not apply, a scene with no camera —
+is said rather than quietly dropped. Submitting queues the file already on
+disk, so it goes up once.
 
 **A test frame can be rendered first.** The rest of the range is held back until
 its owner has looked at that frame and approved it, so a wrong camera or a

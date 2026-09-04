@@ -29,6 +29,25 @@ def referenced():
             yield block
 
 
+def described(scene):
+    render = scene.render
+    cycles = getattr(scene, 'cycles', None)
+
+    return {
+        'name': scene.name,
+        'frameStart': scene.frame_start,
+        'frameEnd': scene.frame_end,
+        'frameStep': scene.frame_step,
+        'engine': render.engine,
+        'width': render.resolution_x,
+        'height': render.resolution_y,
+        'resolutionPercent': render.resolution_percentage,
+        'samples': getattr(cycles, 'samples', None),
+        'format': render.image_settings.file_format,
+        'camera': scene.camera.name if scene.camera else None
+    }
+
+
 missing = []
 
 for block in referenced():
@@ -46,7 +65,11 @@ for block in referenced():
     if not os.path.exists(resolved):
         missing.append(resolved)
 
-print('${MARKER}' + json.dumps({'missing': sorted(set(missing))}))
+print('${MARKER}' + json.dumps({
+    'missing': sorted(set(missing)),
+    'active': bpy.context.scene.name,
+    'scenes': [described(scene) for scene in bpy.data.scenes]
+}))
 `;
 
 function parse(output) {
@@ -63,13 +86,10 @@ function parse(output) {
 
 let queued = Promise.resolve();
 
-// A scene that reaches for files it did not bring renders untextured rather
-// than failing, which is worth catching before 500 frames of it. Anything that
-// goes wrong with the check itself lets the job through: a broken preflight
-// must not be able to stop the farm.
-export function checkAssets(blendPath) {
-  // One at a time: a burst of uploads would otherwise put a Blender per job on
-  // a machine that is meant to be spending itself on renders.
+// One Blender at a time, whoever is asking: a burst of uploads would otherwise
+// put a Blender per job on a machine that is meant to be spending itself on
+// renders.
+function readBlend(blendPath) {
   const next = queued.then(() => openScene(blendPath));
 
   queued = next.catch(() => {});
@@ -77,11 +97,27 @@ export function checkAssets(blendPath) {
   return next;
 }
 
+// A scene that reaches for files it did not bring renders untextured rather
+// than failing, which is worth catching before 500 frames of it. Anything that
+// goes wrong with the check itself lets the job through: a broken preflight
+// must not be able to stop the farm.
+export function checkAssets(blendPath) {
+  return readBlend(blendPath)
+    .then(report => ({ checked: report !== null, missing: report?.missing ?? [] }));
+}
+
+// What the scene already says about itself.
+export function readScene(blendPath) {
+  return readBlend(blendPath).then(report => (report === null
+    ? { read: false, active: null, scenes: [] }
+    : { read: true, active: report.active ?? null, scenes: report.scenes ?? [] }));
+}
+
 function openScene(blendPath) {
   return new Promise(resolve => {
     const blender = findBlenderExecutable();
 
-    if (!blender) return resolve({ checked: false, missing: [] });
+    if (!blender) return resolve(null);
 
     const scriptPath = path.join(os.tmpdir(), `rendernet-preflight-${process.pid}.py`);
     fs.writeFileSync(scriptPath, SCRIPT);
@@ -102,26 +138,26 @@ function openScene(blendPath) {
 
     const timer = setTimeout(() => {
       terminate(probe);
-      console.warn(`Asset check for ${path.basename(blendPath)} timed out; rendering anyway`);
-      done({ checked: false, missing: [] });
+      console.warn(`Reading ${path.basename(blendPath)} timed out; rendering anyway`);
+      done(null);
     }, TIMEOUT_MS);
 
     timer.unref?.();
 
     probe.on('error', error => {
-      console.warn(`Asset check could not run: ${error.message}`);
-      done({ checked: false, missing: [] });
+      console.warn(`The scene could not be read: ${error.message}`);
+      done(null);
     });
 
     probe.on('close', () => {
       const report = parse(output);
 
       if (!report) {
-        console.warn(`Asset check for ${path.basename(blendPath)} said nothing; rendering anyway`);
-        return done({ checked: false, missing: [] });
+        console.warn(`Reading ${path.basename(blendPath)} said nothing; rendering anyway`);
+        return done(null);
       }
 
-      done({ checked: true, missing: report.missing });
+      done(report);
     });
   });
 }

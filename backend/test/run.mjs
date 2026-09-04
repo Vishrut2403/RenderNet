@@ -12,6 +12,7 @@ import testFrame from './test-frame.test.mjs';
 import tiles from './tiles.test.mjs';
 import downloads from './downloads.test.mjs';
 import scheduling from './scheduling.test.mjs';
+import sceneReading from './scene-reading.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -27,7 +28,8 @@ const suites = [
   ['Test frame before the rest', testFrame],
   ['Tiled stills', tiles],
   ['Downloads and persistence', downloads],
-  ['Scheduling and overrides', scheduling]
+  ['Scheduling and overrides', scheduling],
+  ['Reading an uploaded scene', sceneReading]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

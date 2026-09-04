@@ -198,14 +198,40 @@ if (process.env.RENDERNET_TILE_SPEC) {
 
 const scene = path.basename(valueOf('-b') || '');
 
-// The asset check opens the scene with a script and renders nothing, so there
-// is no output path to write to. 'unpacked' scenes reach for files they did
-// not bring; everything else is self-contained.
+// Reading a scene opens it with a script and renders nothing, so there is no
+// output path to write to. 'unpacked' scenes reach for files they did not
+// bring; everything else is self-contained. The settings reported back are
+// what the upload form is expected to offer.
 if (args.includes('-P') && !args.includes('-o')) {
   const missing = scene.includes('unpacked')
     ? ['/home/artist/textures/wood.png', '/home/artist/textures/metal.png']
     : [];
-  fs.writeSync(1, 'RENDERNET_PREFLIGHT ' + JSON.stringify({ missing: missing }) + '\\n');
+
+  // A line per opening, so a test can count what reading a scene twice cost.
+  fs.appendFileSync(path.join(path.dirname(valueOf('-b')), 'readings.txt'), scene + '\\n');
+
+  if (scene.includes('unreadable')) process.exit(0);
+
+  const main = {
+    name: 'Scene',
+    frameStart: 1,
+    frameEnd: 250,
+    frameStep: scene.includes('stepped') ? 3 : 1,
+    engine: scene.includes('exotic') ? 'LUXCORE' : 'CYCLES',
+    width: 1920,
+    height: 1080,
+    resolutionPercent: 50,
+    samples: 128,
+    format: scene.includes('exotic') ? 'TIFF' : 'OPEN_EXR',
+    camera: scene.includes('cameraless') ? null : 'Camera'
+  };
+
+  const scenes = scene.includes('two-scenes')
+    ? [Object.assign({}, main, { name: 'Backdrop', frameEnd: 5 }), main]
+    : [main];
+
+  fs.writeSync(1, 'RENDERNET_PREFLIGHT ' + JSON.stringify(
+    { missing: missing, active: main.name, scenes: scenes }) + '\\n');
   process.exit(0);
 }
 

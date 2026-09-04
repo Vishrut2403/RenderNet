@@ -11,11 +11,15 @@ import {
 } from './paths.js';
 
 const MAX_OPEN_PER_USER = 3;
+// Long enough for any name somebody types, short enough that the id, the
+// timestamp and this together stay inside Windows' path limit.
+const MAX_FILENAME = 100;
 
 const sessions = new Map();
 
-function partialPath(id) {
-  return path.join(PARTIALS_DIR, `${id}.part`);
+// Named after the file as well as the id, so partials/ can be read at a glance.
+function partialPath(id, filename) {
+  return path.join(PARTIALS_DIR, `${id}-${filename}.part`);
 }
 
 function openFor(owner) {
@@ -31,6 +35,12 @@ function claimed(owner) {
 export function openSession({ owner, filename, size }) {
   if (typeof filename !== 'string' || !filename.toLowerCase().endsWith('.blend')) {
     return { status: 400, error: 'Only .blend files are allowed' };
+  }
+
+  const name = path.basename(filename);
+
+  if (name.length > MAX_FILENAME) {
+    return { status: 400, error: `A filename may not exceed ${MAX_FILENAME} characters` };
   }
 
   if (!Number.isInteger(size) || size < 1 || size > MAX_UPLOAD_BYTES) {
@@ -66,12 +76,11 @@ export function openSession({ owner, filename, size }) {
   const session = {
     id,
     owner,
-    // Kept for the finished name only; the file on disk is named after the id.
-    filename: path.basename(filename),
+    filename: name,
     size,
     received: 0,
     busy: false,
-    path: partialPath(id),
+    path: partialPath(id, name),
     updatedAt: Date.now()
   };
 
