@@ -5,6 +5,12 @@ import react from '@vitejs/plugin-react';
 // never comes into play. In production set VITE_API_URL to the backend origin.
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './test/setup.js',
+    include: ['test/**/*.test.jsx']
+  },
   server: {
     port: 8080,
     proxy: {

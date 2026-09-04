@@ -247,6 +247,7 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
+cd frontend && npm test        # 36 checks, Vitest and Testing Library
 cd backend  && npm test        # 534 checks
 npm run lint                   # from the root, covers both packages
 ```
@@ -260,7 +261,9 @@ elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts. A stand-in for Blender covers everything
 that only needs frames on disk, so without a real one installed just 13 of the
 534 skip — what is left are the checks on what Blender itself writes. The
-frontend has no automated tests in the repo.
+frontend's own tests cover what the browser does with the API rather than how it
+looks: chunked upload and its resume, the paged job list, and which actions a
+job card offers in which state.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24 — the only
 place it meets the platform the workstation actually runs. Windows differs where

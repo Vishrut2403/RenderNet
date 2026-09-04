@@ -71,6 +71,10 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      - name: Test frontend
+        working-directory: frontend
+        run: npm test
+
       # Blender is absent here, so render-dependent checks skip themselves and
       # the rest runs. The Windows runner is the point: it is the only place
       # this project is tested on the platform it actually ships to.
