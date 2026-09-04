@@ -346,6 +346,12 @@ export const api = {
 
   rerunJob: id => request(`/jobs/${id}/rerun`, { method: 'POST' }),
 
+  holdJob: id => request(`/jobs/${id}/hold`, { method: 'POST' }),
+
+  releaseJob: id => request(`/jobs/${id}/release`, { method: 'POST' }),
+
+  pinJob: (id, pinned) => request(`/jobs/${id}/pin`, { method: 'POST', body: { pinned } }),
+
   makeVideo: id => request(`/jobs/${id}/video`, { method: 'POST' }),
 
   videoUrl: (id, token) => downloadUrl(`/download/${id}/video`, token),

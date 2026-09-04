@@ -14,7 +14,7 @@ export function forgetTiming(jobId) {
 }
 
 // Median, so one pathological frame does not move the estimate for the rest.
-function typicalFrameMs() {
+export function typicalFrameMs() {
   if (Date.now() - frameRate.at < CACHE_TTL_MS) return frameRate.value;
 
   const durations = recentFrameDurations().sort((a, b) => a - b);

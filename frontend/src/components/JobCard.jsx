@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api } from '../api/client';
+import { api, getStoredUser } from '../api/client';
 import { useDownloadToken } from '../hooks/useDownloadToken';
 import { StatusBadge, ProgressBar, Button, Metrics, relativeTime, formatDuration, useNow } from './ui';
 
@@ -14,6 +14,10 @@ export function JobCard({ job, onChanged, onError }) {
   const active = job.status === 'rendering';
   const done = job.status === 'completed';
   const partial = job.status === 'failed' && job.completedFrames > 0;
+  // Queued or rendering. A job held back for its owner to approve its test frame
+  // is neither, which is why the overrides below do not offer to reorder it.
+  const inTheRunning = (job.status === 'pending' || active) && job.approval !== 'waiting';
+  const isAdmin = getStoredUser()?.role === 'admin';
 
   const downloadToken = useDownloadToken(job.id, job.completedFrames > 0);
 
@@ -69,6 +73,35 @@ export function JobCard({ job, onChanged, onError }) {
     setBusy(true);
     try {
       await api.setPriority(job.id, urgent ? 1 : 0);
+      onChanged?.();
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function hold() {
+    setBusy(true);
+    try {
+      if (job.heldBy) await api.releaseJob(job.id);
+      else await api.holdJob(job.id);
+      onChanged?.();
+    } catch (err) {
+      onError?.(err.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function pin() {
+    const next = !job.pinnedAt;
+
+    if (next && !confirm('Render this next? This pauses whatever is rendering now.')) return;
+
+    setBusy(true);
+    try {
+      await api.pinJob(job.id, next);
       onChanged?.();
     } catch (err) {
       onError?.(err.message);
@@ -181,6 +214,8 @@ export function JobCard({ job, onChanged, onError }) {
             {relativeTime(job.createdAt)}
             {job.owner && <> · <span className="owner">{job.owner}</span></>}
             {job.priority > 0 && <> · <span className="urgent">urgent</span></>}
+            {job.pinnedAt && <> · <span className="pinned">next</span></>}
+            {job.heldBy && <> · <span className="held">held by {job.heldBy}</span></>}
           </div>
         </div>
         <StatusBadge status={job.status} />
@@ -307,6 +342,17 @@ export function JobCard({ job, onChanged, onError }) {
               </Button>
             )}
             <Button variant="danger" busy={busy} onClick={cancel}>Cancel</Button>
+          </>
+        )}
+
+        {isAdmin && inTheRunning && (
+          <>
+            <Button busy={busy} onClick={pin}>
+              {job.pinnedAt ? 'Unpin' : 'Render next'}
+            </Button>
+            <Button busy={busy} onClick={hold}>
+              {job.heldBy ? 'Release' : 'Hold'}
+            </Button>
           </>
         )}
 

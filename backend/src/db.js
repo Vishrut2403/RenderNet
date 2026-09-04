@@ -96,6 +96,11 @@ addColumnIfMissing('users', 'mustChangePassword', 'INTEGER DEFAULT 0');
 addColumnIfMissing('jobs', 'priority', 'INTEGER DEFAULT 0');
 addColumnIfMissing('jobs', 'pausedBy', 'TEXT');
 
+// An admin's two overrides: pinnedAt puts a job in front of the whole farm,
+// heldBy keeps one out of the running until the same admin lets it go.
+addColumnIfMissing('jobs', 'pinnedAt', 'TEXT');
+addColumnIfMissing('jobs', 'heldBy', 'TEXT');
+
 // Applied to the scene at render time rather than by editing the .blend.
 addColumnIfMissing('jobs', 'resolutionPercent', 'INTEGER DEFAULT 100');
 addColumnIfMissing('jobs', 'samples', 'INTEGER');
@@ -148,6 +153,7 @@ const COLUMNS = [
   'renderEngine', 'originalFilename', 'owner', 'createdAt', 'startedAt', 'completedAt',
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
+  'pinnedAt', 'heldBy',
   'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality',
   'assetCheck', 'missingAssets', 'video', 'testFrame', 'approval', 'tiles', 'composite'
 ];

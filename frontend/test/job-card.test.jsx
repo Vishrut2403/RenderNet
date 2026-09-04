@@ -1,6 +1,6 @@
 // What a job card offers depends entirely on the state the job is in, and
 // offering the wrong thing is how somebody deletes a render that is still going.
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { JobCard } from '../src/components/JobCard';
@@ -155,6 +155,101 @@ describe('cancelling', () => {
 
     expect(cancel).toHaveBeenCalledWith(12);
     expect(onChanged).toHaveBeenCalled();
+  });
+});
+
+describe('an admin looking at somebody else\'s job', () => {
+  function asAdmin() {
+    localStorage.setItem('rendernet.user',
+      JSON.stringify({ username: 'admin', role: 'admin' }));
+  }
+
+  afterEach(() => localStorage.clear());
+
+  it('is offered the two overrides an owner does not get', () => {
+    const { unmount } = show({ status: 'rendering' });
+
+    expect(button(/render next/i)).not.toBeInTheDocument();
+    expect(button(/^hold$/i)).not.toBeInTheDocument();
+    unmount();
+
+    asAdmin();
+    show({ status: 'rendering' });
+
+    expect(button(/render next/i)).toBeInTheDocument();
+    expect(button(/^hold$/i)).toBeInTheDocument();
+  });
+
+  it('but not on a job that has already stopped', () => {
+    asAdmin();
+    show({ status: 'completed' });
+
+    expect(button(/render next/i)).not.toBeInTheDocument();
+    expect(button(/^hold$/i)).not.toBeInTheDocument();
+  });
+
+  it('nor on one waiting for its owner to approve a frame', () => {
+    asAdmin();
+    show({ status: 'pending', approval: 'waiting', testFrame: 1, completedFrames: 1,
+      totalFrames: 48, frameEnd: 48 });
+
+    expect(button(/render next/i)).not.toBeInTheDocument();
+    expect(button(/^hold$/i)).not.toBeInTheDocument();
+  });
+
+  it('and holding one asks the farm and then the page', async () => {
+    const hold = vi.spyOn(api, 'holdJob').mockResolvedValue({ success: true });
+    const onChanged = vi.fn();
+
+    asAdmin();
+    show({ status: 'rendering' }, { onChanged });
+
+    await userEvent.click(button(/^hold$/i));
+
+    expect(hold).toHaveBeenCalledWith(12);
+    expect(onChanged).toHaveBeenCalled();
+  });
+
+  it('a held job offers to be let go instead, and says who holds it', async () => {
+    const release = vi.spyOn(api, 'releaseJob').mockResolvedValue({ success: true });
+
+    asAdmin();
+    show({ status: 'pending', heldBy: 'admin' });
+
+    expect(screen.getByText(/held by admin/i)).toBeInTheDocument();
+    expect(button(/^hold$/i)).not.toBeInTheDocument();
+
+    await userEvent.click(button(/release/i));
+
+    expect(release).toHaveBeenCalledWith(12);
+  });
+
+  it('and pinning one warns that it stops what is rendering', async () => {
+    const pin = vi.spyOn(api, 'pinJob').mockResolvedValue({ success: true });
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    asAdmin();
+    show({ status: 'pending' });
+
+    await userEvent.click(button(/render next/i));
+
+    expect(window.confirm).toHaveBeenCalled();
+    expect(pin).not.toHaveBeenCalled();
+  });
+
+  it('a pinned job says so and offers to be unpinned, without asking again', async () => {
+    const pin = vi.spyOn(api, 'pinJob').mockResolvedValue({ success: true });
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    asAdmin();
+    show({ status: 'pending', pinnedAt: new Date().toISOString() });
+
+    expect(screen.getByText(/^next$/i)).toBeInTheDocument();
+
+    await userEvent.click(button(/unpin/i));
+
+    expect(window.confirm).not.toHaveBeenCalled();
+    expect(pin).toHaveBeenCalledWith(12, false);
   });
 });
 

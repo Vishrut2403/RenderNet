@@ -1,7 +1,7 @@
 import express from 'express';
 import {
   cancelJob, getQueueStatus, getQueuePosition, deleteJobAndFiles, setJobPriority, rerunJob,
-  approveJob
+  approveJob, holdJob, releaseJob, pinJob
 } from '../queue.js';
 import { getJob, listJobs, jobsSummary, DEFAULT_PAGE, MAX_PAGE } from '../job-views.js';
 import { usageFor, usageByOwner } from '../storage.js';
@@ -185,6 +185,42 @@ router.post('/:id/priority', (req, res) => {
   }
 
   const result = setJobPriority(jobId, priority);
+
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+// The three an admin has over everybody's jobs, fairness included: hold one out
+// of the running, let it go again, and put one in front of the whole farm.
+router.post('/:id/hold', requireAdmin, (req, res) => {
+  const job = getJob(Number(req.params.id));
+
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  const result = holdJob(job.id, req.user.username);
+
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+router.post('/:id/release', requireAdmin, (req, res) => {
+  const job = getJob(Number(req.params.id));
+
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  const result = releaseJob(job.id);
+
+  res.status(result.success ? 200 : 400).json(result);
+});
+
+router.post('/:id/pin', requireAdmin, (req, res) => {
+  const job = getJob(Number(req.params.id));
+
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+
+  if (typeof req.body?.pinned !== 'boolean') {
+    return res.status(400).json({ error: 'pinned must be true or false' });
+  }
+
+  const result = pinJob(job.id, req.body.pinned);
 
   res.status(result.success ? 200 : 400).json(result);
 });

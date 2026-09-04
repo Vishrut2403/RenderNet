@@ -64,6 +64,22 @@ for itself at each start, so it needs nothing configured; every other machine is
 issued one that is shown once and can be revoked on its own. A machine may only
 touch the claims it holds, and may only download the scenes it is rendering.
 
+**The queue is shared out rather than served in order.** Every owner has a clock
+measured in farm time, and a job joining the queue is stamped with where its
+owner's clock reaches once that job has rendered; the queue runs in stamp order.
+Somebody who has already asked for an hour of the machine waits behind somebody
+who has asked for a minute, however many jobs each of them submitted, and the
+cost is taken from frames actually measured on this farm rather than guessed at.
+Nobody is billed for last week: once nothing is queued or rendering the clocks
+are cleared. An urgent job still goes in front of all of it.
+
+**An admin can override the answer.** Holding a job stops it and keeps it
+stopped — it goes back to the queue with the frames it has already rendered and
+is not started again until the same admin releases it. Pinning one puts it in
+front of the entire farm, urgency and turns included, and pauses whatever is
+rendering to get there. Both are admin-only; an owner can still mark their own
+job urgent, which is as far as their reach goes.
+
 **A heavy still can be split across machines.** A single frame submitted in
 tiles is cut into regions, each claimed and rendered like any other unit of
 work, and Blender puts them back into one image once they have all arrived. It

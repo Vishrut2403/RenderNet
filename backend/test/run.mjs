@@ -11,6 +11,7 @@ import workerCredentials from './worker-credentials.test.mjs';
 import testFrame from './test-frame.test.mjs';
 import tiles from './tiles.test.mjs';
 import downloads from './downloads.test.mjs';
+import scheduling from './scheduling.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -25,7 +26,8 @@ const suites = [
   ['Worker credentials', workerCredentials],
   ['Test frame before the rest', testFrame],
   ['Tiled stills', tiles],
-  ['Downloads and persistence', downloads]
+  ['Downloads and persistence', downloads],
+  ['Scheduling and overrides', scheduling]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

@@ -14,6 +14,7 @@ import { DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY } from './fo
 import { workerCanRender, engineIsOffered, machines } from './worker-registry.js';
 import { checkAssets, missingAssetsMessage } from './preflight.js';
 import { queueWaits as waitsFor, forgetTiming } from './estimates.js';
+import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
 import { diskIsTooFull, heldForDisk, deleteJobFiles, forgetUsage } from './storage.js';
 import { isTiled, startComposite } from './composite.js';
@@ -79,6 +80,7 @@ export function resumeInterruptedJobs() {
     // A frame whose file has been swept goes back to pending, taking its
     // measured time with it.
     forgetTiming(job.id);
+    forgetJob(job.id);
 
     if (job.status === 'rendering') {
       job.interruptions = done > (job.framesAtResume ?? 0) ? 0 : (job.interruptions ?? 0) + 1;
@@ -104,7 +106,7 @@ export function resumeInterruptedJobs() {
     syncFrameCounts(job);
     saveJob(job);
 
-    renderQueue.push(job.id);
+    enqueue(job.id);
     resumed++;
 
     // Killed partway through its own asset check, so it never got an answer.
@@ -171,7 +173,7 @@ export function addToQueue(jobData) {
   if (job.testFrame) holdFramesExcept(jobId, job.testFrame);
   saveJob(job);
   forgetUsage(job.owner);
-  renderQueue.push(jobId);
+  enqueue(jobId);
 
   console.log(`Job ${jobId} added to queue. Queue length: ${renderQueue.length}`);
 
@@ -211,28 +213,31 @@ function startAssetCheck(job) {
 }
 
 function preemptFor(job) {
-  const displaceable = activeJobs()
-    .filter(running => (running.priority ?? 0) < (job.priority ?? 0));
+  const displaceable = activeJobs().filter(running => displaces(job, running));
 
   if (displaceable.length === 0) return false;
 
   const running = displaceable[displaceable.length - 1];
 
-  console.log(`Job ${running.id} paused for higher priority job ${job.id}`);
+  console.log(`Job ${running.id} paused for job ${job.id}`);
 
+  pushBack(running, job.owner);
+
+  return true;
+}
+
+function pushBack(running, by) {
   running.status = 'pending';
   running.startedAt = null;
   running.currentFrame = null;
-  running.pausedBy = job.owner;
+  running.pausedBy = by;
   // Being pushed aside must not count toward the abandonment rule.
   running.framesAtResume = countFramesByStatus(running.id).done;
   saveJob(running);
 
-  renderQueue.push(running.id);
+  enqueue(running.id);
 
   whenWorkersLetGo(running.id);
-
-  return true;
 }
 
 export function approveJob(jobId) {
@@ -253,7 +258,7 @@ export function approveJob(jobId) {
   job.framesAtResume = countFramesByStatus(jobId).done;
   saveJob(job);
 
-  renderQueue.push(jobId);
+  enqueue(jobId);
 
   console.log(`Job ${jobId} approved: rendering the remaining frames`);
 
@@ -286,6 +291,7 @@ export function rerunJob(jobId) {
 
   resetFailedFrames(jobId);
   forgetTiming(jobId);
+  forgetJob(jobId);
   const retried = countFramesByStatus(jobId).pending;
 
   // A tiled still whose regions all arrived but could not be put together needs
@@ -314,7 +320,7 @@ export function rerunJob(jobId) {
   syncFrameCounts(job);
   saveJob(job);
 
-  renderQueue.push(jobId);
+  enqueue(jobId);
   console.log(`Job ${jobId} queued again for ${retried} frame(s)`);
 
   processQueue();
@@ -338,20 +344,136 @@ export function setJobPriority(jobId, priority) {
   return { success: true, priority: job.priority };
 }
 
-function sortQueue() {
-  renderQueue.sort((a, b) => {
-    const byPriority = (jobs.get(b)?.priority ?? 0) - (jobs.get(a)?.priority ?? 0);
-    return byPriority !== 0 ? byPriority : a - b;
-  });
+// Rendering, or waiting in the queue. A job held back for its owner to approve
+// its test frame is neither, and putting one of those in front of the farm would
+// start a render nobody has agreed to yet.
+function inTheRunning(job) {
+  if (job.status === 'rendering') return true;
+
+  return job.status === 'pending' && renderQueue.includes(job.id);
 }
 
-// Highest priority first, so a lease comes from the most important job that
-// still has a frame to give.
+function describe(job) {
+  return job.approval === 'waiting' ? 'job waiting on its owner' : `${job.status} job`;
+}
+
+// An admin taking the machine back. A held job keeps its place and its finished
+// frames; it simply is not started again until the same person lets it go.
+export function holdJob(jobId, by) {
+  const job = jobs.get(jobId);
+
+  if (!job) return { success: false, error: 'Job not found' };
+
+  if (!inTheRunning(job)) {
+    return { success: false, error: `Cannot hold a ${describe(job)}` };
+  }
+
+  if (job.heldBy) return { success: false, error: 'Job is already held' };
+
+  job.heldBy = by;
+
+  if (job.status === 'rendering') pushBack(job, by);
+  else saveJob(job);
+
+  console.log(`Job ${jobId} held by ${by}`);
+
+  return { success: true, jobId, heldBy: by };
+}
+
+export function releaseJob(jobId) {
+  const job = jobs.get(jobId);
+
+  if (!job) return { success: false, error: 'Job not found' };
+  if (!job.heldBy) return { success: false, error: 'Job is not held' };
+
+  job.heldBy = null;
+  job.pausedBy = null;
+  saveJob(job);
+
+  if (!renderQueue.includes(jobId)) enqueue(jobId);
+
+  processQueue();
+
+  console.log(`Job ${jobId} released`);
+
+  return { success: true, jobId };
+}
+
+// Ahead of the whole farm, fairness and urgency included, and it stops whatever
+// is rendering to get there. Pinning a held job lets it go: asking for it next
+// and holding it back at once cannot both be meant.
+export function pinJob(jobId, pinned) {
+  const job = jobs.get(jobId);
+
+  if (!job) return { success: false, error: 'Job not found' };
+
+  if (!inTheRunning(job)) {
+    return { success: false, error: `Cannot pin a ${describe(job)}` };
+  }
+
+  job.pinnedAt = pinned ? new Date().toISOString() : null;
+
+  if (pinned && job.heldBy) {
+    job.heldBy = null;
+    job.pausedBy = null;
+  }
+
+  saveJob(job);
+
+  if (pinned && !renderQueue.includes(jobId) && job.status !== 'rendering') enqueue(jobId);
+
+  if (pinned && !preemptFor(job)) processQueue();
+  else sortQueue();
+
+  console.log(pinned ? `Job ${jobId} pinned to the front` : `Job ${jobId} unpinned`);
+
+  return { success: true, jobId, pinnedAt: job.pinnedAt };
+}
+
+function enqueue(jobId) {
+  const job = jobs.get(jobId);
+
+  if (job) stampJob(job);
+
+  renderQueue.push(jobId);
+}
+
+// A pin an admin placed, then urgency, then whose turn it is, then the order
+// they were submitted in. Fairness sits below urgency deliberately: it decides
+// who goes next, not whether somebody's night render is worth interrupting.
+function byRank(a, b) {
+  const pins = (a?.pinnedAt ?? '') === (b?.pinnedAt ?? '')
+    ? 0
+    : !a?.pinnedAt ? 1 : !b?.pinnedAt ? -1 : (a.pinnedAt < b.pinnedAt ? -1 : 1);
+
+  return pins
+    || (b?.priority ?? 0) - (a?.priority ?? 0)
+    || shareOf(a?.id) - shareOf(b?.id)
+    || (a?.id ?? 0) - (b?.id ?? 0);
+}
+
+function sortQueue() {
+  renderQueue.sort((a, b) => byRank(jobs.get(a), jobs.get(b)));
+}
+
+// The same order among the jobs already running, so a lease comes from the one
+// with the strongest claim on the farm rather than whichever started first.
 function activeJobs() {
   return [...active]
     .map(jobId => jobs.get(jobId))
     .filter(job => job?.status === 'rendering')
-    .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0) || a.id - b.id);
+    .sort(byRank);
+}
+
+// Only a pin or a higher priority is worth stopping work in flight for.
+function displaces(job, running) {
+  if (job.pinnedAt || running.pinnedAt) {
+    if (!running.pinnedAt) return true;
+    if (!job.pinnedAt) return false;
+    return job.pinnedAt < running.pinnedAt;
+  }
+
+  return (running.priority ?? 0) < (job.priority ?? 0);
 }
 
 function promoteNext() {
@@ -364,7 +486,9 @@ function promoteNext() {
   // that no worker will ever claim is a progress bar that never moves.
   const next = renderQueue.findIndex(id => {
     const queued = jobs.get(id);
-    return queued?.assetCheck !== 'checking' && engineIsOffered(queued?.renderEngine);
+    return queued?.assetCheck !== 'checking'
+      && !queued?.heldBy
+      && engineIsOffered(queued?.renderEngine);
   });
 
   if (next === -1) return null;
@@ -386,6 +510,7 @@ function promoteNext() {
   job.pausedBy = null;
   saveJob(job);
   active.add(jobId);
+  startedJob(jobId);
 
   console.log(`Job ${jobId} is now being rendered`);
   ensureWorkers();
@@ -398,6 +523,7 @@ function processQueue() {
 
   if (renderQueue.length === 0) {
     console.log('Queue is empty');
+    levelUp();
     return;
   }
 
@@ -512,7 +638,7 @@ function parkUnrenderable() {
     job.currentFrame = null;
     saveJob(job);
 
-    renderQueue.push(jobId);
+    enqueue(jobId);
     releaseSlot(jobId);
 
     console.log(`Job ${jobId} put back: no worker here renders ${job.renderEngine}`);
@@ -641,6 +767,7 @@ export function pruneOldJobs(cutoffMs) {
     deleteJob(job.id);
     forgetUsage(job.owner);
     forgetTiming(job.id);
+    forgetJob(job.id);
     pruned++;
   }
 
@@ -652,7 +779,8 @@ export function pruneOldJobs(cutoffMs) {
 export function queueWaits() {
   sortQueue();
 
-  return waitsFor(activeJobs(), renderQueue.map(id => jobs.get(id)).filter(Boolean));
+  return waitsFor(activeJobs(),
+    renderQueue.map(id => jobs.get(id)).filter(job => job && !job.heldBy));
 }
 
 export function jobsNoWorkerCanRender() {
@@ -730,6 +858,7 @@ export function recordFrameUpload(jobId, frameNumber, filename) {
 
   markFrameDone(jobId, frameNumber, filename);
   forgetTiming(jobId);
+  forgetJob(jobId);
   job.currentFrame = frameNumber;
   syncFrameCounts(job);
   saveJob(job);
@@ -876,6 +1005,7 @@ export function deleteJobAndFiles(jobId) {
   deleteJob(jobId);
   forgetUsage(job.owner);
   forgetTiming(jobId);
+  forgetJob(jobId);
 
   console.log(`Job ${jobId} deleted by request`);
 

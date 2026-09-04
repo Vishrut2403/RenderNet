@@ -558,12 +558,15 @@ button, input, select { font: inherit; color: inherit; }
 
 .modal-close:hover { color: var(--text); }
 
-.urgent {
-  color: var(--accent);
+.urgent, .pinned, .held {
   text-transform: uppercase;
   font-size: 11px;
   letter-spacing: 0.08em;
 }
+
+.urgent { color: var(--accent); }
+.pinned { color: var(--warn); }
+.held { color: var(--text-3); }
 
 .check {
   display: flex;
