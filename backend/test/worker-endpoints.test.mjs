@@ -209,6 +209,23 @@ export default async function run() {
       refused.status === 413 && /may not exceed/.test((await refused.json()).error ?? ''),
       `got ${refused.status}`);
 
+    // A render cut short leaves a file with the right name and the wrong bytes,
+    // which nothing downstream would notice until somebody opened the ZIP.
+    const truncated = new FormData();
+    truncated.set('frame', new File([Buffer.alloc(64)], 'frame.png', { type: 'image/png' }));
+
+    const wrongInside = await fetch(`${base}/jobs/${jobId}/frames/3`, {
+      method: 'POST',
+      headers: { ...secretHeader, 'x-lease-id': claims.get(3) },
+      body: truncated
+    });
+
+    results.check('a file that is not the picture it is named as is refused',
+      wrongInside.status === 422, `got ${wrongInside.status}`);
+    results.check('and no frame is recorded for it',
+      views.getJob(jobId).completedFrames === 0,
+      `${views.getJob(jobId).completedFrames} delivered`);
+
     let upload = await uploadFrame(3, claims.get(3));
     results.check('upload accepted', upload.status === 200, `got ${upload.status}`);
     results.check('stored under canonical name', upload.body.stored === 'frame_0003.png',

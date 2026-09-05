@@ -58,3 +58,16 @@ export function primaryOf(stored) {
 export function extrasOf(stored) {
   return parseFormats(stored).slice(1);
 }
+
+// The bytes every file of each format starts with. A render cut short - a
+// worker's disk filling mid-write is how it happens - leaves a file with the
+// right name and the wrong contents.
+const SIGNATURES = {
+  '.png': [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a],
+  '.jpg': [0xff, 0xd8, 0xff],
+  '.exr': [0x76, 0x2f, 0x31, 0x01]
+};
+
+export function signatureFor(extension) {
+  return SIGNATURES[extension.toLowerCase()] ?? null;
+}

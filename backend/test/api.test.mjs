@@ -348,6 +348,17 @@ export default async function run() {
     results.check('frames written to disk',
       fs.readdirSync(path.join(sandbox, finished.outputFolder)).length === 2);
 
+    // The dashboard totals are summed in SQL rather than by adding up a list of
+    // every job the farm has run, so the arithmetic is worth reading back.
+    const totals = await (await fetch(`${base}/jobs/summary`,
+      { headers: auth(adminToken) })).json();
+    const spent = new Date(finished.completedAt) - new Date(finished.startedAt);
+
+    results.check('the dashboard counts the frames that were rendered',
+      totals.framesRendered === 2, JSON.stringify(totals.framesRendered));
+    results.check('and how long the farm spent on them',
+      Math.abs(totals.renderMs - spent) < 1000, `${totals.renderMs} against ${spent}`);
+
     // The upload form offers these by name and the worker passes them straight
     // to -E. Blender keeps renamed identifiers working as aliases for a while,
     // so drifting from its canonical list is a warning rather than a breakage -

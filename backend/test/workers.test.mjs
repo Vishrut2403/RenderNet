@@ -12,6 +12,7 @@ import {
 
 const PORT = 5598;
 const CAPABILITY_PORT = 5610;
+const LOST_PORT = 5617;
 
 // "[worker-1] ✅ Job 17..., frame 3 rendered: ..." - the pool tags each worker's
 // output with which one it came from, so the log says who delivered what. One
@@ -188,8 +189,50 @@ export default async function run() {
   }
 
   await capabilities(results);
+  await losingAWorker(results);
 
   return results;
+}
+
+// A machine that dies is holding a claim nobody will renew. Waiting it out
+// costs the whole lease term, and a claim now covers a span of frames or the
+// last step of a tiled still, so that is a lot of the farm doing nothing.
+async function losingAWorker(results) {
+  const box = makeSandbox('worker-lost');
+  let server;
+
+  try {
+    console.log('\n  A machine that dies mid-render');
+
+    // Long enough that expiry cannot be what frees the frame: only the pool
+    // noticing the worker go can finish this job inside the wait below.
+    server = await startServer({
+      port: LOST_PORT,
+      cwd: box,
+      env: {
+        BLENDER_PATH: createFakeBlender(box),
+        WORKER_SLOTS: '2',
+        LEASE_TTL_MS: '120000'
+      }
+    });
+
+    const token = await adminSession(server.base);
+    const doomed = await submitJob(server.base, token, createFakeScene(box, 'vanishing.blend'),
+      { frameStart: 1, frameEnd: 2, skipAssetCheck: true });
+
+    const started = Date.now();
+    const job = await waitForJob(server.base, token, doomed.body.jobId, 45000);
+    const took = Date.now() - started;
+
+    results.check('the worker was taken down mid-render',
+      fs.existsSync(path.join(box, 'uploads', 'vanished')));
+    results.check('and the job finished anyway', job.status === 'completed', job.status);
+    results.check('without waiting out a claim nobody was renewing',
+      took < 60000, `${Math.round(took / 1000)}s of a 120s claim`);
+  } finally {
+    await stopServer(server);
+    removeSandbox(box);
+  }
 }
 
 // A worker that cannot render an engine must not be given frames of it: it

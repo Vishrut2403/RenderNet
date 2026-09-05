@@ -132,6 +132,7 @@ const PNG_1X1 = Buffer.from(
 // frame long enough to test against a job that is genuinely mid-render,
 // 'stubborn' ignores a polite stop and stays alive so cancelling it has to force
 // (wait for stubbornIsUnkillable before cancelling; see below),
+// 'vanishing' kills the worker that launched it, once,
 // 'stalls' delivers its first frame and then never finishes another,
 // 'broken' exits non-zero with its complaint on stdout, 'flaky' does so for
 // one frame until a marker file says otherwise, and 'unglued' refuses to put
@@ -283,6 +284,15 @@ if (scene.includes('noisy')) {
   // Written synchronously, the way Blender writes its progress log.
   const line = 'x'.repeat(99) + '\\n';
   for (let i = 0; i < 4096; i++) fs.writeSync(1, line);
+}
+
+// 'vanishing' takes the worker that launched it down with it, once. A machine
+// lost mid-render is otherwise hard to arrange from a test: the pool starts the
+// workers, so nothing out here has a process id to aim at.
+if (scene.includes('vanishing') && !marked('vanished')) {
+  record('vanished', 'once');
+  process.kill(process.ppid, 'SIGKILL');
+  process.exit(0);
 }
 
 if (scene.includes('broken')) {

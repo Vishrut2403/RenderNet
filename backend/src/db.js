@@ -175,6 +175,87 @@ export function saveJob(job) {
   upsertJob.run(row);
 }
 
+db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner, id DESC)');
+db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id DESC)');
+
+// Ids rather than rows: the job records themselves are held in memory and kept
+// in step from there, and this is only being asked which of them a page shows.
+// Walking and sorting every job the farm has ever run, on every poll of every
+// open dashboard, is what this replaced.
+const pages = new Map();
+
+function pageQuery(byOwner, byStatus, byBefore) {
+  const key = `${byOwner}${byStatus}${byBefore}`;
+
+  if (!pages.has(key)) {
+    const where = ['1 = 1'];
+
+    if (byOwner) where.push('owner = @owner');
+    if (byStatus) where.push('status = @status');
+    if (byBefore) where.push('id < @before');
+
+    pages.set(key, db.prepare(
+      `SELECT id FROM jobs WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT @limit`
+    ));
+  }
+
+  return pages.get(key);
+}
+
+// One more than the page asked for, so the caller knows whether there is
+// another without counting what it is not going to show.
+export function pageOfJobIds({ owner = null, status = null, before = null, limit }) {
+  return pageQuery(owner !== null, status !== null, before !== null)
+    .all({ owner, status, before, limit: limit + 1 })
+    .map(row => row.id);
+}
+
+// No limit: what is rendering is bounded by the size of the farm rather than by
+// how long it has been running, and a dashboard that quietly stopped listing
+// some of it would be worse than one that took a moment longer.
+export function renderingJobIds(owner = null) {
+  const rows = owner === null
+    ? db.prepare("SELECT id FROM jobs WHERE status = 'rendering' ORDER BY id DESC").all()
+    : db.prepare("SELECT id FROM jobs WHERE status = 'rendering' AND owner = ? ORDER BY id DESC")
+      .all(owner);
+
+  return rows.map(row => row.id);
+}
+
+export function countJobsByStatus(owner = null) {
+  const rows = owner === null
+    ? db.prepare('SELECT status, COUNT(*) AS n FROM jobs GROUP BY status').all()
+    : db.prepare('SELECT status, COUNT(*) AS n FROM jobs WHERE owner = ? GROUP BY status')
+      .all(owner);
+
+  const counts = { all: 0 };
+
+  for (const row of rows) {
+    counts[row.status] = row.n;
+    counts.all += row.n;
+  }
+
+  return counts;
+}
+
+// Summed where the rows are rather than by adding up a list nobody wanted.
+// julianday gives a day count as a float, which is milliseconds to spare.
+const TOTALS = `SELECT
+    COALESCE(SUM(completedFrames), 0) AS framesRendered,
+    COALESCE(SUM(CASE
+      WHEN status = 'completed' AND startedAt IS NOT NULL AND completedAt IS NOT NULL
+      THEN (julianday(completedAt) - julianday(startedAt)) * 86400000
+      ELSE 0 END), 0) AS renderMs
+  FROM jobs`;
+
+export function jobTotals(owner = null) {
+  const row = owner === null
+    ? db.prepare(TOTALS).get()
+    : db.prepare(`${TOTALS} WHERE owner = ?`).get(owner);
+
+  return { framesRendered: row.framesRendered, renderMs: Math.round(row.renderMs) };
+}
+
 export function loadJobs() {
   return db.prepare(`SELECT ${COLUMNS.join(', ')} FROM jobs`).all();
 }
@@ -386,6 +467,30 @@ export function releaseLease(leaseId) {
     `UPDATE frames SET leaseId = NULL, leasedBy = NULL, leaseExpiresAt = NULL
      WHERE leaseId = ?`
   ).run(leaseId).changes > 0;
+}
+
+// A machine that has gone is not coming back for what it was holding, and every
+// job it had a hand in may now be settleable.
+export function releaseLeasesOf(workerId) {
+  const held = db.prepare(
+    'SELECT DISTINCT jobId FROM frames WHERE leasedBy = ? AND leaseId IS NOT NULL'
+  ).all(workerId).map(row => row.jobId);
+
+  db.prepare(
+    `UPDATE frames SET leaseId = NULL, leasedBy = NULL, leaseExpiresAt = NULL
+     WHERE leasedBy = ?`
+  ).run(workerId);
+
+  return held;
+}
+
+export function releaseCompositesOf(workerId) {
+  const held = db.prepare('SELECT jobId FROM composites WHERE leasedBy = ?')
+    .all(workerId).map(row => row.jobId);
+
+  db.prepare('DELETE FROM composites WHERE leasedBy = ?').run(workerId);
+
+  return held;
 }
 
 export function clearJobLeases(jobId) {

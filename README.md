@@ -43,9 +43,14 @@ The parts that took the most thought.
 
 **Frames are claimed, not handed out.** A worker asks for work and holds a claim
 on it with an expiry, renewed while it renders. A worker that dies loses the
-claim and the frames return to circulation, and only the holder may upload them.
-The server decides when a job is done, not the worker — a worker that died
-halfway is in no position to report.
+claim and the frames return to circulation — at once for a renderer on this
+machine, since the pool that started it knows the moment it goes, and when the
+term runs out for one somewhere else. Only the holder may upload, and what
+arrives is checked against the format it is named as before it counts: a render
+cut short leaves a file with the right name and the wrong bytes, which nothing
+downstream would notice until somebody opened the ZIP. The server decides when a
+job is done, not the worker — a worker that died halfway is in no position to
+report.
 
 **A claim covers a span of frames, not one.** Starting Blender costs the same
 seconds of parsing and scene building whether it then renders one frame or ten:

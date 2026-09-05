@@ -1,4 +1,7 @@
-import { getFailedFrames, getFailedFramesIn } from './db.js';
+import {
+  getFailedFrames, getFailedFramesIn, pageOfJobIds, renderingJobIds,
+  countJobsByStatus, jobTotals
+} from './db.js';
 import { jobs } from './job-store.js';
 import { frameTimings } from './estimates.js';
 import { queueWaits } from './queue.js';
@@ -61,67 +64,45 @@ export function getJob(jobId) {
   };
 }
 
-function newestFirst(viewer) {
-  const visible = [];
-
-  for (const job of jobs.values()) {
-    if (!viewer || viewer.role === 'admin' || job.owner === viewer.username) visible.push(job);
-  }
-
-  return visible.sort((a, b) => b.id - a.id);
+// An admin sees the lot; everybody else sees their own. Null means no filter.
+function ownerFor(viewer) {
+  return !viewer || viewer.role === 'admin' ? null : viewer.username;
 }
 
-function tally(visible) {
-  const counts = { all: visible.length };
+// The order and the page come from the database; the records themselves come
+// from memory, which is where the live state is kept.
+function pageOf(owner, { status = null, before = null, limit }) {
+  const ids = pageOfJobIds({ owner, status, before, limit });
+  const page = ids.slice(0, limit).map(id => jobs.get(id)).filter(Boolean);
 
-  for (const job of visible) counts[job.status] = (counts[job.status] || 0) + 1;
-
-  return counts;
+  return { page, more: ids.length > limit };
 }
 
 export function listJobs({ viewer, status = null, before = null, limit = DEFAULT_PAGE }) {
-  const visible = newestFirst(viewer);
-
-  const matching = visible.filter(job =>
-    (status === null || job.status === status) && (before === null || job.id < before));
-
-  const page = matching.slice(0, limit);
-  const last = page[page.length - 1];
+  const owner = ownerFor(viewer);
+  const { page, more } = pageOf(owner, { status, before, limit });
 
   return {
-    counts: tally(visible),
+    counts: countJobsByStatus(owner),
     jobs: enrich(page, groupErrors(getFailedFramesIn(page.map(job => job.id)))),
-    nextBefore: last && matching.length > page.length ? last.id : null
+    nextBefore: more ? page[page.length - 1]?.id ?? null : null
   };
 }
 
 // Every render in flight, the newest few, and totals over the lot: what no
 // single page can answer.
 export function jobsSummary(viewer) {
-  const visible = newestFirst(viewer);
-
-  const rendering = visible.filter(job => job.status === 'rendering');
-  const recent = visible.slice(0, RECENT_SHOWN);
+  const owner = ownerFor(viewer);
+  const rendering = renderingJobIds(owner).map(id => jobs.get(id)).filter(Boolean);
+  const recent = pageOf(owner, { limit: RECENT_SHOWN }).page;
 
   const shown = [...new Map([...rendering, ...recent].map(job => [job.id, job])).values()];
   const errors = groupErrors(getFailedFramesIn(shown.map(job => job.id)));
   const byId = new Map(enrich(shown, errors).map(job => [job.id, job]));
 
-  let framesRendered = 0;
-  let renderMs = 0;
-
-  for (const job of visible) {
-    framesRendered += job.completedFrames || 0;
-
-    if (job.status === 'completed' && job.startedAt && job.completedAt) {
-      renderMs += new Date(job.completedAt) - new Date(job.startedAt);
-    }
-  }
-
   return {
-    counts: tally(visible),
-    framesRendered,
-    renderMs,
+    counts: countJobsByStatus(owner),
+    ...jobTotals(owner),
     rendering: rendering.map(job => byId.get(job.id)),
     recent: recent.map(job => byId.get(job.id))
   };

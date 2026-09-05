@@ -1,5 +1,5 @@
 import fs from 'fs';
-import { ensureWorkers, stopWorkers } from './worker-pool.js';
+import { ensureWorkers, stopWorkers, whenWorkerLost } from './worker-pool.js';
 import path from 'path';
 import { ensureDir } from './utils/file-utils.js';
 import { dataPath } from './paths.js';
@@ -10,7 +10,7 @@ import {
   leaseFrames, renewLease, releaseLease, getLease, liveLeases, clearJobLeases,
   holdFramesExcept, releaseHeldFrames,
   leaseComposite, renewComposite, releaseComposite, getCompositeLease,
-  liveComposites, clearJobComposite
+  liveComposites, clearJobComposite, releaseLeasesOf, releaseCompositesOf
 } from './db.js';
 import {
   DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY, primaryOf
@@ -760,6 +760,23 @@ export function renewFrameLease(leaseId) {
 
   return expiresAt ? { ok: true, expiresAt } : { ok: false, reason: 'expired' };
 }
+
+// A worker on this machine has gone. Its claims go with it rather than waiting
+// out a lease nobody is renewing: with a claim covering a span, that is up to a
+// minute of the farm sitting on work it will never receive.
+export function forgetWorker(workerId) {
+  const touched = new Set([...releaseLeasesOf(workerId), ...releaseCompositesOf(workerId)]);
+
+  if (touched.size === 0) return 0;
+
+  console.warn(`Worker ${workerId} is gone; ${touched.size} job(s) had claims of its`);
+
+  for (const jobId of touched) settleJob(jobId);
+
+  return touched.size;
+}
+
+whenWorkerLost(forgetWorker);
 
 export function releaseFrameLease(leaseId) {
   const lease = getLease(leaseId) ?? getCompositeLease(leaseId);

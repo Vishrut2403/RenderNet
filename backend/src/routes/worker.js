@@ -14,7 +14,8 @@ import { getJob } from '../job-views.js';
 import { getLease, getCompositeLease, liveLeases } from '../db.js';
 import path from 'path';
 import { dataPath, MAX_FRAME_BYTES } from '../paths.js';
-import { parseFormats, primaryOf, extensionOf } from '../formats.js';
+import { startsWith } from '../utils/file-utils.js';
+import { parseFormats, primaryOf, extensionOf, signatureFor } from '../formats.js';
 import { isTiled } from '../tiles.js';
 import { tileName, tilesPath, compositeName } from '../tiles.js';
 import { announceWorker } from '../worker-registry.js';
@@ -151,6 +152,20 @@ const upload = multer({
   limits: { fileSize: MAX_FRAME_BYTES }
 });
 
+// Only the frames on disk are downloadable, so the server is the one that says
+// whether what arrived is the picture it is named as rather than taking the
+// worker's word for it.
+function unreadable(file) {
+  const signature = signatureFor(path.extname(file.filename));
+
+  if (file.size === 0) return 'it is empty';
+  if (signature && !startsWith(file.path, signature)) {
+    return `it does not begin the way a ${path.extname(file.filename)} does`;
+  }
+
+  return null;
+}
+
 function validFrame(req, res, next) {
   const frame = Number(req.params.frame);
 
@@ -231,6 +246,13 @@ router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, re
     return res.status(400).json({ error: 'No frame file uploaded' });
   }
 
+  const broken = unreadable(req.file);
+
+  if (broken) {
+    fs.rmSync(req.file.path, { force: true });
+    return res.status(422).json({ error: `Frame ${req.params.frame} was not stored because ${broken}` });
+  }
+
   const frame = Number(req.params.frame);
   const isPrimary = path.extname(req.file.filename).toLowerCase()
     === extensionOf(primaryOf(req.job.formats));
@@ -301,6 +323,13 @@ router.post('/jobs/:id/composite', loadJob, requireRendering, requireComposite,
   composite.single('composite'), (req, res) => {
     if (!req.file) {
       return res.status(400).json({ error: 'No picture uploaded' });
+    }
+
+    const broken = unreadable(req.file);
+
+    if (broken) {
+      fs.rmSync(req.file.path, { force: true });
+      return res.status(422).json({ error: `The picture was not stored because ${broken}` });
     }
 
     const job = recordComposite(req.jobId, null);

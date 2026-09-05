@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { localMachineToken } from './worker-tokens.js';
+import { localMachineToken, machineFor } from './worker-tokens.js';
 
 const WORKER_MAIN = path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'worker-main.js');
 const RESTART_DELAY_MS = 2000;
@@ -13,6 +13,18 @@ function slots() {
 
 const children = new Map();
 let stopping = false;
+let lost = () => {};
+
+// Told when a renderer goes, since the queue cannot see into another process.
+export function whenWorkerLost(handler) {
+  lost = handler;
+}
+
+// The name a worker claims under: one credential covers the machine, and each
+// process on it names the slot it is.
+function claimedAs(index) {
+  return `${machineFor(localMachineToken()).id}:worker-${index}`;
+}
 
 // Through console rather than inherited stdio: the file logger patches console,
 // and an inherited pipe would be held open after the server has gone.
@@ -57,6 +69,7 @@ function launchWorker(index) {
 
   child.on('exit', (code, signal) => {
     children.delete(index);
+    lost(claimedAs(index));
 
     if (stopping) return;
 

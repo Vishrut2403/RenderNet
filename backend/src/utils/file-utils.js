@@ -32,6 +32,25 @@ export function hashFile(filePath) {
   });
 }
 
+// Reads only the first few bytes: a frame may be hundreds of megabytes, and all
+// that is in question is whether it starts the way its format does.
+export function startsWith(filePath, bytes) {
+  let handle = null;
+
+  try {
+    const head = Buffer.alloc(bytes.length);
+
+    handle = fs.openSync(filePath, 'r');
+
+    return fs.readSync(handle, head, 0, bytes.length, 0) === bytes.length
+      && head.equals(Buffer.from(bytes));
+  } catch {
+    return false;
+  } finally {
+    if (handle !== null) fs.closeSync(handle);
+  }
+}
+
 // Null when the check itself fails: a farm that stops rendering because it
 // could not read the filesystem is worse than one that tries and fails loudly.
 export function freeBytes(dir) {
