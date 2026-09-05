@@ -334,6 +334,67 @@ export default async function run() {
     console.log('\n  Frame leases');
     await checkLeases(db, results);
 
+    console.log('\n  Handing over a frame instead of sending it');
+
+    // A renderer on the server's own machine has already written the frame to a
+    // disk the server can read, so it hands over a path rather than the bytes.
+    db.markFramePending(jobId, 4);
+    const local = tokens.localMachineToken();
+    const held = db.leaseFrames(jobId, tokens.machineFor(local).id, 600_000, 1);
+    const scratch = path.join(sandbox, 'worker-tmp', `job_${jobId}`);
+
+    fs.mkdirSync(scratch, { recursive: true });
+
+    const handOver = async (token, filePath) => {
+      const response = await fetch(`${base}/jobs/${jobId}/frames/4/at`, {
+        method: 'POST',
+        headers: {
+          'x-worker-token': token,
+          'Content-Type': 'application/json',
+          'x-lease-id': held.leaseId
+        },
+        body: JSON.stringify({ path: filePath })
+      });
+
+      return { status: response.status, body: await response.json().catch(() => ({})) };
+    };
+
+    // Somebody else's file, named by a machine that has no business naming it.
+    const outside = path.join(sandbox, 'users.json');
+    fs.writeFileSync(outside, 'not a frame');
+
+    results.check('a path outside the job\'s scratch space is refused',
+      (await handOver(local, outside)).status === 400,
+      JSON.stringify(await handOver(local, outside)));
+
+    const rendered = path.join(scratch, 'frame_0004.png');
+    fs.writeFileSync(rendered, png);
+
+    const taken = await handOver(local, rendered);
+
+    results.check('a renderer on this machine hands the frame over by name',
+      taken.status === 200 && taken.body.stored === 'frame_0004.png', JSON.stringify(taken));
+    results.check('the file is moved rather than copied', !fs.existsSync(rendered));
+    results.check('and it lands where an uploaded frame would',
+      fs.existsSync(path.join(sandbox, views.getJob(jobId).outputFolder, 'frame_0004.png')));
+
+    // Naming a file is only safe from a machine that shares this one's disk.
+    // Anywhere else it would be pointing at somebody else's.
+    db.markFramePending(jobId, 4);
+    const elsewhere = db.leaseFrames(jobId, standIn, 600_000, 1);
+    const again = path.join(scratch, 'frame_0004.png');
+
+    fs.writeFileSync(again, png);
+
+    const fromElsewhere = await fetch(`${base}/jobs/${jobId}/frames/4/at`, {
+      method: 'POST',
+      headers: { ...json, 'x-lease-id': elsewhere.leaseId },
+      body: JSON.stringify({ path: again })
+    });
+
+    results.check('a machine that is not this one may not hand over a path at all',
+      fromElsewhere.status === 403, `got ${fromElsewhere.status}`);
+
     console.log('\n  A machine part way through a span is still here');
 
     // A worker asks for work once a span, so on a long one it can go minutes

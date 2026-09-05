@@ -334,7 +334,7 @@ class RenderWorker {
       announced.add(index);
       pump = pump.then(async () => {
         const done = await this.deliverFrame(lease, {
-          index, sceneFrames, outputDir, prefix, primary, extras
+          index, sceneFrames, outputDir, prefix, primary, extras, remote
         });
 
         if (done) handled.add(index);
@@ -521,7 +521,7 @@ class RenderWorker {
   // Resolves to whether this frame has been dealt with. A frame announced whose
   // files are not there is left to the accounting pass, which is the one place
   // a failure is decided.
-  async deliverFrame(lease, { index, sceneFrames, outputDir, prefix, primary, extras }) {
+  async deliverFrame(lease, { index, sceneFrames, outputDir, prefix, primary, extras, remote }) {
     if (this.abandoned) return true;
 
     const { leaseId, jobId, frames } = lease;
@@ -537,7 +537,7 @@ class RenderWorker {
 
     // Every format has to arrive or the ZIP is missing one for this frame alone.
     for (const file of produced) {
-      if (await this.uploadFrame(jobId, frame, file, leaseId)) continue;
+      if (await this.handOverFrame(jobId, frame, file, leaseId, remote)) continue;
 
       delivered = false;
       break;
@@ -714,6 +714,27 @@ class RenderWorker {
         reject(new Error(`Failed to start Blender: ${err.message}`));
       });
     });
+  }
+
+  // On this machine the file is already on a disk the server can read, so it is
+  // handed over by name rather than read, encoded, sent and written again. Only
+  // an optimisation: anything the server will not take that way is sent.
+  async handOverFrame(jobId, frameNumber, framePath, leaseId, remote) {
+    if (remote) return this.uploadFrame(jobId, frameNumber, framePath, leaseId);
+
+    try {
+      const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/frames/${frameNumber}/at`, {
+        method: 'POST',
+        headers: workerHeaders({ 'Content-Type': 'application/json', 'x-lease-id': leaseId }),
+        body: JSON.stringify({ path: framePath })
+      });
+
+      if (response.ok) return true;
+    } catch {
+      // Fall through and send it.
+    }
+
+    return this.uploadFrame(jobId, frameNumber, framePath, leaseId);
   }
 
   async uploadFrame(jobId, frameNumber, framePath, leaseId) {

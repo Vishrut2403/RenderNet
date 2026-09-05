@@ -48,7 +48,11 @@ machine, since the pool that started it knows the moment it goes, and when the
 term runs out for one somewhere else. Only the holder may upload, and what
 arrives is checked against the format it is named as before it counts: a render
 cut short leaves a file with the right name and the wrong bytes, which nothing
-downstream would notice until somebody opened the ZIP. The server decides when a
+downstream would notice until somebody opened the ZIP. A renderer on the
+server's own machine hands over the path instead of the bytes, since the file is
+already on a disk the server can read — only a machine using the credential this
+server mints for itself may do that, and it falls back to sending the file if
+the server will not take it. The server decides when a
 job is done, not the worker — a worker that died halfway is in no position to
 report.
 
@@ -56,10 +60,12 @@ report.
 seconds of parsing and scene building whether it then renders one frame or ten:
 on this repository's own fixture, five separate launches take 8.5s against 2.0s
 for one launch of five frames. So a claim covers as many frames as fit in
-`FRAME_SPAN_MS`, measured against the job's own median frame time. Its first
-frame goes out alone, because rendering it is what measures the rest; after that
-a slow scene is still claimed a frame at a time and a fast one in handfuls, and
-a span is never more than one machine's share of what is left. Frames go back as
+`FRAME_SPAN_MS`, measured against the job's own median frame time *and the rate
+of the machine asking*. Its first frame goes out alone, because rendering it is
+what measures the rest; after that a slow scene is still claimed a frame at a
+time and a fast one in handfuls, a laptop is given less to hold than the
+workstation beside it, and a span is never more than one machine's share of
+what is left. Frames go back as
 Blender writes them rather than when the launch ends, so a span cut short keeps
 everything it had already rendered, and only the frame Blender actually stopped
 on is charged a failed attempt.
@@ -75,6 +81,14 @@ file that outlives any one job may only be deleted by the last job that could
 still render it, which is what cancelling, deleting and the retention sweep all
 have to agree on. A machine rendering somewhere else keeps its own copy under
 the same hash, so it downloads a scene once however many jobs of it it renders.
+
+**The disk reserve is kept while a job runs, not only before it starts.**
+`MIN_FREE_BYTES` is what stops the disk ever actually filling, and a long render
+used to walk straight through it: nothing looked at free space between the
+moment a job started and the moment it ended, so the back half of the range
+failed three attempts at a time against a disk with no room. Free space is now
+read as frames land, and a job that has eaten into the reserve goes back to the
+queue keeping every frame it delivered.
 
 **An interrupted render resumes rather than restarting.** Frames are tracked
 individually, so switching the machine off mid-job costs the frame in flight,

@@ -13,12 +13,28 @@ import {
 const PORT = 5598;
 const CAPABILITY_PORT = 5610;
 const LOST_PORT = 5617;
+const UNEVEN_PORT = 5618;
 
 // "[worker-1] ✅ Job 17..., frame 3 rendered: ..." - the pool tags each worker's
 // output with which one it came from, so the log says who delivered what. One
 // launch may cover a span of frames, so this reads the line each frame gets as
 // it lands rather than the one the span starts with.
 const RENDER_LINE = /\[worker-(\d+)\][^\n]*Job \d+, frame (\d+) rendered/g;
+
+// "[worker-1] 🎬 Job 17, frames 2-5 (4) (CYCLES)" - how wide a claim each
+// machine was given. A single frame is written without a count.
+function spansFromLog(log, jobId) {
+  const line = new RegExp(
+    `\\[worker-(\\d+)\\][^\\n]*🎬 Job ${jobId}, frames? [\\d-]+(?: \\((\\d+)\\))?`, 'g');
+  const spans = new Map();
+
+  for (const match of log.matchAll(line)) {
+    if (!spans.has(match[1])) spans.set(match[1], []);
+    spans.get(match[1]).push(Number(match[2] ?? 1));
+  }
+
+  return spans;
+}
 
 function rendersFromLog(log) {
   const renders = [];
@@ -190,8 +206,60 @@ export default async function run() {
 
   await capabilities(results);
   await losingAWorker(results);
+  await unevenMachines(results);
 
   return results;
+}
+
+// A claim is sized in time, so it has to be sized against the machine taking
+// it: the same span on a machine that renders a frame in a second and one that
+// takes fifteen leaves the fast one waiting on the slow one's queue.
+async function unevenMachines(results) {
+  const box = makeSandbox('uneven');
+  let server;
+
+  try {
+    console.log('\n  A slow machine is given less to hold');
+
+    server = await startServer({
+      port: UNEVEN_PORT,
+      cwd: box,
+      env: { BLENDER_PATH: createFakeBlender(box), WORKER_SLOTS: '2', FRAME_SPAN_MS: '3000' }
+    });
+
+    const token = await adminSession(server.base);
+    const scene = createFakeScene(box, 'uneven.blend');
+
+    // A short job first, so both machines have a rate before the one being
+    // measured starts. A machine nobody has timed yet is treated as average,
+    // which is the only honest thing to do and is not what this is about.
+    const warmUp = await submitJob(server.base, token, scene,
+      { frameStart: 1, frameEnd: 8, skipAssetCheck: true });
+    await waitForJob(server.base, token, warmUp.body.jobId, 180000);
+
+    // Long enough that a claim is never bounded by what is left of the job,
+    // which would taper the spans on its own and prove nothing.
+    const job = await submitJob(server.base, token, scene,
+      { frameStart: 1, frameEnd: 120, skipAssetCheck: true });
+
+    const finished = await waitForJob(server.base, token, job.body.jobId, 180000);
+    const spans = spansFromLog(server.getLog(), job.body.jobId);
+    const slow = spans.get('1') ?? [];
+    const fast = spans.get('0') ?? [];
+
+    results.check('the job finished', finished.status === 'completed', finished.status);
+    results.check('both machines took part', slow.length > 0 && fast.length > 0,
+      `worker-0 ${fast.length} claims, worker-1 ${slow.length}`);
+    // Fifteen times slower a frame, against a three-second claim: a handful of
+    // frames at most, where the fast one reaches the cap.
+    results.check('the slow one is never given more than a few frames at a time',
+      Math.max(...slow) <= 6, `up to ${Math.max(...slow)}: ${slow.join(',')}`);
+    results.check('while the fast one is given as much as a claim may hold',
+      Math.max(...fast) >= 10, `up to ${Math.max(...fast)}: ${fast.join(',')}`);
+  } finally {
+    await stopServer(server);
+    removeSandbox(box);
+  }
 }
 
 // A machine that dies is holding a claim nobody will renew. Waiting it out

@@ -1,4 +1,6 @@
-import { recentFrameDurations, frameDurationsFor, liveLeases } from './db.js';
+import {
+  recentFrameDurations, frameDurationsFor, recentDurationsBy, liveLeases
+} from './db.js';
 
 const CACHE_TTL_MS = 10 * 1000;
 
@@ -26,6 +28,23 @@ export function typicalFrameMs() {
   frameRate = { at: Date.now(), value };
 
   return value;
+}
+
+function median(values) {
+  return values.length === 0 ? null : [...values].sort((a, b) => a - b)[values.length >> 1];
+}
+
+// How this machine compares with the farm: above one is slower. A ratio rather
+// than a rate of its own, because a frame's weight comes from the scene. Read
+// each time - once a claim - so a machine's first spans are not sized as if it
+// were an average one.
+export function paceOf(workerId) {
+  if (!workerId) return 1;
+
+  const mine = median(recentDurationsBy(workerId));
+  const farm = typicalFrameMs();
+
+  return mine && farm ? mine / farm : 1;
 }
 
 // Only the jobs asked about: working out every job in the farm to render a

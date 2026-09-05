@@ -19,10 +19,12 @@ import {
   workerCanRender, engineIsOffered, machines, workerCount, touchWorker
 } from './worker-registry.js';
 import { checkAssets, missingAssetsMessage } from './preflight.js';
-import { queueWaits as waitsFor, forgetTiming, frameTimings } from './estimates.js';
+import { queueWaits as waitsFor, forgetTiming, frameTimings, paceOf } from './estimates.js';
 import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
-import { diskIsTooFull, heldForDisk, deleteJobFiles, forgetUsage } from './storage.js';
+import {
+  diskIsTooFull, tooFullToCarryOn, heldForDisk, deleteJobFiles, forgetUsage
+} from './storage.js';
 import { isTiled, tilesPath, compositeName } from './tiles.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
@@ -616,15 +618,19 @@ function recordFailure(job) {
 
 // How many frames one claim covers, sized so the cost of starting Blender is
 // spread over several of them without a lost machine costing much.
-function spanFor(job) {
+function spanFor(job, workerId) {
   // Every tile crops the scene differently, so each is its own Blender anyway.
   if (isTiled(job)) return 1;
 
   // This job's own frames only: scenes differ by orders of magnitude.
-  const perFrame = frameTimings([job.id]).get(job.id)?.medianMs;
+  const measured = frameTimings([job.id]).get(job.id)?.medianMs;
 
   // Nothing measured yet. One frame, which is what measures it.
-  if (!perFrame) return 1;
+  if (!measured) return 1;
+
+  // What the scene costs, at the rate this machine works at: a slow one given
+  // the same span as a fast one sits on work the fast one could have finished.
+  const perFrame = measured * paceOf(workerId);
 
   const left = Math.max(1, (job.totalFrames ?? 1) - (job.completedFrames ?? 0));
   // Leaves the other machines something to claim.
@@ -668,7 +674,7 @@ function leaseFromActive(workerId) {
     // and three failures in a row is enough to stop the job for everyone.
     if (!workerCanRender(workerId, job.renderEngine)) continue;
 
-    const lease = leaseFrames(job.id, workerId, LEASE_TTL_MS, spanFor(job));
+    const lease = leaseFrames(job.id, workerId, LEASE_TTL_MS, spanFor(job, workerId));
 
     if (lease) {
       return {
@@ -986,7 +992,20 @@ export function recordFrameUpload(jobId, frameNumber, filename) {
   syncFrameCounts(job);
   saveJob(job);
 
+  // Frames are the only thing that fills the disk once a job is under way.
+  if (tooFullToCarryOn()) holdForDisk(job);
+
   return job;
+}
+
+// Back to the queue keeping every frame it delivered, rather than failing the
+// rest three attempts at a time against a disk with no room for them. No owner
+// to attribute it to, and promoteNext will not start it again until there is.
+function holdForDisk(job) {
+  console.warn(`Job ${job.id} put back: the disk is down to its reserve`);
+
+  pushBack(job, null);
+  diskIsTooFull(processQueue);
 }
 
 // Returns the frame's own record too: whether it has attempts left is what

@@ -8,18 +8,40 @@ import { removeBlend, blendDirectory } from './blend-store.js';
 const DISK_RECHECK_MS = 60 * 1000;
 const USAGE_TTL_MS = 10000;
 
+const FREE_TTL_MS = 5000;
+
 let held = null;
 let recheckTimer = null;
+let freeSpace = { at: 0, bytes: null };
 
 export function heldForDisk() {
   return held;
+}
+
+// Asked once a frame while a job renders, so the answer is kept for a moment:
+// the number does not move fast enough to be worth a syscall per upload.
+function freeNow(fresh = false) {
+  if (!fresh && Date.now() - freeSpace.at < FREE_TTL_MS) return freeSpace.bytes;
+
+  freeSpace = { at: Date.now(), bytes: freeBytes(DATA_DIR) };
+
+  return freeSpace.bytes;
+}
+
+// The same reserve the queue is held at, asked of a job already rendering:
+// nothing else looked at free space between the moment a job started and the
+// moment it ended, so a long render walked straight through it.
+export function tooFullToCarryOn() {
+  const free = freeNow();
+
+  return free !== null && free < MIN_FREE_BYTES;
 }
 
 // Held rather than failed: deleting one finished job is all it takes to free
 // the space, and a job that failed for want of disk would have to be uploaded
 // again to get it back.
 export function diskIsTooFull(onRecheck) {
-  const free = freeBytes(DATA_DIR);
+  const free = freeNow(true);
 
   if (free === null || free >= MIN_FREE_BYTES) {
     held = null;

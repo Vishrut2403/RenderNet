@@ -1445,6 +1445,59 @@ export default async function run() {
     removeSandbox(fullBox);
   }
 
+  // The reserve is what stops the disk ever actually filling, and nothing used
+  // to look at it between a job starting and ending: a long render walked
+  // straight through it and then failed every remaining frame three times over.
+  // Reached here with real bytes - the reserve is set just under what the disk
+  // actually has, and the job writes its way past it.
+  const eatingBox = makeSandbox('disk-mid-render');
+  let eatingServer;
+
+  try {
+    console.log('\n  A render that eats into the reserve is put back, not failed');
+
+    const spare = fs.statfsSync(eatingBox);
+    const reserve = spare.bavail * spare.bsize - 100 * 1024 * 1024;
+
+    eatingServer = await startServer({
+      port: PORT + 6,
+      cwd: eatingBox,
+      env: {
+        BLENDER_PATH: createFakeBlender(eatingBox),
+        MIN_FREE_BYTES: String(Math.max(reserve, 1))
+      }
+    });
+
+    const eatingToken = await adminSession(eatingServer.base);
+    // Twenty megabytes a frame at two seconds a frame: enough bytes to cross
+    // the reserve, and slow enough that free space is read again on the way.
+    const eating = await submitJob(
+      eatingServer.base, eatingToken, createFakeScene(eatingBox, 'fat-slow.blend'),
+      { frameStart: 1, frameEnd: 10, skipAssetCheck: true }
+    );
+
+    const putBack = await waitForCondition(
+      async () => (await getJob(eatingServer.base, eatingToken, eating.body.jobId))
+        .status === 'pending',
+      { label: 'the render to be put back for want of disk', timeoutMs: 90000 }
+    );
+
+    const stopped = await getJob(eatingServer.base, eatingToken, eating.body.jobId);
+    const status = await (await fetch(`${eatingServer.base}/jobs/queue/status`, {
+      headers: auth(eatingToken)
+    })).json();
+
+    results.check('the job goes back to the queue rather than failing', putBack, stopped.status);
+    results.check('keeping the frames it had already delivered',
+      stopped.completedFrames > 0 && stopped.failedFrames === 0,
+      `${stopped.completedFrames} done, ${stopped.failedFrames} failed`);
+    results.check('and the farm says the disk is why',
+      /disk/i.test(status.heldForDisk || ''), JSON.stringify(status.heldForDisk));
+  } finally {
+    await stopServer(eatingServer);
+    removeSandbox(eatingBox);
+  }
+
   // The workstation is started by Task Scheduler, where stdout goes nowhere.
   // Its own instance because rotation and pruning need limits nothing else can
   // work under.

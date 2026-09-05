@@ -140,6 +140,9 @@ addColumnIfMissing('frames', 'durationMs', 'INTEGER');
 addColumnIfMissing('frames', 'leaseId', 'TEXT');
 addColumnIfMissing('frames', 'leasedBy', 'TEXT');
 addColumnIfMissing('frames', 'leaseExpiresAt', 'TEXT');
+// Kept when the claim is let go, which clears leasedBy: which machine actually
+// rendered a frame is what says how fast that machine is.
+addColumnIfMissing('frames', 'renderedBy', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS idx_frames_lease ON frames(leaseId)');
 
 // Only the measured frames, which is what the timings read and a fraction of
@@ -327,6 +330,15 @@ export function recentFrameDurations(limit = 200) {
   ).all(limit).map(row => row.durationMs);
 }
 
+// What one machine has been taking lately, across whatever it has rendered.
+export function recentDurationsBy(workerId, limit = 50) {
+  return db.prepare(
+    `SELECT durationMs FROM frames
+      WHERE renderedBy = ? AND durationMs IS NOT NULL
+      ORDER BY updatedAt DESC LIMIT ?`
+  ).all(workerId, limit).map(row => row.durationMs);
+}
+
 // One job's measured frames, which is all that job's timings depend on. The
 // farm-wide version of this - every duration in the database, read on every
 // poll of the job list - is what this replaced.
@@ -366,7 +378,7 @@ function renderingBegan(leaseId, claimedAt) {
 export function markFrameDone(jobId, frame, filename) {
   const finished = new Date();
   const claimed = db
-    .prepare('SELECT startedAt, leaseId FROM frames WHERE jobId = ? AND frame = ?')
+    .prepare('SELECT startedAt, leaseId, leasedBy FROM frames WHERE jobId = ? AND frame = ?')
     .get(jobId, frame);
 
   const startedAt = claimed?.startedAt
@@ -377,9 +389,10 @@ export function markFrameDone(jobId, frame, filename) {
 
   return db.prepare(
     `UPDATE frames SET status = 'done', filename = ?, error = NULL, updatedAt = ?,
-       durationMs = ?
+       durationMs = ?, renderedBy = ?
      WHERE jobId = ? AND frame = ?`
-  ).run(filename, finished.toISOString(), durationMs, jobId, frame).changes;
+  ).run(filename, finished.toISOString(), durationMs, claimed?.leasedBy ?? null, jobId, frame)
+    .changes;
 }
 
 // A frame only counts as failed once it has used up its attempts; until then it

@@ -14,6 +14,7 @@ import { getJob } from '../job-views.js';
 import { getLease, getCompositeLease, liveLeases } from '../db.js';
 import path from 'path';
 import { dataPath, MAX_FRAME_BYTES } from '../paths.js';
+import { workerScratchDir } from '../job-store.js';
 import { startsWith } from '../utils/file-utils.js';
 import { parseFormats, primaryOf, extensionOf, signatureFor } from '../formats.js';
 import { isTiled } from '../tiles.js';
@@ -115,16 +116,30 @@ function requireRendering(req, res, next) {
   next();
 }
 
+// Tiles are working parts, not output: kept aside so the listing and the ZIP
+// show the finished picture rather than the pieces of it.
+function folderFor(job) {
+  const folder = isTiled(job) ? dataPath(tilesPath(job.outputFolder)) : dataPath(job.outputFolder);
+
+  fs.mkdirSync(folder, { recursive: true });
+
+  return folder;
+}
+
+function storedAs(job, frame, extension) {
+  return isTiled(job)
+    ? tileName(frame) + extension
+    : `frame_${String(frame).padStart(4, '0')}${extension}`;
+}
+
+function askedFor(job, extension) {
+  return parseFormats(job.formats).map(extensionOf).includes(extension);
+}
+
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     try {
-      // Tiles are working parts, not output: kept aside so the listing and the
-      // ZIP show the finished picture rather than the pieces of it.
-      const folder = isTiled(req.job)
-        ? dataPath(tilesPath(req.job.outputFolder))
-        : dataPath(req.job.outputFolder);
-      fs.mkdirSync(folder, { recursive: true });
-      cb(null, folder);
+      cb(null, folderFor(req.job));
     } catch (error) {
       cb(error);
     }
@@ -134,16 +149,13 @@ const storage = multer.diskStorage({
     // fields sent before the file, which is a fragile ordering to depend on.
     const frame = Number(req.params.frame);
     const extension = path.extname(file.originalname).toLowerCase();
-    const allowed = parseFormats(req.job.formats).map(extensionOf);
 
-    if (!allowed.includes(extension)) {
+    if (!askedFor(req.job, extension)) {
       cb(new Error(`Job ${req.jobId} did not ask for a ${extension || 'nameless'} file`));
       return;
     }
 
-    cb(null, isTiled(req.job)
-      ? tileName(frame) + extension
-      : `frame_${String(frame).padStart(4, '0')}${extension}`);
+    cb(null, storedAs(req.job, frame, extension));
   }
 });
 
@@ -164,6 +176,18 @@ function unreadable(file) {
   }
 
   return null;
+}
+
+// Scratch space may be on another filesystem, where a rename cannot reach.
+function moveInto(from, to) {
+  try {
+    fs.renameSync(from, to);
+  } catch (error) {
+    if (error.code !== 'EXDEV') throw error;
+
+    fs.copyFileSync(from, to);
+    fs.rmSync(from, { force: true });
+  }
 }
 
 function validFrame(req, res, next) {
@@ -346,6 +370,66 @@ router.post('/jobs/:id/composite/failed', loadJob, requireRendering, requireComp
   (req, res) => {
     recordComposite(req.jobId, req.body?.error || 'Unknown error');
     res.json({ success: true });
+  });
+
+// A renderer on this machine has already written the frame to a disk the server
+// can read, so it hands over a path instead of the bytes. Only a machine using
+// the credential this server mints for itself may do it: a path from anywhere
+// else would be somebody naming a file they do not own.
+router.post('/jobs/:id/frames/:frame/at', loadJob, requireRendering, validFrame, requireLease,
+  (req, res) => {
+    if (req.machine.isLocal !== true) {
+      return res.status(403).json({ error: 'Only a renderer on this machine may hand over a path' });
+    }
+
+    const scratch = path.resolve(workerScratchDir(req.jobId));
+    const rendered = path.resolve(String(req.body?.path ?? ''));
+
+    if (!rendered.startsWith(scratch + path.sep)) {
+      return res.status(400).json({ error: `That file is not in job ${req.jobId}'s scratch space` });
+    }
+
+    const extension = path.extname(rendered).toLowerCase();
+
+    if (!askedFor(req.job, extension)) {
+      return res.status(400).json({
+        error: `Job ${req.jobId} did not ask for a ${extension || 'nameless'} file`
+      });
+    }
+
+    let arrived;
+
+    try {
+      arrived = { path: rendered, filename: path.basename(rendered), size: fs.statSync(rendered).size };
+    } catch {
+      return res.status(404).json({ error: `No frame at ${rendered}` });
+    }
+
+    const broken = unreadable(arrived);
+
+    if (broken) {
+      return res.status(422).json({ error: `Frame ${req.params.frame} was not stored because ${broken}` });
+    }
+
+    const frame = Number(req.params.frame);
+    const filename = storedAs(req.job, frame, extension);
+
+    try {
+      moveInto(rendered, path.join(folderFor(req.job), filename));
+    } catch (error) {
+      return res.status(500).json({ error: `Could not take the frame: ${error.message}` });
+    }
+
+    const isPrimary = extension === extensionOf(primaryOf(req.job.formats));
+    const job = isPrimary ? recordFrameUpload(req.jobId, frame, filename) : getJob(req.jobId);
+
+    if (!job || job.status !== 'rendering') {
+      return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
+    }
+
+    if (isPrimary) console.log(`Frame ${frame} taken for job ${req.jobId} (${job.progress}%)`);
+
+    res.json({ success: true, frame, stored: filename, progress: job.progress });
   });
 
 router.post('/jobs/:id/frames/:frame/failed', loadJob, requireRendering, validFrame, requireLease, (req, res) => {

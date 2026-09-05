@@ -134,6 +134,8 @@ const PNG_1X1 = Buffer.from(
 // (wait for stubbornIsUnkillable before cancelling; see below),
 // 'vanishing' kills the worker that launched it, once,
 // 'stalls' delivers its first frame and then never finishes another,
+// 'fat' writes twenty megabytes a frame,
+// 'uneven' takes far longer on worker-1 than on the others,
 // 'broken' exits non-zero with its complaint on stdout, 'flaky' does so for
 // one frame until a marker file says otherwise, and 'unglued' refuses to put
 // a tiled still back together until one does.
@@ -172,9 +174,25 @@ const CONTENT = {
   '.exr': Buffer.from('762f3101020000006368616e6e656c7300', 'hex')
 };
 
+// 'fat' writes frames big enough to move the free-space reading, which is how a
+// test reaches the disk reserve with real bytes rather than a pretend number.
+// Read from the path rather than the scene name below, which is not in scope
+// for the composite branch that also writes files.
+function frameBytes() {
+  return path.basename(valueOf('-b') || '').includes('fat') ? 20 * 1024 * 1024 : 0;
+}
+
 function write(file) {
+  const content = CONTENT[path.extname(file)] || CONTENT['.png'];
+  const padTo = frameBytes();
+
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, CONTENT[path.extname(file)] || CONTENT['.png']);
+
+  if (!padTo) return fs.writeFileSync(file, content);
+
+  const padded = Buffer.alloc(padTo);
+  content.copy(padded);
+  fs.writeFileSync(file, padded);
 }
 
 // One place for everything the stand-in records and every marker a test sets,
@@ -306,6 +324,10 @@ if (scene.includes('broken')) {
 const failAt = scene.includes('flaky') && !marked('fixed') && frames.includes(2) ? 2 : null;
 
 function pauseFor(f) {
+  // 'uneven' renders far slower on one of the machines than the other, which is
+  // what a farm of a workstation and a laptop looks like.
+  if (scene.includes('uneven')) return process.env.WORKER_ID?.endsWith('1') ? 900 : 60;
+
   if (scene.includes('hang') || scene.includes('stubborn')) return 60000;
   // 'stalls' renders its first frame and then never finishes another.
   if (scene.includes('stalls')) return f === 1 ? 0 : 60000;
