@@ -308,7 +308,7 @@ const claimable = db.prepare(
   `SELECT frame FROM frames
     WHERE jobId = ? AND status = 'pending'
       AND (leaseExpiresAt IS NULL OR leaseExpiresAt <= ?)
-    ORDER BY frame LIMIT 1`
+    ORDER BY frame LIMIT ?`
 );
 
 const claim = db.prepare(
@@ -326,22 +326,27 @@ function stamp(offsetMs = 0) {
 
 // One transaction, so two workers asking at once cannot get the same frame. The
 // UPDATE repeats the conditions rather than trusting the SELECT, so a claim that
-// lost the race changes nothing and says so.
-export const leaseFrame = db.transaction((jobId, workerId, ttlMs) => {
+// lost the race changes nothing and says so - and the frames it lost simply do
+// not join the span.
+export const leaseFrames = db.transaction((jobId, workerId, ttlMs, wanted) => {
   const now = stamp();
-  const row = claimable.get(jobId, now);
+  const rows = claimable.all(jobId, now, Math.max(1, wanted));
 
-  if (!row) return null;
+  if (rows.length === 0) return null;
 
-  const lease = {
-    leaseId: crypto.randomUUID(),
-    leasedBy: workerId,
-    expiresAt: stamp(ttlMs),
-    jobId,
-    frame: row.frame
-  };
+  const leaseId = crypto.randomUUID();
+  const expiresAt = stamp(ttlMs);
+  const frames = [];
 
-  return claim.run({ ...lease, now }).changes === 1 ? lease : null;
+  for (const row of rows) {
+    const taken = claim.run({
+      leaseId, leasedBy: workerId, expiresAt, jobId, frame: row.frame, now
+    }).changes === 1;
+
+    if (taken) frames.push(row.frame);
+  }
+
+  return frames.length > 0 ? { leaseId, leasedBy: workerId, expiresAt, jobId, frames } : null;
 });
 
 // Refused rather than extended: the frame may already belong to another worker.
@@ -350,7 +355,7 @@ export function renewLease(leaseId, ttlMs) {
 
   const renewed = db.prepare(
     'UPDATE frames SET leaseExpiresAt = ? WHERE leaseId = ? AND leaseExpiresAt > ?'
-  ).run(expiresAt, leaseId, stamp()).changes === 1;
+  ).run(expiresAt, leaseId, stamp()).changes > 0;
 
   return renewed ? expiresAt : null;
 }
@@ -359,7 +364,7 @@ export function releaseLease(leaseId) {
   return db.prepare(
     `UPDATE frames SET leaseId = NULL, leasedBy = NULL, leaseExpiresAt = NULL
      WHERE leaseId = ?`
-  ).run(leaseId).changes === 1;
+  ).run(leaseId).changes > 0;
 }
 
 export function clearJobLeases(jobId) {
@@ -369,11 +374,22 @@ export function clearJobLeases(jobId) {
   ).run(jobId).changes;
 }
 
+// Every frame the one claim covers. They share an owner and an expiry, so the
+// span answers as one thing.
 export function getLease(leaseId) {
-  return db.prepare(
-    `SELECT jobId, frame, status, leasedBy, leaseExpiresAt AS expiresAt
-     FROM frames WHERE leaseId = ?`
-  ).get(leaseId) ?? null;
+  const rows = db.prepare(
+    `SELECT jobId, frame, leasedBy, leaseExpiresAt AS expiresAt
+     FROM frames WHERE leaseId = ? ORDER BY frame`
+  ).all(leaseId);
+
+  if (rows.length === 0) return null;
+
+  return {
+    jobId: rows[0].jobId,
+    leasedBy: rows[0].leasedBy,
+    expiresAt: rows[0].expiresAt,
+    frames: rows.map(row => row.frame)
+  };
 }
 
 export function liveLeases() {

@@ -7,13 +7,13 @@ import {
   saveJob, deleteJob,
   createFrames, getFrames, countFramesByStatus,
   markFrameDone, markFramePending, markFrameAttemptFailed, resetFailedFrames,
-  leaseFrame, renewLease, releaseLease, getLease, liveLeases, clearJobLeases,
+  leaseFrames, renewLease, releaseLease, getLease, liveLeases, clearJobLeases,
   holdFramesExcept, releaseHeldFrames
 } from './db.js';
 import { DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY } from './formats.js';
-import { workerCanRender, engineIsOffered, machines } from './worker-registry.js';
+import { workerCanRender, engineIsOffered, machines, workerCount } from './worker-registry.js';
 import { checkAssets, missingAssetsMessage } from './preflight.js';
-import { queueWaits as waitsFor, forgetTiming } from './estimates.js';
+import { queueWaits as waitsFor, forgetTiming, frameTimings } from './estimates.js';
 import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
 import { diskIsTooFull, heldForDisk, deleteJobFiles, forgetUsage } from './storage.js';
@@ -30,6 +30,9 @@ const active = new Set();
 // Long enough that a worker misses six renewals before losing the frame, short
 // enough that a machine switched off mid-frame does not strand it for minutes.
 const LEASE_TTL_MS = Number(process.env.LEASE_TTL_MS) || 30 * 1000;
+// How much work one claim may hold, and the most frames it may hold it in.
+const SPAN_MS = Number(process.env.FRAME_SPAN_MS) || 60 * 1000;
+const MAX_SPAN = Number(process.env.MAX_FRAME_SPAN) || 16;
 
 const FAILFAST_FRAMES = 3;
 
@@ -591,13 +594,32 @@ function recordFailure(job) {
   lastFailure = { id: job.id, at: job.completedAt, error: job.error };
 }
 
+// How many frames one claim covers, sized so the cost of starting Blender is
+// spread over several of them without a lost machine costing much.
+function spanFor(job) {
+  // Every tile crops the scene differently, so each is its own Blender anyway.
+  if (isTiled(job)) return 1;
+
+  // This job's own frames only: scenes differ by orders of magnitude.
+  const perFrame = frameTimings([job.id]).get(job.id)?.medianMs;
+
+  // Nothing measured yet. One frame, which is what measures it.
+  if (!perFrame) return 1;
+
+  const left = Math.max(1, (job.totalFrames ?? 1) - (job.completedFrames ?? 0));
+  // Leaves the other machines something to claim.
+  const share = Math.ceil(left / Math.max(workerCount(), 1));
+
+  return Math.max(1, Math.min(Math.floor(SPAN_MS / perFrame), share, MAX_SPAN));
+}
+
 function leaseFromActive(workerId) {
   for (const job of activeJobs()) {
     // A worker that cannot render the engine would fail every frame it took,
     // and three failures in a row is enough to stop the job for everyone.
     if (!workerCanRender(workerId, job.renderEngine)) continue;
 
-    const lease = leaseFrame(job.id, workerId, LEASE_TTL_MS);
+    const lease = leaseFrames(job.id, workerId, LEASE_TTL_MS, spanFor(job));
 
     if (lease) {
       return {
@@ -612,8 +634,10 @@ function leaseFromActive(workerId) {
         exrCodec: job.exrCodec,
         exrDepth: job.exrDepth,
         jpegQuality: job.jpegQuality,
-        sceneFrame: isTiled(job) ? job.frameStart : lease.frame,
-        tile: isTiled(job) ? { index: lease.frame, of: job.tiles } : null
+        // A tile is a region of one frame, so the scene frame it renders is not
+        // the number it is claimed and uploaded under.
+        sceneFrame: isTiled(job) ? job.frameStart : null,
+        tile: isTiled(job) ? { index: lease.frames[0], of: job.tiles } : null
       };
     }
   }

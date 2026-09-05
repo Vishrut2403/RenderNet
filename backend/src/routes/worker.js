@@ -60,7 +60,7 @@ function requireLease(req, res, next) {
 
   if (!lease
     || lease.jobId !== req.jobId
-    || lease.frame !== Number(req.params.frame)
+    || !lease.frames.includes(Number(req.params.frame))
     || !heldBy(lease, req.machine.id)
     || new Date(lease.expiresAt) <= new Date()) {
     return res.status(409).json({ error: `Frame ${req.params.frame} is not leased to you` });

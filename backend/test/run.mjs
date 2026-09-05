@@ -13,6 +13,7 @@ import tiles from './tiles.test.mjs';
 import downloads from './downloads.test.mjs';
 import scheduling from './scheduling.test.mjs';
 import sceneReading from './scene-reading.test.mjs';
+import spans from './spans.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -29,7 +30,8 @@ const suites = [
   ['Tiled stills', tiles],
   ['Downloads and persistence', downloads],
   ['Scheduling and overrides', scheduling],
-  ['Reading an uploaded scene', sceneReading]
+  ['Reading an uploaded scene', sceneReading],
+  ['Frame spans', spans]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

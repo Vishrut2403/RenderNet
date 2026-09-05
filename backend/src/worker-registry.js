@@ -29,6 +29,10 @@ function knownWorkers() {
   return [...workers.values()];
 }
 
+export function workerCount() {
+  return knownWorkers().length;
+}
+
 export function workerCanRender(workerId, engine) {
   const worker = workers.get(workerId);
 

@@ -235,14 +235,21 @@ if (args.includes('-P') && !args.includes('-o')) {
   process.exit(0);
 }
 
-const frame = Number(valueOf('-f'));
+// One launch may be asked for a span of frames, the way Blender takes them.
+const frames = String(valueOf('-f')).split(',').map(Number);
+const frame = frames[0];
 const EXTENSIONS = { PNG: '.png', JPEG: '.jpg', OPEN_EXR: '.exr' };
-const target = valueOf('-o').replace('####', String(frame).padStart(4, '0'))
-  + (EXTENSIONS[valueOf('-F')] || '.png');
+const extension = EXTENSIONS[valueOf('-F')] || '.png';
+const targetFor = f => valueOf('-o').replace('####', String(f).padStart(4, '0')) + extension;
+const target = targetFor(frame);
 
 // Recorded so a test can assert on the command line the worker built and the
 // environment it set, which is where the render settings become visible.
 fs.writeFileSync(path.join(path.dirname(valueOf('-b')), 'last-args.txt'), args.join(' '));
+
+// A line per launch, which is what says whether a span was rendered in one.
+fs.appendFileSync(path.join(path.dirname(valueOf('-b')), 'launches.txt'),
+  scene + ' ' + valueOf('-f') + '\\n');
 fs.writeFileSync(
   path.join(path.dirname(valueOf('-b')), 'last-env.txt'),
   Object.entries(process.env)
@@ -266,38 +273,62 @@ if (scene.includes('noisy')) {
   for (let i = 0; i < 4096; i++) fs.writeSync(1, line);
 }
 
-// 'flaky' fails its second frame until a 'fixed' marker appears beside the
-// scene, so a job can fail for a reason somebody then puts right.
-if (scene.includes('flaky') && frame === 2
-    && !fs.existsSync(path.join(path.dirname(valueOf('-b')), 'fixed'))) {
-  fs.writeSync(1, 'Error: frame 2 cannot be rendered yet\\n');
-  process.exit(1);
-}
-
 if (scene.includes('broken')) {
   fs.writeSync(1, 'Error: cannot read scene\\n');
   process.exit(1);
 }
 
-const delay = scene.includes('hang') || scene.includes('stubborn') ? 60000
-  : scene.includes('stalls') ? (frame === 1 ? 0 : 60000)
-  : scene.includes('slow') ? 2000
-  : 0;
+// 'flaky' fails its second frame until a 'fixed' marker appears beside the
+// scene, so a job can fail for a reason somebody then puts right. Real Blender
+// writes the frames it reached before giving up, and so does this.
+const failAt = scene.includes('flaky')
+  && !fs.existsSync(path.join(path.dirname(valueOf('-b')), 'fixed'))
+  && frames.includes(2) ? 2 : null;
 
-setTimeout(() => {
-  write(target);
+function pauseFor(f) {
+  if (scene.includes('hang') || scene.includes('stubborn')) return 60000;
+  // 'stalls' renders its first frame and then never finishes another.
+  if (scene.includes('stalls')) return f === 1 ? 0 : 60000;
+  // 'halfway' writes the first frame of whatever span it is given and then
+  // never finishes another, so a span can be caught with work already on disk.
+  if (scene.includes('halfway')) return f === frames[0] ? 0 : 60000;
 
-  // Stands in for the render_post handler: the extras are written from the one
-  // render, beside the primary, exactly as Blender does it.
-  const base = process.env.RENDERNET_FRAME_BASE;
-  const extras = process.env.RENDERNET_EXTRA_FORMATS;
+  return scene.includes('slow') ? 2000 : 0;
+}
 
-  if (base && extras) {
-    for (const pair of extras.split(',')) write(base + pair.split(':')[1]);
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+(async () => {
+  for (const f of frames) {
+    await sleep(pauseFor(f));
+
+    if (f === failAt) {
+      fs.writeSync(1, 'Error: frame 2 cannot be rendered yet\\n');
+      process.exit(1);
+    }
+
+    write(targetFor(f));
+
+    // Stands in for the render_post handler: the extras are written from the
+    // one render, beside the primary, exactly as Blender does it.
+    const dir = process.env.RENDERNET_FRAME_DIR;
+    const prefix = process.env.RENDERNET_FRAME_PREFIX;
+    const extras = process.env.RENDERNET_EXTRA_FORMATS;
+
+    if (dir && prefix && extras) {
+      const base = path.join(dir, prefix + String(f).padStart(4, '0'));
+      for (const pair of extras.split(',')) write(base + pair.split(':')[1]);
+    }
+
+    // Stands in for the render_write handler, which is what lets the worker
+    // deliver a frame before the launch that made it has finished.
+    fs.writeSync(1, 'RENDERNET_FRAME_DONE ' + f + '\\n');
   }
 
   process.exit(0);
-}, delay);
+})();
 `);
 
   const blenderPath = fakeBlenderPath(dir);

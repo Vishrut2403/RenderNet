@@ -20,7 +20,8 @@ export default async function run() {
 
   const sandbox = makeSandbox('worker');
   const originalCwd = process.cwd();
-  const restoreEnv = snapshotEnv(['WORKER_SECRET', 'BLENDER_PATH', 'API_URL', 'DB_PATH', 'DATA_DIR']);
+  const restoreEnv = snapshotEnv(
+    ['WORKER_SECRET', 'BLENDER_PATH', 'API_URL', 'DB_PATH', 'DATA_DIR', 'MAX_FRAME_SPAN']);
 
   // Set before importing queue.js: db.js and render-worker.js read these at
   // module load.
@@ -29,6 +30,10 @@ export default async function run() {
   process.env.API_URL = `http://127.0.0.1:${PORT}`;
   process.env.DATA_DIR = sandbox;
   process.env.DB_PATH = path.join(sandbox, 'worker-test.db');
+  // The callbacks below need frames the running worker has not taken, and the
+  // job it sits on is short. Spans are proved against the endpoints by claiming
+  // one here by hand rather than by leaving the worker room to take them.
+  process.env.MAX_FRAME_SPAN = '1';
 
   process.chdir(sandbox);
   fs.mkdirSync('uploads', { recursive: true });
@@ -149,15 +154,23 @@ export default async function run() {
       { label: 'the worker to claim its first frame' }
     );
 
+    // Taken as one span and then singly, so both the frames a single claim
+    // covers and the frames it does not are under test below.
     const claims = new Map();
+    const span = db.leaseFrames(jobId, standIn, 600_000, 2);
+
+    for (const frame of span?.frames ?? []) claims.set(frame, span.leaseId);
+
     for (;;) {
-      const claim = db.leaseFrame(jobId, standIn, 600_000);
+      const claim = db.leaseFrames(jobId, standIn, 600_000, 1);
       if (!claim) break;
-      claims.set(claim.frame, claim.leaseId);
+      claims.set(claim.frames[0], claim.leaseId);
     }
 
     results.check('the frame the worker is rendering cannot be claimed',
       !claims.has(1) && claims.has(2), [...claims.keys()].join(','));
+    results.check('one claim covers a span of frames',
+      span?.frames.join(',') === '2,3', JSON.stringify(span?.frames));
 
     const uploadFrame = async (frame, leaseId) => {
       const form = new FormData();
@@ -174,7 +187,7 @@ export default async function run() {
     results.check('a frame sent without a claim is refused', unclaimed.status === 409,
       `got ${unclaimed.status}`);
 
-    const wrongFrame = await uploadFrame(3, claims.get(2));
+    const wrongFrame = await uploadFrame(3, claims.get(4));
     results.check('a claim on another frame does not authorise this one',
       wrongFrame.status === 409, `got ${wrongFrame.status}`);
 
@@ -190,6 +203,10 @@ export default async function run() {
     upload = await uploadFrame(2, claims.get(2));
     results.check('a second frame advances progress to 50%', upload.body.progress === 50,
       `got ${upload.body.progress}`);
+    // Frames 2 and 3 were claimed together, so the same lease id had to carry
+    // both of them - one claim, several frames.
+    results.check('every frame a span covers may be sent under its one claim',
+      claims.get(2) === claims.get(3) && upload.status === 200, claims.get(2));
 
     const outOfRange = new FormData();
     outOfRange.set('frame', new File([png], 'x.png', { type: 'image/png' }));
@@ -218,8 +235,8 @@ export default async function run() {
     // attempt is a fresh one - which is what lets another worker pick it up.
     const failFrame = async () => {
       if (!db.getLease(claims.get(4))) {
-        const again = db.leaseFrame(jobId, standIn, 600_000);
-        claims.set(again.frame, again.leaseId);
+        const again = db.leaseFrames(jobId, standIn, 600_000, 1);
+        claims.set(again.frames[0], again.leaseId);
       }
 
       const response = await fetch(`${base}/jobs/${jobId}/frames/4/failed`, {

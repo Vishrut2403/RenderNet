@@ -26,7 +26,7 @@ The renderer runs as a separate `RenderWorker` reporting back over HTTP rather t
 
 - Takes a `.blend` from a browser — engine, frame range, resolution, samples,
   output formats — and hands the frames back as a ZIP or as a video.
-- Spreads a job across as many machines as you point at it, a frame at a time.
+- Spreads a job across as many machines as you point at it, in spans of frames.
 - Splits a single heavy still into tiles rendered at once and puts it back together.
 - Renders one frame first and holds the rest until its owner approves it.
 - Opens a scene as soon as it is chosen, to fill the form in from it and to
@@ -41,11 +41,23 @@ The renderer runs as a separate `RenderWorker` reporting back over HTTP rather t
 
 The parts that took the most thought.
 
-**Frames are claimed, not handed out.** A worker asks for one frame and holds a
-claim on it with an expiry, renewed while it renders. A worker that dies loses
-the claim and the frame returns to circulation, and only the holder may upload
-it. The server decides when a job is done, not the worker — a worker that died
+**Frames are claimed, not handed out.** A worker asks for work and holds a claim
+on it with an expiry, renewed while it renders. A worker that dies loses the
+claim and the frames return to circulation, and only the holder may upload them.
+The server decides when a job is done, not the worker — a worker that died
 halfway is in no position to report.
+
+**A claim covers a span of frames, not one.** Starting Blender costs the same
+seconds of parsing and scene building whether it then renders one frame or ten:
+on this repository's own fixture, five separate launches take 8.5s against 2.0s
+for one launch of five frames. So a claim covers as many frames as fit in
+`FRAME_SPAN_MS`, measured against the job's own median frame time. Its first
+frame goes out alone, because rendering it is what measures the rest; after that
+a slow scene is still claimed a frame at a time and a fast one in handfuls, and
+a span is never more than one machine's share of what is left. Frames go back as
+Blender writes them rather than when the launch ends, so a span cut short keeps
+everything it had already rendered, and only the frame Blender actually stopped
+on is charged a failed attempt.
 
 **An interrupted render resumes rather than restarting.** Frames are tracked
 individually, so switching the machine off mid-job costs the frame in flight,
@@ -262,6 +274,8 @@ tree, so it is found however the server is started.
 | `WORKER_ENGINES` | what Blender lists | Engines this machine will accept frames for, comma-separated. Narrow it where an engine cannot render headless |
 | `WORKER_REMOTE` | *unset* | Set to `1` on a worker not on the server's machine |
 | `WORKER_SCRATCH_DIR` | a temp directory | Where a remote worker keeps scenes and frames |
+| `FRAME_SPAN_MS` | `60000` | How much rendering one claim may cover, so the cost of starting Blender is spread over several frames |
+| `MAX_FRAME_SPAN` | `16` | Most frames one claim may cover, whatever the time budget allows |
 | `LEASE_TTL_MS` | `30000` | How long a worker's claim on a frame lasts before another may take it. A frame whose machine has gone is stranded until it runs out. |
 | `PREFLIGHT_TIMEOUT_MS` | `120000` | How long the pre-render scene check may take before the job is queued anyway |
 | `FFMPEG_PATH` | auto-detected | ffmpeg executable, for making a video of the frames. Without it that button says so |

@@ -113,9 +113,9 @@ export default async function run() {
 
     const claimed = await lease(base, first.body.token, 'slot-0');
 
-    results.check('a machine with a credential is given a frame',
-      claimed.status === 200 && claimed.body.lease?.frame === 1,
-      JSON.stringify({ status: claimed.status, frame: claimed.body?.lease?.frame }));
+    results.check('a machine with a credential is given frames to render',
+      claimed.status === 200 && claimed.body.lease?.frames[0] === 1,
+      JSON.stringify({ status: claimed.status, frames: claimed.body?.lease?.frames }));
 
     const leaseId = claimed.body.lease.leaseId;
 

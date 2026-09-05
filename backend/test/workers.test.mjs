@@ -13,9 +13,11 @@ import {
 const PORT = 5598;
 const CAPABILITY_PORT = 5610;
 
-// "[worker-1] 🎬 Job 17..., frame 3 (CYCLES)" - the pool tags each worker's
-// output with which one it came from, so the log says who rendered what.
-const RENDER_LINE = /\[worker-(\d+)\][^\n]*frame (\d+) \(/g;
+// "[worker-1] ✅ Job 17..., frame 3 rendered: ..." - the pool tags each worker's
+// output with which one it came from, so the log says who delivered what. One
+// launch may cover a span of frames, so this reads the line each frame gets as
+// it lands rather than the one the span starts with.
+const RENDER_LINE = /\[worker-(\d+)\][^\n]*Job \d+, frame (\d+) rendered/g;
 
 function rendersFromLog(log) {
   const renders = [];

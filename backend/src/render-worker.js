@@ -43,6 +43,10 @@ scene.render.border_min_y = region['y0'] / height
 scene.render.border_max_y = region['y1'] / height
 `;
 
+// Said by the script as each frame's files land, so a span hands its frames
+// back as it goes rather than all at the end.
+const FRAME_DONE = 'RENDERNET_FRAME_DONE ';
+
 const OUTPUT_SCRIPT = `import bpy, os
 
 PRIMARY = os.environ.get('RENDERNET_PRIMARY_FORMAT', '')
@@ -75,7 +79,11 @@ def save_extras(scene, _depsgraph=None):
     if result is None:
         return
 
-    base = os.environ['RENDERNET_FRAME_BASE']
+    # One launch may render a span of frames, so the name comes from the frame
+    # in hand rather than from a single stem passed in.
+    base = os.path.join(os.environ['RENDERNET_FRAME_DIR'],
+                        os.environ['RENDERNET_FRAME_PREFIX']
+                        + str(scene.frame_current).zfill(4))
     settings = scene.render.image_settings
 
     try:
@@ -86,12 +94,47 @@ def save_extras(scene, _depsgraph=None):
         use_format(settings, PRIMARY)
 
 
+# render_write runs after render_post and after Blender has written the frame
+# itself, so by here every file for this frame is on disk. Flushed because the
+# worker reads this as it goes.
+def announce(scene, _depsgraph=None):
+    print('${FRAME_DONE}%d' % scene.frame_current, flush=True)
+
+
 if PRIMARY:
     use_format(bpy.context.scene.render.image_settings, PRIMARY)
 
 if EXTRAS:
     bpy.app.handlers.render_post.append(save_extras)
+
+bpy.app.handlers.render_write.append(announce)
 `;
+
+function describeSpan(frames) {
+  if (frames.length === 1) return `frame ${frames[0]}`;
+
+  return `frames ${frames[0]}-${frames[frames.length - 1]} (${frames.length})`;
+}
+
+// What one frame of a span actually wrote. Null when the frame Blender was
+// meant to produce is not there, which is how a span reports a frame that
+// failed inside an otherwise good run.
+function filesFor(stem, primary, extras, frame) {
+  const expected = stem + extensionOf(primary);
+
+  if (!fs.existsSync(expected)) return null;
+
+  const written = [expected];
+
+  for (const id of extras) {
+    const extra = stem + extensionOf(id);
+
+    if (fs.existsSync(extra)) written.push(extra);
+    else console.warn(`⚠️  Frame ${frame}: Blender wrote no ${id} file`);
+  }
+
+  return written;
+}
 
 // Blender has no flag for either, so they are set on the loaded scene.
 function sceneOverrides(renderEngine, { resolutionPercent, samples } = {}) {
@@ -182,7 +225,7 @@ class RenderWorker {
     if (!lease) return false;
 
     this.abandoned = false;
-    await this.renderLeasedFrame(lease);
+    await this.renderLeasedSpan(lease);
 
     return true;
   }
@@ -217,8 +260,8 @@ class RenderWorker {
     }
   }
 
-  async renderLeasedFrame(lease) {
-    const { leaseId, jobId, frame, renderEngine, formats } = lease;
+  async renderLeasedSpan(lease) {
+    const { leaseId, jobId, frames, renderEngine, formats } = lease;
     const primary = primaryOf(formats);
     const extras = extrasOf(formats);
 
@@ -235,67 +278,140 @@ class RenderWorker {
       try {
         blendPath = await this.fetchBlend(jobId);
       } catch (error) {
+        // Charged to the first frame only: nothing in the span was attempted.
         console.error(`Could not fetch the scene for job ${jobId}: ${error.message}`);
-        await this.reportFrameFailure(jobId, frame, `Worker could not fetch the scene: ${error.message}`, leaseId);
+        await this.reportFrameFailure(
+          jobId, frames[0], `Worker could not fetch the scene: ${error.message}`, leaseId);
         await this.releaseLease(leaseId);
         return;
       }
     }
 
-    // Named per frame: workers sharing a job share the folder, and one of them
+    // Named per span: workers sharing a job share the folder, and one of them
     // rewriting the file another is reading would break that render.
-    const outputScript = path.join(outputDir, `output_${frame}.py`);
+    const outputScript = path.join(outputDir, `output_${frames[0]}.py`);
     fs.writeFileSync(outputScript, lease.tile ? TILE_SCRIPT + OUTPUT_SCRIPT : OUTPUT_SCRIPT);
+
+    // A tile renders one scene frame under the number of its region; everything
+    // else renders the frames it was given.
+    const sceneFrames = lease.tile ? [lease.sceneFrame] : frames;
+    const prefix = lease.tile ? `tile_${lease.tile.index}_` : 'frame_';
 
     console.log(lease.tile
       ? `\n🎬 Job ${jobId}, tile ${lease.tile.index} of ${lease.tile.of} (${renderEngine})`
-      : `\n🎬 Job ${jobId}, frame ${frame} (${renderEngine})`);
+      : `\n🎬 Job ${jobId}, ${describeSpan(frames)} (${renderEngine})`);
 
     this.startRenewing(lease);
 
+    // Frames go back as Blender finishes them rather than when the span does,
+    // so a machine switched off mid-span keeps what it had already rendered.
+    const announced = new Set();
+    const handled = new Set();
+    let pump = Promise.resolve();
+
+    const deliver = sceneFrame => {
+      const index = sceneFrames.indexOf(sceneFrame);
+
+      if (index === -1 || announced.has(index)) return;
+
+      announced.add(index);
+      pump = pump.then(async () => {
+        const done = await this.deliverFrame(lease, {
+          index, sceneFrames, outputDir, prefix, primary, extras
+        });
+
+        if (done) handled.add(index);
+      });
+    };
+
+    let failure = null;
+
     try {
-      const produced = await this.renderSingleFrame(
-        blendPath, lease.sceneFrame ?? frame, outputDir, renderEngine,
+      await this.renderFrames(
+        blendPath, sceneFrames, outputDir, renderEngine,
         { resolutionPercent: lease.resolutionPercent, samples: lease.samples },
         {
           primary,
           extras,
+          prefix,
           outputScript,
+          onFrame: deliver,
           exrCodec: lease.exrCodec,
           exrDepth: lease.exrDepth,
           jpegQuality: lease.jpegQuality,
           tile: lease.tile
         }
       );
-
-      console.log(`✅ Frame ${frame} rendered: ${produced.join(', ')}`);
-
-      // Every format has to arrive or the ZIP is missing one for this frame alone.
-      for (const file of produced) {
-        if (!await this.uploadFrame(jobId, frame, file, leaseId)) {
-          throw new Error('Frame rendered but upload failed');
-        }
-      }
-
-      for (const file of produced) fs.rmSync(file, { force: true });
-
-      await this.reportProgress(jobId, frame);
     } catch (error) {
-      // A frame killed by cancellation is not a render failure.
-      if (!this.abandoned) {
-        console.error(`❌ Frame ${frame} failed: ${error.message}`);
+      // Judged frame by frame below rather than thrown away whole.
+      failure = error;
+    }
 
-        // The server decides whether the frame has attempts left.
-        await this.reportFrameFailure(jobId, frame, error.message, leaseId);
-      }
+    try {
+      await pump;
+
+      if (!this.abandoned) await this.accountFor(lease, handled, failure);
     } finally {
       this.stopRenewing();
 
-      // However the frame ended: a job being cancelled waits for exactly this,
-      // and a frame that finished before the first renewal never heard about it.
+      // However the span ended: a job being cancelled waits for exactly this,
+      // and a span that finished before the first renewal never heard about it.
       await this.releaseLease(leaseId);
 
       fs.rmSync(outputScript, { force: true });
+    }
+  }
+
+  // Resolves to whether this frame has been dealt with. A frame announced whose
+  // files are not there is left to the accounting pass, which is the one place
+  // a failure is decided.
+  async deliverFrame(lease, { index, sceneFrames, outputDir, prefix, primary, extras }) {
+    if (this.abandoned) return true;
+
+    const { leaseId, jobId, frames } = lease;
+    const frame = frames[index];
+    const stem = path.join(outputDir, prefix + String(sceneFrames[index]).padStart(4, '0'));
+    const produced = filesFor(stem, primary, extras, frame);
+
+    if (produced === null) return false;
+
+    console.log(`✅ Job ${jobId}, frame ${frame} rendered: ${produced.join(', ')}`);
+
+    let delivered = true;
+
+    // Every format has to arrive or the ZIP is missing one for this frame alone.
+    for (const file of produced) {
+      if (await this.uploadFrame(jobId, frame, file, leaseId)) continue;
+
+      delivered = false;
+      break;
+    }
+
+    for (const file of produced) fs.rmSync(file, { force: true });
+
+    if (delivered) await this.reportProgress(jobId, frame);
+    else await this.reportFrameFailure(jobId, frame, 'Frame rendered but upload failed', leaseId);
+
+    return true;
+  }
+
+  // What the span did not deliver. Blender works through a span in order, so on
+  // a launch that gave up partway the first frame with nothing to show is the
+  // one that failed and the frames behind it were never attempted - those are
+  // said nothing about, and releasing the span returns them with their attempts
+  // intact.
+  async accountFor(lease, handled, failure) {
+    const { leaseId, jobId, frames } = lease;
+
+    for (const [index, frame] of frames.entries()) {
+      if (handled.has(index)) continue;
+
+      const why = failure ? failure.message : `Blender rendered no frame ${frame}`;
+
+      console.error(`❌ Frame ${frame} failed: ${why}`);
+      await this.reportFrameFailure(jobId, frame, why, leaseId);
+
+      if (failure) break;
     }
   }
 
@@ -316,7 +432,7 @@ class RenderWorker {
       // The job has stopped - cancelled, or paused for something more urgent.
       // A refused renewal is how a worker finds that out without the server
       // having to reach into it.
-      console.warn(`Claim on frame ${lease.frame} refused, abandoning it`);
+      console.warn(`Claim on ${describeSpan(lease.frames)} refused, abandoning it`);
       this.cancel();
     }, every);
 
@@ -335,15 +451,12 @@ class RenderWorker {
     }).catch(error => console.error(`Could not let go of the frame: ${error.message}`));
   }
 
-  renderSingleFrame(blendPath, frame, outputDir, renderEngine, overrides = {}, output = {}) {
+  renderFrames(blendPath, frames, outputDir, renderEngine, overrides = {}, output = {}) {
     return new Promise((resolve, reject) => {
       // '####' pads the frame number to four digits; a single '#' does not pad
       // at all, so the written and expected names never agree.
-      const { primary = 'PNG', extras = [], outputScript, tile = null } = output;
-      const prefix = tile ? `tile_${tile.index}_` : 'frame_';
+      const { primary = 'PNG', extras = [], outputScript, prefix = 'frame_' } = output;
       const outputPattern = path.join(outputDir, `${prefix}####`);
-      const stem = path.join(outputDir, `${prefix}${frame.toString().padStart(4, '0')}`);
-      const expectedFile = stem + extensionOf(primary);
 
       const args = [
         '-b', blendPath,
@@ -362,8 +475,8 @@ class RenderWorker {
       args.push('-P', outputScript);
 
       // Last, because Blender renders when it reaches this and ignores what
-      // follows.
-      args.push('-f', frame.toString());
+      // follows. A comma-separated list renders the whole span in one launch.
+      args.push('-f', frames.join(','));
 
       if (renderEngine === 'CYCLES') {
         // Add-on options are only recognised after '--'; earlier, Blender
@@ -378,14 +491,15 @@ class RenderWorker {
       // wrong on Windows.
       const env = {
         ...process.env,
-        RENDERNET_FRAME_BASE: stem,
+        RENDERNET_FRAME_DIR: outputDir,
+        RENDERNET_FRAME_PREFIX: prefix,
         RENDERNET_PRIMARY_FORMAT: primary,
         RENDERNET_EXTRA_FORMATS: extras.map(id => `${id}:${extensionOf(id)}`).join(','),
         RENDERNET_EXR_CODEC: output.exrCodec ?? '',
         RENDERNET_EXR_DEPTH: output.exrDepth ?? '',
         RENDERNET_JPEG_QUALITY: output.jpegQuality == null ? '' : String(output.jpegQuality),
-        RENDERNET_TILE_INDEX: tile ? String(tile.index) : '',
-        RENDERNET_TILE_COUNT: tile ? String(tile.of) : ''
+        RENDERNET_TILE_INDEX: output.tile ? String(output.tile.index) : '',
+        RENDERNET_TILE_COUNT: output.tile ? String(output.tile.of) : ''
       };
 
       const blender = launch(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
@@ -393,11 +507,25 @@ class RenderWorker {
 
       let stdout = '';
       let stderr = '';
+      let pending = '';
 
       // Both pipes have to be drained. An unread one fills its buffer and
       // blocks Blender mid-write, and nothing here would ever time out.
       blender.stdout.on('data', (data) => {
         stdout = (stdout + data).slice(-OUTPUT_TAIL);
+
+        // Read a line at a time: a chunk can end mid-marker, and half a frame
+        // number is worse than none.
+        pending += data;
+
+        const lines = pending.split('\n');
+        pending = lines.pop();
+
+        for (const line of lines) {
+          const said = line.indexOf(FRAME_DONE);
+
+          if (said > -1) output.onFrame?.(Number(line.slice(said + FRAME_DONE.length)));
+        }
       });
 
       blender.stderr.on('data', (data) => {
@@ -420,19 +548,7 @@ class RenderWorker {
           return;
         }
 
-        if (fs.existsSync(expectedFile)) {
-          const written = [expectedFile];
-
-          for (const id of extras) {
-            const extra = stem + extensionOf(id);
-            if (fs.existsSync(extra)) written.push(extra);
-            else console.warn(`⚠️  Frame ${frame}: Blender wrote no ${id} file`);
-          }
-
-          resolve(written);
-        } else {
-          reject(new Error(`Rendered frame not found: ${expectedFile}`));
-        }
+        resolve();
       });
 
       blender.on('error', (err) => {
