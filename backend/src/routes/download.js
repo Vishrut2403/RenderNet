@@ -250,8 +250,15 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
     res.setHeader('Content-Type', 'application/zip');
     
     archive.pipe(res);
-    
-    archive.directory(dataPath(job.outputFolder), false);
+
+    // The files the listing offers and nothing else: a tiled still keeps its
+    // regions in a folder beside the picture, and handing those back would be
+    // handing back the pieces of what was asked for.
+    const folder = dataPath(job.outputFolder);
+
+    for (const filename of getFilesInDirectory(folder)) {
+      archive.file(path.join(folder, filename), { name: filename });
+    }
 
     archive.on('error', (err) => {
       console.error('Archive error:', err);

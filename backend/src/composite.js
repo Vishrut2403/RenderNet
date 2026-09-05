@@ -21,6 +21,14 @@ ${GRID_PYTHON}
 
 spec = json.loads(os.environ['RENDERNET_TILE_SPEC'])
 scene = bpy.context.scene
+
+# A fresh Blender reading the scene as it was saved, while the tiles were
+# rendered at whatever the job asked for. Same rule as sceneOverrides applies.
+percent = spec.get('resolutionPercent')
+
+if percent and percent != 100:
+    scene.render.resolution_percentage = percent
+
 width, height = frame_size(scene)
 
 canvas = numpy.zeros((height, width, 4), dtype=numpy.float32)
@@ -124,6 +132,7 @@ function assemble(job) {
       tiles,
       count: job.tiles,
       format: primaryOf(job.formats),
+      resolutionPercent: job.resolutionPercent ?? null,
       output: path.join(outputDir, compositeName(job))
     };
 

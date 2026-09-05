@@ -263,15 +263,31 @@ export function countFramesByStatus(jobId) {
   return counts;
 }
 
+// When this frame's render actually began. A claim stamps every frame of a span
+// at once, but Blender works through them in order, so all but the first began
+// when the one before them in the same claim finished.
+function renderingBegan(leaseId, claimedAt) {
+  if (!leaseId) return claimedAt;
+
+  const previous = db.prepare(
+    `SELECT MAX(updatedAt) AS at FROM frames
+      WHERE leaseId = ? AND status = 'done' AND durationMs IS NOT NULL`
+  ).get(leaseId)?.at;
+
+  return previous && previous > claimedAt ? previous : claimedAt;
+}
+
 export function markFrameDone(jobId, frame, filename) {
   const finished = new Date();
   const claimed = db
-    .prepare('SELECT startedAt FROM frames WHERE jobId = ? AND frame = ?')
+    .prepare('SELECT startedAt, leaseId FROM frames WHERE jobId = ? AND frame = ?')
     .get(jobId, frame);
 
-  const durationMs = claimed?.startedAt
-    ? finished - new Date(claimed.startedAt)
+  const startedAt = claimed?.startedAt
+    ? renderingBegan(claimed.leaseId, claimed.startedAt)
     : null;
+
+  const durationMs = startedAt ? finished - new Date(startedAt) : null;
 
   return db.prepare(
     `UPDATE frames SET status = 'done', filename = ?, error = NULL, updatedAt = ?,

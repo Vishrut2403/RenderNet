@@ -298,7 +298,7 @@ export default async function run() {
       JSON.stringify({ progress: untouched.progress, done: untouched.completedFrames }));
 
     console.log('\n  Frame leases');
-    checkLeases(db, results);
+    await checkLeases(db, results);
 
     console.log('\n  A machine part way through a span is still here');
 

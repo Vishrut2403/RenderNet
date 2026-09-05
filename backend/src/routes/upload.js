@@ -105,14 +105,10 @@ function withSession(req, res, next) {
   next();
 }
 
-// Shared by the single request and the last step of a chunked upload: the scene
-// is stored either way by this point, and only the settings differ. Refusing
-// has to put it back - unless it is one some other job is already rendering.
-function queueUpload(file, body, owner) {
-  const refuse = (status, error) => {
-    dropUnusedBlend(file.filePath);
-    return { status, body: { error } };
-  };
+// Read before the scene is stored, so a refusal costs the artist nothing: an
+// upload consumed by a settings error would have to be sent all over again.
+function checkSettings(body, owner, size) {
+  const refuse = (status, error) => ({ status, error });
 
   const start = Number(body.frameStart);
   const end = Number(body.frameEnd);
@@ -163,8 +159,8 @@ function queueUpload(file, body, owner) {
 
   const { bytes } = usageFor(owner, { fresh: true });
 
-  if (bytes + file.size > USER_QUOTA_BYTES) {
-    return refuse(413, `That would put you at ${gigabytes(bytes + file.size)} of your `
+  if (bytes + size > USER_QUOTA_BYTES) {
+    return refuse(413, `That would put you at ${gigabytes(bytes + size)} of your `
       + `${gigabytes(USER_QUOTA_BYTES)}. Delete a finished job first.`);
   }
 
@@ -208,35 +204,40 @@ function queueUpload(file, body, owner) {
     return refuse(400, 'A tiled still is put back together in one format, so choose one');
   }
 
+  return {
+    settings: {
+      frameStart: start,
+      frameEnd: end,
+      renderEngine,
+      owner,
+      priority: Number(body.priority) === 1 ? 1 : 0,
+      resolutionPercent: resolution.value ?? 100,
+      samples: samples.value,
+      formats: formats.join(','),
+      exrCodec,
+      exrDepth,
+      jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY,
+      skipAssetCheck: body.skipAssetCheck === '1',
+      testFrame,
+      tiles
+    }
+  };
+}
+
+function queueUpload(file, settings) {
   const jobId = addToQueue({
+    ...settings,
     filePath: file.filePath,
-    frameStart: start,
-    frameEnd: end,
-    renderEngine,
-    owner,
-    originalFilename: path.basename(file.originalname),
-    priority: Number(body.priority) === 1 ? 1 : 0,
-    resolutionPercent: resolution.value ?? 100,
-    samples: samples.value,
-    formats: formats.join(','),
-    exrCodec,
-    exrDepth,
-    jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY,
-    skipAssetCheck: body.skipAssetCheck === '1',
-    testFrame,
-    tiles
+    originalFilename: path.basename(file.originalname)
   });
 
   return {
-    status: 200,
-    body: {
-      success: true,
-      message: 'Job added to render queue',
-      jobId,
-      // Null when it started straight away, or when nothing has been rendered
-      // yet to work an estimate from.
-      startsIn: getJob(jobId)?.startsIn ?? null
-    }
+    success: true,
+    message: 'Job added to render queue',
+    jobId,
+    // Null when it started straight away, or when nothing has been rendered
+    // yet to work an estimate from.
+    startsIn: getJob(jobId)?.startsIn ?? null
   };
 }
 
@@ -246,14 +247,16 @@ router.post('/', roomOnDisk, withinQuota, upload.single('blend'), async (req, re
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const stored = await storeBlend(req.file.path, req.file.originalname);
-    const result = queueUpload(
-      { ...stored, size: req.file.size, originalname: req.file.originalname },
-      req.body,
-      req.user.username
-    );
+    const checked = checkSettings(req.body, req.user.username, req.file.size);
 
-    res.status(result.status).json(result.body);
+    if (checked.error) {
+      deleteFile(req.file.path);
+      return res.status(checked.status).json({ error: checked.error });
+    }
+
+    const stored = await storeBlend(req.file.path, req.file.originalname);
+
+    res.json(queueUpload({ ...stored, originalname: req.file.originalname }, checked.settings));
   } catch (error) {
     console.error('Upload error:', error);
     deleteFile(req.file?.path);
@@ -380,16 +383,23 @@ router.post('/session/:id/finish', async (req, res) => {
     return res.status(409).json({ error: 'A chunk of this upload is still arriving' });
   }
 
-  const assembled = await finishSession(session);
-
-  if (assembled.error) {
-    return res.status(assembled.status).json({ error: assembled.error, received: assembled.received });
+  if (session.received !== session.size) {
+    return res.status(409).json({
+      error: `Only ${session.received} of ${session.size} bytes have arrived`,
+      received: session.received
+    });
   }
 
-  try {
-    const result = queueUpload(assembled.file, req.body ?? {}, req.user.username);
+  const checked = checkSettings(req.body ?? {}, req.user.username, session.size);
 
-    res.status(result.status).json(result.body);
+  if (checked.error) {
+    return res.status(checked.status).json({ error: checked.error });
+  }
+
+  const assembled = await finishSession(session);
+
+  try {
+    res.json(queueUpload(assembled.file, checked.settings));
   } catch (error) {
     console.error('Upload error:', error);
     dropUnusedBlend(assembled.file.filePath);

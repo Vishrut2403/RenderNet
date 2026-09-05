@@ -7,6 +7,7 @@ import { jobs } from './job-store.js';
 import { forgetUsage } from './storage.js';
 import { dataPath } from './paths.js';
 import { PREVIEWABLE_EXTENSIONS } from './formats.js';
+import { isTiled } from './composite.js';
 
 const DEFAULT_FPS = Number(process.env.VIDEO_FPS) || 24;
 
@@ -30,6 +31,13 @@ export function startVideo(jobId, fps = DEFAULT_FPS) {
 
   if (!job) return { status: 404, error: 'Job not found' };
   if (job.video === 'encoding') return { status: 409, error: 'A video is already being made' };
+
+  // Its frames are regions of one picture, and they are not even beside the
+  // finished still - they are kept aside in a folder of their own.
+  if (isTiled(job)) {
+    return { status: 409, error: 'A tiled still is one picture, so there is nothing to play' };
+  }
+
   if (!findFfmpeg()) {
     return { status: 501, error: 'This machine has no ffmpeg, so it cannot make a video' };
   }

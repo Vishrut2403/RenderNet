@@ -3,7 +3,11 @@
 // the database path for the whole run.
 const TTL = 60_000;
 
-export function checkLeases(db, results) {
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+export async function checkLeases(db, results) {
     const one = (jobId, workerId, ttl = TTL) => db.leaseFrames(jobId, workerId, ttl, 1);
 
     const JOB = 900001;
@@ -61,6 +65,28 @@ export function checkLeases(db, results) {
       db.getFrames(SPAN).filter(frame => frame.leaseId === span.leaseId).length === 0);
     results.check('and they go back out in one piece',
       db.leaseFrames(SPAN, 'worker-again', TTL, 4)?.frames.join(',') === '1,2,3,4');
+
+    console.log('\n  What a frame of a span is timed at');
+
+    // Every frame of a claim is stamped when the claim is taken, but Blender
+    // works through them one after another: a frame really began when the one
+    // before it finished. Timing from the claim would charge each frame for the
+    // whole span so far, and the estimates read straight off these numbers.
+    const TIMED = 900007;
+    const PAUSE = 150;
+    db.createFrames(TIMED, 1, 3);
+
+    const timed = db.leaseFrames(TIMED, 'worker-timed', TTL, 3);
+
+    for (const frame of timed.frames) {
+      await sleep(PAUSE);
+      db.markFrameDone(TIMED, frame, `frame_${frame}.png`);
+    }
+
+    const measured = db.getFrames(TIMED).map(frame => frame.durationMs);
+
+    results.check('each frame is timed from when it started, not from when the span was claimed',
+      measured.every(each => each < PAUSE * 2), measured.join(','));
 
     console.log('\n  A worker that stops answering');
 

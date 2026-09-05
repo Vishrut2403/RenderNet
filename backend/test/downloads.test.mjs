@@ -83,6 +83,14 @@ export default async function run() {
     results.check('and a token with a character changed opens nothing',
       await status(`${frameUrl}?token=${scoped.slice(0, -2)}xy`) === 401);
 
+    // The same number of characters but not the same number of bytes, which is
+    // what a comparison of the raw signatures refuses to answer at all.
+    const parts = scoped.split('.');
+    const wideSignature = [...parts.slice(0, 3), `é${parts[3].slice(1)}`].join('.');
+
+    results.check('and one whose signature is a different length in bytes is refused, not an error',
+      await status(`${frameUrl}?token=${encodeURIComponent(wideSignature)}`) === 401);
+
     console.log('\n  Reaching past the job folder');
 
     // Separators are written in the URL rather than as path segments, so the

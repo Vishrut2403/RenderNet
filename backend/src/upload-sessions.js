@@ -184,15 +184,8 @@ function truncate(session) {
   }
 }
 
+// Every byte is there by now; the route checks that before it gets here.
 export async function finishSession(session) {
-  if (session.received !== session.size) {
-    return {
-      status: 409,
-      error: `Only ${session.received} of ${session.size} bytes have arrived`,
-      received: session.received
-    };
-  }
-
   const stored = await storeBlend(session.path, session.filename);
 
   sessions.delete(session.id);

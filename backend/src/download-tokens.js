@@ -28,9 +28,15 @@ export function readDownloadToken(token) {
   const [jobId, expiresAt, username, signature] = parts;
   const expected = sign(`${jobId}.${expiresAt}.${username}`);
 
-  if (signature.length !== expected.length) return null;
+  // Digests rather than the strings themselves: a signature of the same length
+  // in characters can be a different length in bytes, and timingSafeEqual
+  // throws on that rather than answering.
+  const same = crypto.timingSafeEqual(
+    crypto.createHash('sha256').update(signature).digest(),
+    crypto.createHash('sha256').update(expected).digest()
+  );
 
-  if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return null;
+  if (!same) return null;
 
   if (!(Number(expiresAt) > Date.now())) return null;
 

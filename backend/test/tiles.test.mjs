@@ -103,6 +103,26 @@ export default async function run() {
       preview.status === 200 && preview.headers.get('x-frame-number') === '3',
       `${preview.status} ${preview.headers.get('x-frame-number')}`);
 
+    // A ZIP names every entry in plain bytes, so what it holds can be read off
+    // the archive itself without unpacking it.
+    const zip = Buffer.from(await (await fetch(
+      `${base}/download/${tiled.body.jobId}/zip?token=${token.token}`)).arrayBuffer());
+
+    results.check('the ZIP holds the picture and not the pieces',
+      zip.includes('frame_0003.png') && !zip.includes('tiles/'),
+      zip.includes('tiles/') ? 'the tiles folder is in the archive' : 'no picture in the archive');
+
+    // Its frames are regions of one still, and they are not even beside the
+    // picture; a video made of them would be four corners in sequence.
+    const video = await fetch(`${base}/jobs/${tiled.body.jobId}/video`, {
+      method: 'POST',
+      headers: { ...auth(admin), 'Content-Type': 'application/json' },
+      body: '{}'
+    });
+
+    results.check('and a video of it is refused rather than attempted',
+      video.status === 409, `${video.status} ${JSON.stringify(await video.json())}`);
+
     console.log('\n  A region that will not render');
 
     const broken = await submitJob(base, admin, createFakeScene(sandbox, 'broken.blend'),
@@ -191,7 +211,8 @@ async function againstRealBlender(results) {
   if (!blenderAvailable()) {
     for (const name of ['the tiles divide the frame between them',
       'the picture is the size it would have been rendered whole',
-      'and it matches that render pixel for pixel']) {
+      'and it matches that render pixel for pixel',
+      'a still asked for at another resolution is put together too']) {
       results.skipped(name, 'Blender not installed');
     }
     return;
@@ -247,6 +268,19 @@ async function againstRealBlender(results) {
 
     results.check('and it matches that render pixel for pixel',
       difference <= 2 / 255, `largest difference ${difference}`);
+
+    // The pieces are rendered at the percentage the job asked for while the
+    // scene was saved at another, so nothing but telling the composite which
+    // one applies keeps the canvas the size of the pieces meant to fill it.
+    const smaller = await submitJob(base, admin, blend,
+      { frameStart: 1, frameEnd: 1, tiles: 4, resolutionPercent: 50 });
+    const smallerJob = await waitForJob(base, admin, smaller.body.jobId, 180000);
+    const half = path.join(sandbox, smallerJob.outputFolder, 'frame_0001.png');
+
+    results.check('a still asked for at another resolution is put together too',
+      smallerJob.status === 'completed'
+      && JSON.stringify(pngSize(half)) === JSON.stringify({ width: 40, height: 24 }),
+      `${smallerJob.status}: ${JSON.stringify(pngSize(half))} - ${smallerJob.error ?? ''}`);
   } finally {
     await stopServer(server);
     removeSandbox(sandbox);

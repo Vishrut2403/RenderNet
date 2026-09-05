@@ -170,6 +170,16 @@ export default async function run() {
 
     console.log('\n  Finishing');
 
+    // The bytes are the expensive part, so a settings mistake has to be
+    // correctable without sending them a second time.
+    const wrong = await finish(base, token, uploadId, { frameStart: 4, frameEnd: 1 });
+
+    results.check('a settings error is refused', wrong.status === 400,
+      JSON.stringify(wrong.body));
+    results.check('and leaves the upload where it was',
+      (await ask(base, token, uploadId)).body.received === SIZE,
+      JSON.stringify((await ask(base, token, uploadId)).body));
+
     const queued = await finish(base, token, uploadId, RANGE);
 
     results.check('the assembled file is queued as a job',
