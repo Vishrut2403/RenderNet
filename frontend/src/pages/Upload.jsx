@@ -409,7 +409,7 @@ export function Upload({ onSubmitted, notify }) {
             checked={skipAssetCheck}
             onChange={e => setSkipAssetCheck(e.target.checked)}
           />
-          <span>Render even if files are missing</span>
+          <span>Skip the scene check</span>
         </label>
       </div>
 

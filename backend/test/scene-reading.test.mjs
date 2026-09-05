@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
-  signUp, login, auth, createFakeBlender
+  signUp, login, auth, createFakeBlender, createFixtureBlend, blenderAvailable
 } from './helpers.mjs';
 
 const PORT = 5614;
@@ -199,5 +199,69 @@ export default async function run() {
     removeSandbox(sandbox);
   }
 
+  await whatBlenderActuallySays(results);
+
   return results;
+}
+
+// Everything above answers a stand-in that makes the report up. The report is
+// really produced by a Python script inside Blender, and nothing else here ever
+// runs it - so a change to that script could go in inert and the suite would
+// stay green.
+async function whatBlenderActuallySays(results) {
+  const names = ['a texture the scene did not bring is missing',
+    'one it did bring but did not pack is named apart',
+    'and a simulation with no cache is named too'];
+
+  if (!blenderAvailable()) {
+    for (const name of names) results.skipped(name, 'Blender not installed');
+    return;
+  }
+
+  const box = makeSandbox('preflight-real');
+
+  try {
+    console.log('\n  What Blender itself reports about a scene');
+
+    const onDisk = path.join(box, 'floor.png');
+    fs.writeFileSync(onDisk, Buffer.alloc(64, 7));
+
+    // Textures need a user or Blender drops them when the file is saved, so
+    // each one goes on a material of its own.
+    const blend = createFixtureBlend(box, {
+      name: 'checked.blend',
+      extra: `
+def textured(name, filepath, x):
+    bpy.ops.mesh.primitive_plane_add(location=(x, 0, 0))
+    obj = bpy.context.object
+    obj.name = name
+    material = bpy.data.materials.new(name + 'Mat')
+    material.use_nodes = True
+    node = material.node_tree.nodes.new('ShaderNodeTexImage')
+    image = bpy.data.images.new(name + 'Img', 8, 8)
+    image.source = 'FILE'
+    image.filepath = filepath
+    node.image = image
+    obj.data.materials.append(material)
+    return obj
+
+flag = textured('Flag', r'${onDisk}', 0)
+flag.modifiers.new('Cloth', 'CLOTH')
+textured('Wall', r'${path.join(box, 'nowhere', 'gone.png')}', 3)
+`
+    });
+
+    const { checkScene } = await import('../src/preflight.js');
+    const report = await checkScene(blend);
+    const named = list => list.map(file => path.basename(file));
+
+    results.check(names[0], named(report.missing).join(',') === 'gone.png',
+      JSON.stringify(named(report.missing)));
+    results.check(names[1], named(report.unpacked).join(',') === 'floor.png',
+      JSON.stringify(named(report.unpacked)));
+    results.check(names[2], report.unbaked.some(what => what.includes('cloth')),
+      JSON.stringify(report.unbaked));
+  } finally {
+    removeSandbox(box);
+  }
 }

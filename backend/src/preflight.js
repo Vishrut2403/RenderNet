@@ -48,7 +48,30 @@ def described(scene):
     }
 
 
+# A simulation nobody has baked is stepped from the start of the range as it
+# renders, so a frame is only right if every frame before it was rendered first,
+# in the same Blender. A farm does neither. Mantaflow fluids are left out:
+# nothing readable here says whether one has been baked.
+def unbaked():
+    for obj in bpy.data.objects:
+        for mod in obj.modifiers:
+            cache = getattr(mod, 'point_cache', None)
+
+            if mod.show_render and cache is not None and not cache.is_baked:
+                yield '%s (%s)' % (obj.name, mod.type.replace('_', ' ').lower())
+
+        for system in getattr(obj, 'particle_systems', []):
+            if not system.point_cache.is_baked:
+                yield '%s (particles)' % obj.name
+
+    world = bpy.context.scene.rigidbody_world
+
+    if world is not None and not world.point_cache.is_baked:
+        yield 'the scene (rigid body)'
+
+
 missing = []
+unpacked = []
 
 for block in referenced():
     if getattr(block, 'packed_file', None):
@@ -62,11 +85,17 @@ for block in referenced():
     resolved = os.path.normpath(
         bpy.path.native_pathsep(bpy.path.abspath(stored, library=block.library)))
 
-    if not os.path.exists(resolved):
+    # Here is not the same as packed: a machine somewhere else is sent the
+    # .blend and nothing beside it.
+    if os.path.exists(resolved):
+        unpacked.append(resolved)
+    else:
         missing.append(resolved)
 
 print('${MARKER}' + json.dumps({
     'missing': sorted(set(missing)),
+    'unpacked': sorted(set(unpacked)),
+    'unbaked': sorted(set(unbaked())),
     'active': bpy.context.scene.name,
     'scenes': [described(scene) for scene in bpy.data.scenes]
 }))
@@ -97,20 +126,29 @@ function readBlend(blendPath) {
   return next;
 }
 
-// A scene that reaches for files it did not bring renders untextured rather
-// than failing, which is worth catching before 500 frames of it. Anything that
-// goes wrong with the check itself lets the job through: a broken preflight
-// must not be able to stop the farm.
-export function checkAssets(blendPath) {
-  return readBlend(blendPath)
-    .then(report => ({ checked: report !== null, missing: report?.missing ?? [] }));
+// What would make this scene render wrongly rather than not at all: files it
+// reaches for and did not bring, files only this machine can see, and
+// simulations nobody has baked. Anything that goes wrong with the check itself
+// lets the job through: a broken preflight must not be able to stop the farm.
+export function checkScene(blendPath) {
+  return readBlend(blendPath).then(report => ({
+    checked: report !== null,
+    missing: report?.missing ?? [],
+    unpacked: report?.unpacked ?? [],
+    unbaked: report?.unbaked ?? []
+  }));
 }
 
 // What the scene already says about itself.
 export function readScene(blendPath) {
   return readBlend(blendPath).then(report => (report === null
-    ? { read: false, active: null, scenes: [] }
-    : { read: true, active: report.active ?? null, scenes: report.scenes ?? [] }));
+    ? { read: false, active: null, scenes: [], unbaked: [] }
+    : {
+      read: true,
+      active: report.active ?? null,
+      scenes: report.scenes ?? [],
+      unbaked: report.unbaked ?? []
+    }));
 }
 
 function openScene(blendPath) {
@@ -160,6 +198,18 @@ function openScene(blendPath) {
       done(report);
     });
   });
+}
+
+export function unbakedMessage(unbaked) {
+  const shown = unbaked.slice(0, REPORTED);
+  const rest = unbaked.length - shown.length;
+
+  return `${unbaked.length} simulation${unbaked.length === 1 ? '' : 's'} in the scene `
+    + `${unbaked.length === 1 ? 'has' : 'have'} no baked cache: `
+    + `${shown.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}. `
+    + 'The farm renders frames side by side and out of order, which a simulation '
+    + 'stepped as it renders cannot survive. In Blender: bake the cache, save, '
+    + 'and upload again.';
 }
 
 export function missingAssetsMessage(missing) {

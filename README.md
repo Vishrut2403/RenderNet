@@ -90,6 +90,17 @@ failed three attempts at a time against a disk with no room. Free space is now
 read as frames land, and a job that has eaten into the reserve goes back to the
 queue keeping every frame it delivered.
 
+**A scene is checked for what would render it wrongly, not just for what would
+stop it.** Three things come back from opening it. Files it reaches for and did
+not bring fail the job before a frame is spent, which is the ordinary case.
+Files that are *here but not packed into it* are subtler: a machine somewhere
+else is sent the `.blend` and nothing beside it, so that job is kept on the
+machine that can see them rather than rendered untextured elsewhere and called
+done. And a simulation with no baked cache is refused outright — the farm hands
+frames out side by side and out of order, and every launch of Blender is a fresh
+one, which a cache stepped as it renders cannot survive. Somebody who means it
+can tick the box and skip the lot.
+
 **An interrupted render resumes rather than restarting.** Frames are tracked
 individually, so switching the machine off mid-job costs the frame in flight,
 not the evening. A job is only given up on if it is interrupted repeatedly
@@ -139,8 +150,9 @@ chosen rather than on submit, so the workstation can open it in Blender while
 the rest of the form is being filled in, and answer with the frame range,
 engine, resolution, step, samples and format the scene was saved with. A field
 the artist has already set is left alone. Anything this farm cannot honour — an
-engine it does not run, a scene with no camera — is said rather than quietly
-dropped. Submitting queues the file already on disk, so it goes up once.
+engine it does not run, a simulation nobody has baked, a scene with no camera —
+is said rather than quietly dropped. Submitting queues the file already on disk,
+so it goes up once.
 
 **A test frame can be rendered first.** The rest of the range is held back until
 its owner has looked at that frame and approved it, so a wrong camera or a

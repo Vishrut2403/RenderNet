@@ -242,6 +242,11 @@ if (args.includes('-P') && !args.includes('-o')) {
     ? ['/home/artist/textures/wood.png', '/home/artist/textures/metal.png']
     : [];
 
+  // 'ondisk' reaches for files that are here but not packed into it: fine on
+  // this machine, and nowhere else. 'unbaked' has a simulation nobody baked.
+  const unpacked = scene.includes('ondisk') ? ['/data/textures/floor.png'] : [];
+  const unbaked = scene.includes('unbaked') ? ['Flag (cloth)', 'the scene (rigid body)'] : [];
+
   // A line per opening, so a test can count what reading a scene twice cost.
   record('readings.txt', scene + '\\n', true);
 
@@ -265,8 +270,13 @@ if (args.includes('-P') && !args.includes('-o')) {
     ? [Object.assign({}, main, { name: 'Backdrop', frameEnd: 5 }), main]
     : [main];
 
-  fs.writeSync(1, 'RENDERNET_PREFLIGHT ' + JSON.stringify(
-    { missing: missing, active: main.name, scenes: scenes }) + '\\n');
+  fs.writeSync(1, 'RENDERNET_PREFLIGHT ' + JSON.stringify({
+    missing: missing,
+    unpacked: unpacked,
+    unbaked: unbaked,
+    active: main.name,
+    scenes: scenes
+  }) + '\\n');
   process.exit(0);
 }
 

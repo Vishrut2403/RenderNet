@@ -132,6 +132,7 @@ addColumnIfMissing('jobs', 'composite', 'TEXT');
 // What the scene reaches for outside itself, checked before it is queued.
 addColumnIfMissing('jobs', 'assetCheck', 'TEXT');
 addColumnIfMissing('jobs', 'missingAssets', 'TEXT');
+addColumnIfMissing('jobs', 'needsThisMachine', 'INTEGER DEFAULT 0');
 
 // One frame claimed by one worker, with an expiry: a worker that stops answering
 // loses the frame rather than stranding it.
@@ -159,7 +160,8 @@ const COLUMNS = [
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
   'pinnedAt', 'heldBy',
   'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality',
-  'assetCheck', 'missingAssets', 'video', 'testFrame', 'approval', 'tiles', 'composite'
+  'assetCheck', 'missingAssets', 'needsThisMachine',
+  'video', 'testFrame', 'approval', 'tiles', 'composite'
 ];
 
 const upsertJob = db.prepare(`

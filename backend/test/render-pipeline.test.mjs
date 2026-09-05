@@ -1227,6 +1227,31 @@ export default async function run() {
     results.check('somebody who means it can render it anyway',
       anywayJob.status === 'completed', anywayJob.status);
 
+    // The farm hands frames out side by side and out of order, and every span
+    // is a fresh Blender. A simulation stepped as it renders cannot survive
+    // that, and would come back looking nothing like the artist's own render.
+    const simulated = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'unbaked.blend'),
+      { frameStart: 1, frameEnd: 40 }
+    );
+    const simJob = await waitForJob(assetServer.base, assetToken, simulated.body.jobId, 60000);
+
+    results.check('a scene whose simulation has no cache is refused',
+      simJob.status === 'failed' && simJob.assetCheck === 'unbaked',
+      `${simJob.status} / ${simJob.assetCheck}`);
+    results.check('without rendering a frame of it either',
+      simJob.completedFrames === 0, `${simJob.completedFrames} frames rendered`);
+    results.check('naming what to bake',
+      simJob.error?.includes('Flag (cloth)') && /bake/i.test(simJob.error ?? ''),
+      simJob.error);
+
+    const bakedInstead = await fetch(`${assetServer.base}/jobs/${simulated.body.jobId}/rerun`, {
+      method: 'POST', headers: auth(assetToken)
+    });
+
+    results.check('and it cannot be rerun into rendering either',
+      bakedInstead.status === 400, `got ${bakedInstead.status}`);
+
   } finally {
     await stopServer(assetServer);
     removeSandbox(assetBox);

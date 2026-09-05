@@ -222,7 +222,7 @@ router.post('/lease', (req, res) => {
     device: typeof req.body?.device === 'string' ? req.body.device : null
   });
 
-  const lease = leaseNextFrame(workerId);
+  const lease = leaseNextFrame(workerId, req.machine.isLocal);
 
   // 204 rather than an error: having no work is the ordinary answer.
   if (!lease) return res.status(204).end();

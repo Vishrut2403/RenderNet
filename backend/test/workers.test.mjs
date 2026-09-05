@@ -7,13 +7,15 @@ import fs from 'fs';
 import path from 'path';
 import {
   createResults, BACKEND_ROOT, makeSandbox, removeSandbox, startServer, stopServer,
-  adminSession, submitJob, waitForJob, createFakeBlender, createFakeScene, waitForCondition, auth
+  adminSession, submitJob, waitForJob, createFakeBlender, createFakeScene, waitForCondition,
+  auth, getJob, sleep
 } from './helpers.mjs';
 
 const PORT = 5598;
 const CAPABILITY_PORT = 5610;
 const LOST_PORT = 5617;
 const UNEVEN_PORT = 5618;
+const ONDISK_PORT = 5619;
 
 // "[worker-1] ✅ Job 17..., frame 3 rendered: ..." - the pool tags each worker's
 // output with which one it came from, so the log says who delivered what. One
@@ -207,8 +209,88 @@ export default async function run() {
   await capabilities(results);
   await losingAWorker(results);
   await unevenMachines(results);
+  await filesOnlyHere(results);
 
   return results;
+}
+
+// A machine somewhere else is sent the .blend and nothing beside it, so a scene
+// whose textures merely happen to be on this disk would render untextured there
+// and say nothing was wrong. It stays on the machine that can see them.
+async function filesOnlyHere(results) {
+  const box = makeSandbox('files-only-here');
+  const elsewhere = makeSandbox('files-elsewhere');
+
+  let server;
+  let distant;
+
+  try {
+    console.log('\n  A scene whose files are only on this machine');
+
+    server = await startServer({
+      port: ONDISK_PORT,
+      cwd: box,
+      // Nothing renders here, so the only machine on offer is the distant one.
+      env: { BLENDER_PATH: createFakeBlender(box), WORKER_SLOTS: '0' }
+    });
+
+    distant = spawn(process.execPath, [path.join(BACKEND_ROOT, 'src', 'worker-main.js')], {
+      env: {
+        ...process.env,
+        API_URL: `http://127.0.0.1:${ONDISK_PORT}`,
+        WORKER_SECRET: 'test-worker-secret',
+        BLENDER_PATH: createFakeBlender(elsewhere),
+        WORKER_SCRATCH_DIR: elsewhere,
+        WORKER_REMOTE: '1',
+        WORKER_ID: 'far-away'
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    const token = await adminSession(server.base);
+    const kept = await submitJob(server.base, token, createFakeScene(box, 'ondisk.blend'),
+      { frameStart: 1, frameEnd: 2 });
+
+    await waitForCondition(
+      async () => (await getJob(server.base, token, kept.body.jobId)).needsThisMachine === 1,
+      { label: 'the scene to be read', timeoutMs: 30000 });
+
+    const held = await getJob(server.base, token, kept.body.jobId);
+
+    results.check('the check sees files this machine can find but did not bring',
+      held.needsThisMachine === 1, JSON.stringify(held.assetCheck));
+    results.check('and lets the job through rather than failing it',
+      held.assetCheck === 'ok', held.assetCheck);
+
+    // Long enough that a machine willing to take it would have finished by now.
+    await sleep(6000);
+
+    const untouched = await getJob(server.base, token, kept.body.jobId);
+
+    results.check('no machine somewhere else is given a frame of it',
+      untouched.completedFrames === 0 && untouched.status !== 'completed',
+      `${untouched.status}, ${untouched.completedFrames} frames`);
+
+    // The same farm with a renderer of its own finishes it.
+    await stopServer(server);
+    server = await startServer({
+      port: ONDISK_PORT,
+      cwd: box,
+      env: { BLENDER_PATH: createFakeBlender(box), WORKER_SLOTS: '1' }
+    });
+
+    const again = await adminSession(server.base);
+    const done = await waitForJob(server.base, again, kept.body.jobId, 60000);
+
+    results.check('while this machine renders it as usual',
+      done.status === 'completed' && done.completedFrames === 2,
+      `${done.status}, ${done.completedFrames} of 2`);
+  } finally {
+    distant?.kill('SIGKILL');
+    await stopServer(server);
+    removeSandbox(box);
+    removeSandbox(elsewhere);
+  }
 }
 
 // A claim is sized in time, so it has to be sized against the machine taking

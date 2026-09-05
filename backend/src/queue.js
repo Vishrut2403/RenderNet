@@ -18,7 +18,7 @@ import {
 import {
   workerCanRender, engineIsOffered, machines, workerCount, touchWorker
 } from './worker-registry.js';
-import { checkAssets, missingAssetsMessage } from './preflight.js';
+import { checkScene, missingAssetsMessage, unbakedMessage } from './preflight.js';
 import { queueWaits as waitsFor, forgetTiming, frameTimings, paceOf } from './estimates.js';
 import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
@@ -120,7 +120,7 @@ export function resumeInterruptedJobs() {
     resumed++;
 
     // Killed partway through its own asset check, so it never got an answer.
-    if (job.assetCheck === 'checking') startAssetCheck(job);
+    if (job.assetCheck === 'checking') startSceneCheck(job);
   }
 
   if (resumed || abandoned) {
@@ -175,7 +175,8 @@ export function addToQueue(jobData) {
     testFrame: jobData.testFrame ?? null,
     approval: jobData.testFrame ? 'testing' : null,
     tiles: jobData.tiles ?? null,
-    composite: null
+    composite: null,
+    needsThisMachine: 0
   };
 
   // Queued straight away so it has a position and an estimate like any other,
@@ -194,7 +195,7 @@ export function addToQueue(jobData) {
 
   console.log(`Job ${jobId} added to queue. Queue length: ${renderQueue.length}`);
 
-  if (job.assetCheck === 'checking') startAssetCheck(job);
+  if (job.assetCheck === 'checking') startSceneCheck(job);
   else if (!preemptFor(job)) processQueue();
 
   return jobId;
@@ -202,31 +203,49 @@ export function addToQueue(jobData) {
 
 // A scene that reaches for textures it did not bring renders untextured rather
 // than failing, and nobody wants to find that out at frame 500.
-function startAssetCheck(job) {
-  checkAssets(dataPath(job.filePath)).then(({ checked, missing }) => {
+function startSceneCheck(job) {
+  checkScene(dataPath(job.filePath)).then(({ checked, missing, unpacked, unbaked }) => {
     const current = jobs.get(job.id);
 
     // Deleted or cancelled while Blender was reading it.
     if (!current || current.status !== 'pending') return;
 
     if (checked && missing.length > 0) {
-      const queued = renderQueue.indexOf(current.id);
-      if (queued > -1) renderQueue.splice(queued, 1);
-
-      current.assetCheck = 'missing';
-      current.missingAssets = JSON.stringify(missing);
-      saveJob(current);
-      failJob(current.id, missingAssetsMessage(missing));
-
+      refuse(current, 'missing', missingAssetsMessage(missing), JSON.stringify(missing));
       console.log(`Job ${current.id} reaches for ${missing.length} file(s) it did not bring`);
       return;
     }
 
+    // Rendered out of order across machines, an unbaked cache gives a different
+    // picture from the one the artist has locally - and says nothing about it.
+    if (checked && unbaked.length > 0) {
+      refuse(current, 'unbaked', unbakedMessage(unbaked), JSON.stringify(unbaked));
+      console.log(`Job ${current.id} has ${unbaked.length} simulation(s) nobody baked`);
+      return;
+    }
+
+    // Not packed, but here. Fine on this machine and nowhere else, because a
+    // machine somewhere else is sent the .blend and nothing beside it.
+    current.needsThisMachine = checked && unpacked.length > 0 ? 1 : 0;
     current.assetCheck = checked ? 'ok' : 'skipped';
     saveJob(current);
 
+    if (current.needsThisMachine) {
+      console.log(`Job ${current.id} keeps ${unpacked.length} file(s) only this machine can see`);
+    }
+
     if (!preemptFor(current)) processQueue();
   });
+}
+
+function refuse(job, verdict, message, detail) {
+  const queued = renderQueue.indexOf(job.id);
+  if (queued > -1) renderQueue.splice(queued, 1);
+
+  job.assetCheck = verdict;
+  job.missingAssets = detail;
+  saveJob(job);
+  failJob(job.id, message);
 }
 
 function preemptFor(job) {
@@ -293,8 +312,9 @@ export function rerunJob(jobId) {
   }
 
   // The stored .blend is the one that was checked, so running it again can only
-  // produce the same frames with the same files missing.
-  if (job.assetCheck === 'missing') {
+  // produce the same frames with the same files missing, or the same simulation
+  // nobody has baked.
+  if (job.assetCheck === 'missing' || job.assetCheck === 'unbaked') {
     return { success: false, error: job.error };
   }
 
@@ -668,11 +688,15 @@ function compositeFromActive(workerId) {
   return null;
 }
 
-function leaseFromActive(workerId) {
+function leaseFromActive(workerId, local) {
   for (const job of activeJobs()) {
     // A worker that cannot render the engine would fail every frame it took,
     // and three failures in a row is enough to stop the job for everyone.
     if (!workerCanRender(workerId, job.renderEngine)) continue;
+
+    // Its textures are on this machine's disk and nowhere else, so a machine
+    // somewhere else would render it untextured and say nothing was wrong.
+    if (job.needsThisMachine && !local) continue;
 
     const lease = leaseFrames(job.id, workerId, LEASE_TTL_MS, spanFor(job, workerId));
 
@@ -726,13 +750,13 @@ function parkUnrenderable() {
 
 // A worker with nothing to claim starts the next queued job rather than waiting,
 // so the tail of one job does not leave the farm idle.
-export function leaseNextFrame(workerId) {
+export function leaseNextFrame(workerId, local = false) {
   // The asking worker has just said what it offers, so this is the freshest
   // the registry ever is.
   parkUnrenderable();
 
   for (;;) {
-    const lease = compositeFromActive(workerId) ?? leaseFromActive(workerId);
+    const lease = compositeFromActive(workerId) ?? leaseFromActive(workerId, local);
 
     if (lease) return lease;
     if (!promoteNext()) break;

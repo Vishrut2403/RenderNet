@@ -334,8 +334,14 @@ function offeredSettings(scene) {
 }
 
 // What the form cannot carry across from the scene.
-function warningsFor(scene, settings, scenes) {
+function warningsFor(scene, settings, scenes, unbaked) {
   const notes = [];
+
+  // Said here as well as refused at submit, so it is known before the file has
+  // been described rather than after.
+  if (unbaked.length > 0) {
+    notes.push(`${unbaked.length} simulation${unbaked.length === 1 ? '' : 's'} not baked`);
+  }
 
   if (!settings.renderEngine) notes.push(`This farm does not run ${scene.engine}`);
   if (!settings.format) notes.push(`This farm does not write ${scene.format}`);
@@ -357,7 +363,7 @@ function readingOf(report) {
     scenes: report.scenes.map(scene => scene.name),
     active: active.name,
     settings,
-    warnings: warningsFor(active, settings, report.scenes)
+    warnings: warningsFor(active, settings, report.scenes, report.unbaked ?? [])
   };
 }
 
