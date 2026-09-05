@@ -4,9 +4,10 @@ import path from 'path';
 import { Transform } from 'stream';
 import { pipeline } from 'stream/promises';
 import { ensureDir, freeBytes } from './utils/file-utils.js';
+import { storeBlend } from './blend-store.js';
 import { usageFor } from './storage.js';
 import {
-  PARTIALS_DIR, UPLOADS_DIR, DATA_DIR, PARTIAL_TTL_MS, MAX_UPLOAD_BYTES, MAX_CHUNK_BYTES,
+  PARTIALS_DIR, DATA_DIR, PARTIAL_TTL_MS, MAX_UPLOAD_BYTES, MAX_CHUNK_BYTES,
   UPLOAD_CHUNK_BYTES, USER_QUOTA_BYTES, MIN_FREE_BYTES
 } from './paths.js';
 
@@ -183,7 +184,7 @@ function truncate(session) {
   }
 }
 
-export function finishSession(session) {
+export async function finishSession(session) {
   if (session.received !== session.size) {
     return {
       status: 409,
@@ -192,17 +193,11 @@ export function finishSession(session) {
     };
   }
 
-  ensureDir(UPLOADS_DIR);
+  const stored = await storeBlend(session.path, session.filename);
 
-  const filename = `${Date.now()}-${session.filename}`;
-  const destination = path.join(UPLOADS_DIR, filename);
-
-  fs.renameSync(session.path, destination);
   sessions.delete(session.id);
 
-  return {
-    file: { path: destination, filename, size: session.size, originalname: session.filename }
-  };
+  return { file: { ...stored, size: session.size, originalname: session.filename } };
 }
 
 export function abortSession(session) {

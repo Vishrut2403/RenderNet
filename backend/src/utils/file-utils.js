@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import fs from 'fs';
 
 export function ensureDir(dir) {
@@ -16,6 +17,19 @@ export function deleteFile(filePath) {
     console.error(`Failed to delete ${filePath}:`, error.message);
   }
   return false;
+}
+
+// Streamed rather than read whole: an upload may be gigabytes, and this runs on
+// the request that finishes one.
+export function hashFile(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const reading = fs.createReadStream(filePath);
+
+    reading.on('error', reject);
+    reading.on('data', chunk => hash.update(chunk));
+    reading.on('end', () => resolve(hash.digest('hex')));
+  });
 }
 
 // Null when the check itself fails: a farm that stops rendering because it

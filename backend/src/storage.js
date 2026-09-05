@@ -3,6 +3,7 @@ import path from 'path';
 import { freeBytes } from './utils/file-utils.js';
 import { dataPath, DATA_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from './paths.js';
 import { jobs, workerScratchDir } from './job-store.js';
+import { removeBlend, blendDirectory } from './blend-store.js';
 
 const DISK_RECHECK_MS = 60 * 1000;
 const USAGE_TTL_MS = 10000;
@@ -37,10 +38,34 @@ export function diskIsTooFull(onRecheck) {
   return true;
 }
 
+// One file on disk may be the scene of several jobs, so it only goes when the
+// last job that could still render it does. A cancelled job never can.
+function stillWanted(filePath, exceptJobId = null) {
+  for (const job of jobs.values()) {
+    if (job.id === exceptJobId || job.status === 'cancelled') continue;
+    if (job.filePath === filePath) return true;
+  }
+
+  return false;
+}
+
+// For an upload that has arrived but whose job was then refused: nothing names
+// it yet, so it goes unless it is a scene somebody else already had.
+export function dropUnusedBlend(filePath) {
+  if (!filePath || stillWanted(filePath)) return;
+
+  try {
+    if (fs.existsSync(dataPath(filePath))) removeBlend(filePath);
+  } catch (error) {
+    console.error(`Error removing upload:`, error.message);
+  }
+}
+
 export function deleteJobFiles(job) {
   try {
-    if (job.filePath && fs.existsSync(dataPath(job.filePath))) {
-      fs.unlinkSync(dataPath(job.filePath));
+    if (job.filePath && !stillWanted(job.filePath, job.id)
+      && fs.existsSync(dataPath(job.filePath))) {
+      removeBlend(job.filePath);
       console.log(`Deleted upload: ${job.filePath}`);
     }
 
@@ -85,10 +110,17 @@ export function usageFor(username, { fresh = false } = {}) {
   }
 
   let bytes = 0;
+  // Counted once however many of their jobs render it: it is one file on disk.
+  const scenes = new Set();
 
   for (const job of jobs.values()) {
     if (job.owner !== username) continue;
-    if (job.filePath) bytes += sizeOf(dataPath(job.filePath));
+
+    if (job.filePath && !scenes.has(job.filePath)) {
+      scenes.add(job.filePath);
+      bytes += sizeOf(dataPath(job.filePath));
+    }
+
     if (job.outputFolder) bytes += sizeOf(dataPath(job.outputFolder));
   }
 
@@ -122,7 +154,15 @@ export function getActiveJobPaths() {
   for (const job of jobs.values()) {
     if (job.status !== 'pending' && job.status !== 'rendering') continue;
 
-    if (job.filePath) inUse.add(dataPath(job.filePath));
+    // The directory as well as the file: the sweep walks uploads/ an entry at a
+    // time, and a content-addressed scene is a directory there.
+    if (job.filePath) {
+      inUse.add(dataPath(job.filePath));
+
+      const directory = blendDirectory(job.filePath);
+      if (directory) inUse.add(directory);
+    }
+
     if (job.outputFolder) inUse.add(dataPath(job.outputFolder));
     inUse.add(workerScratchDir(job.id));
   }

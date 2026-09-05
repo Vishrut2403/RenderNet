@@ -43,6 +43,7 @@ export default async function run() {
   const { jobs } = await import('../src/job-store.js');
   const db = await import('../src/db.js');
   const workerRouter = (await import('../src/routes/worker.js')).default;
+  const registry = await import('../src/worker-registry.js');
   // index.js does this at boot; this suite mounts the router on its own.
   const tokens = await import('../src/worker-tokens.js');
   tokens.importSharedSecret();
@@ -298,6 +299,35 @@ export default async function run() {
 
     console.log('\n  Frame leases');
     checkLeases(db, results);
+
+    console.log('\n  A machine part way through a span is still here');
+
+    // A worker asks for work once a span, so on a long one it can go minutes
+    // without saying anything but the renewals - and a machine dropped from the
+    // registry stops counting towards how wide the next span may be.
+    db.markFramePending(jobId, 4);
+    const busy = db.leaseFrames(jobId, 'busy-machine', 600_000, 1);
+
+    registry.announceWorker({ workerId: 'busy-machine', name: 'busy', engines: ['CYCLES'] });
+    registry.announceWorker({ workerId: 'quiet-machine', name: 'quiet', engines: ['CYCLES'] });
+
+    // Six minutes on, past the five a machine is counted as current for.
+    const realNow = Date.now;
+    Date.now = () => realNow() + 6 * 60_000;
+
+    try {
+      results.check('the claim can still be renewed',
+        queue.renewFrameLease(busy.leaseId).ok === true);
+
+      const here = registry.machines().map(machine => machine.id);
+
+      results.check('a machine that has only renewed is still counted',
+        here.includes('busy-machine'), here.join(','));
+      results.check('while one that has said nothing at all is not',
+        !here.includes('quiet-machine'), here.join(','));
+    } finally {
+      Date.now = realNow;
+    }
 
   } finally {
     // Stops the stand-in Blender still sitting on its first frame.

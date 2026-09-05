@@ -59,6 +59,17 @@ Blender writes them rather than when the launch ends, so a span cut short keeps
 everything it had already rendered, and only the frame Blender actually stopped
 on is charged a failed attempt.
 
+**A scene is stored by what is in it.** An upload is kept under the SHA-256 of
+its bytes, at `uploads/<hash>/<the name it was given>`, so submitting the same
+file again — a second frame range of one shot, a re-run after a failure, two
+people handed the same scene — is the copy already on disk rather than another
+one. It is charged against the artist's quota once however many of their jobs
+render it, and two people who send the same file are charged separately, because
+a quota nobody can predict is not a quota. The awkward part is the lifetime: a
+file that outlives any one job may only be deleted by the last job that could
+still render it, which is what cancelling, deleting and the retention sweep all
+have to agree on.
+
 **An interrupted render resumes rather than restarting.** Frames are tracked
 individually, so switching the machine off mid-job costs the frame in flight,
 not the evening. A job is only given up on if it is interrupted repeatedly

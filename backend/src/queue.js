@@ -11,7 +11,9 @@ import {
   holdFramesExcept, releaseHeldFrames
 } from './db.js';
 import { DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY } from './formats.js';
-import { workerCanRender, engineIsOffered, machines, workerCount } from './worker-registry.js';
+import {
+  workerCanRender, engineIsOffered, machines, workerCount, touchWorker
+} from './worker-registry.js';
 import { checkAssets, missingAssetsMessage } from './preflight.js';
 import { queueWaits as waitsFor, forgetTiming, frameTimings } from './estimates.js';
 import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
@@ -702,6 +704,8 @@ export function renewFrameLease(leaseId) {
   if (!job || job.status !== 'rendering') return { ok: false, reason: 'stopped' };
 
   const expiresAt = renewLease(leaseId, LEASE_TTL_MS);
+
+  if (expiresAt) touchWorker(lease.leasedBy);
 
   return expiresAt ? { ok: true, expiresAt } : { ok: false, reason: 'expired' };
 }

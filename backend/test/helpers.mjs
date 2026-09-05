@@ -176,18 +176,34 @@ function write(file) {
   fs.writeFileSync(file, CONTENT[path.extname(file)] || CONTENT['.png']);
 }
 
+// One place for everything the stand-in records and every marker a test sets,
+// whichever directory the scene itself is stored under.
+const records = process.env.DATA_DIR
+  ? path.join(process.env.DATA_DIR, 'uploads')
+  : path.dirname(valueOf('-b'));
+
+function record(name, contents, append) {
+  fs.mkdirSync(records, { recursive: true });
+  const file = path.join(records, name);
+
+  if (append) fs.appendFileSync(file, contents);
+  else fs.writeFileSync(file, contents);
+}
+
+function marked(name) {
+  return fs.existsSync(path.join(records, name));
+}
+
 // Putting tiles back together is another thing the real Blender is asked to do,
 // so the stand-in answers it the same way: one file, made from the tiles it was
 // handed, and a record of what it was given.
 if (process.env.RENDERNET_TILE_SPEC) {
   const spec = JSON.parse(process.env.RENDERNET_TILE_SPEC);
-  const beside = path.dirname(valueOf('-b'));
-  fs.writeFileSync(path.join(beside, 'last-composite.txt'), JSON.stringify(spec));
+  record('last-composite.txt', JSON.stringify(spec));
 
   // 'unglued' cannot be put back together until a marker says otherwise, so a
   // still whose tiles all arrived can fail at the last step and be asked again.
-  if (path.basename(valueOf('-b')).includes('unglued')
-      && !fs.existsSync(path.join(beside, 'glue'))) {
+  if (path.basename(valueOf('-b')).includes('unglued') && !marked('glue')) {
     fs.writeSync(1, 'Error: the tiles could not be read\\n');
     process.exit(1);
   }
@@ -208,7 +224,7 @@ if (args.includes('-P') && !args.includes('-o')) {
     : [];
 
   // A line per opening, so a test can count what reading a scene twice cost.
-  fs.appendFileSync(path.join(path.dirname(valueOf('-b')), 'readings.txt'), scene + '\\n');
+  record('readings.txt', scene + '\\n', true);
 
   if (scene.includes('unreadable')) process.exit(0);
 
@@ -245,18 +261,14 @@ const target = targetFor(frame);
 
 // Recorded so a test can assert on the command line the worker built and the
 // environment it set, which is where the render settings become visible.
-fs.writeFileSync(path.join(path.dirname(valueOf('-b')), 'last-args.txt'), args.join(' '));
+record('last-args.txt', args.join(' '));
 
 // A line per launch, which is what says whether a span was rendered in one.
-fs.appendFileSync(path.join(path.dirname(valueOf('-b')), 'launches.txt'),
-  scene + ' ' + valueOf('-f') + '\\n');
-fs.writeFileSync(
-  path.join(path.dirname(valueOf('-b')), 'last-env.txt'),
-  Object.entries(process.env)
-    .filter(([name]) => name.startsWith('RENDERNET_'))
-    .map(([name, value]) => name + '=' + value)
-    .join('\\n')
-);
+record('launches.txt', scene + ' ' + valueOf('-f') + '\\n', true);
+record('last-env.txt', Object.entries(process.env)
+  .filter(([name]) => name.startsWith('RENDERNET_'))
+  .map(([name, value]) => name + '=' + value)
+  .join('\\n'));
 
 if (scene.includes('stubborn')) {
   process.on('SIGTERM', () => {});
@@ -281,9 +293,7 @@ if (scene.includes('broken')) {
 // 'flaky' fails its second frame until a 'fixed' marker appears beside the
 // scene, so a job can fail for a reason somebody then puts right. Real Blender
 // writes the frames it reached before giving up, and so does this.
-const failAt = scene.includes('flaky')
-  && !fs.existsSync(path.join(path.dirname(valueOf('-b')), 'fixed'))
-  && frames.includes(2) ? 2 : null;
+const failAt = scene.includes('flaky') && !marked('fixed') && frames.includes(2) ? 2 : null;
 
 function pauseFor(f) {
   if (scene.includes('hang') || scene.includes('stubborn')) return 60000;
@@ -355,9 +365,15 @@ export function stubbornIsUnkillable(sandbox, jobId) {
   });
 }
 
+// Named in its own bytes: scenes are stored by what is in them, so fixtures
+// that differed only by filename would all be the one file on disk.
 export function createFakeScene(dir, name) {
   const scenePath = path.join(dir, name);
-  fs.writeFileSync(scenePath, Buffer.alloc(256, 3));
+  const bytes = Buffer.alloc(256, 3);
+
+  Buffer.from(name).copy(bytes);
+  fs.writeFileSync(scenePath, bytes);
+
   return scenePath;
 }
 

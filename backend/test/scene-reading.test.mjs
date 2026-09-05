@@ -60,7 +60,7 @@ async function read(base, token, filename) {
 }
 
 function openings(sandbox, name) {
-  const log = path.join(sandbox, 'partials', 'readings.txt');
+  const log = path.join(sandbox, 'uploads', 'readings.txt');
 
   if (!fs.existsSync(log)) return 0;
 

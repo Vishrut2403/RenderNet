@@ -17,6 +17,24 @@ function expired(target, cutoff) {
   }
 }
 
+// A scene is a directory holding the one file, so its age is that file's rather
+// than the directory's - which changes only when something is put in or taken
+// out of it.
+function sceneAge(target) {
+  try {
+    const stats = fs.statSync(target);
+
+    if (!stats.isDirectory()) return stats.mtimeMs;
+
+    const inside = fs.readdirSync(target)
+      .map(name => fs.statSync(path.join(target, name)).mtimeMs);
+
+    return inside.length > 0 ? Math.max(...inside) : stats.mtimeMs;
+  } catch {
+    return Infinity;
+  }
+}
+
 export function cleanupOldFiles() {
   const now = Date.now();
   // A backstop for files nobody came back for; the per-user quota is the limit.
@@ -36,10 +54,10 @@ export function cleanupOldFiles() {
       uploadFiles.forEach(file => {
         const filePath = path.join(uploadsDir, file);
         if (active.has(path.resolve(filePath))) return;
-        if (!expired(filePath, cutoff)) return;
+        if (sceneAge(filePath) >= cutoff) return;
 
         try {
-          fs.unlinkSync(filePath);
+          fs.rmSync(filePath, { recursive: true, force: true });
           deletedUploads++;
           console.log(`   🗑️ Deleted old upload: ${file}`);
         } catch (error) {

@@ -1,5 +1,5 @@
 // Who is out there and what they can render. A worker says so every time it
-// asks for a frame, so the list needs no registration step and no cleanup: a
+// asks for frames, so the list needs no registration step and no cleanup: a
 // machine that stops asking simply stops being current.
 const CURRENT_MS = 5 * 60 * 1000;
 
@@ -17,6 +17,15 @@ export function announceWorker({ workerId, name, engines, device }) {
     device: device || null,
     lastSeen: Date.now()
   });
+}
+
+// A machine part way through a span asks for nothing while it renders, so its
+// renewals are what say it is still here. Only refreshes a machine already
+// known: one that has been forgotten says what it offers when it next asks.
+export function touchWorker(workerId) {
+  const worker = workers.get(workerId);
+
+  if (worker) worker.lastSeen = Date.now();
 }
 
 function knownWorkers() {

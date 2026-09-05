@@ -2,14 +2,15 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import { deleteFile, freeBytes } from '../utils/file-utils.js';
+import { storeBlend } from '../blend-store.js';
 import { addToQueue } from '../queue.js';
 import { readScene } from '../preflight.js';
 import { getJob } from '../job-views.js';
-import { DATA_DIR, UPLOADS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
+import { DATA_DIR, PARTIALS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
 import {
   openSession, sessionFor, describeSession, appendChunk, finishSession, abortSession
 } from '../upload-sessions.js';
-import { usageFor } from '../storage.js';
+import { usageFor, dropUnusedBlend } from '../storage.js';
 import { ENGINE_IDS } from '../engines.js';
 import { MAX_TILES } from '../tiles.js';
 import {
@@ -19,8 +20,11 @@ import {
 
 const router = express.Router();
 
+// Landed among the part-uploads: where it belongs in uploads/ is not known
+// until the bytes have been read and hashed. A stray left by a request that
+// died is swept from there like any other partial.
 const storage = multer.diskStorage({
-  destination: UPLOADS_DIR,
+  destination: PARTIALS_DIR,
   filename: (req, file, cb) => {
     // basename strips any path separators a crafted filename might carry.
     cb(null, `${Date.now()}-${path.basename(file.originalname)}`);
@@ -101,11 +105,12 @@ function withSession(req, res, next) {
   next();
 }
 
-// Shared by the single request and the last step of a chunked upload: the bytes
-// are on disk either way by this point, and only the settings differ.
+// Shared by the single request and the last step of a chunked upload: the scene
+// is stored either way by this point, and only the settings differ. Refusing
+// has to put it back - unless it is one some other job is already rendering.
 function queueUpload(file, body, owner) {
   const refuse = (status, error) => {
-    deleteFile(file.path);
+    dropUnusedBlend(file.filePath);
     return { status, body: { error } };
   };
 
@@ -204,7 +209,7 @@ function queueUpload(file, body, owner) {
   }
 
   const jobId = addToQueue({
-    filePath: path.join('uploads', file.filename),
+    filePath: file.filePath,
     frameStart: start,
     frameEnd: end,
     renderEngine,
@@ -235,13 +240,18 @@ function queueUpload(file, body, owner) {
   };
 }
 
-router.post('/', roomOnDisk, withinQuota, upload.single('blend'), (req, res) => {
+router.post('/', roomOnDisk, withinQuota, upload.single('blend'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const result = queueUpload(req.file, req.body, req.user.username);
+    const stored = await storeBlend(req.file.path, req.file.originalname);
+    const result = queueUpload(
+      { ...stored, size: req.file.size, originalname: req.file.originalname },
+      req.body,
+      req.user.username
+    );
 
     res.status(result.status).json(result.body);
   } catch (error) {
@@ -359,7 +369,7 @@ router.post('/session/:id/inspect', withSession, async (req, res) => {
   res.json(await session.reading);
 });
 
-router.post('/session/:id/finish', (req, res) => {
+router.post('/session/:id/finish', async (req, res) => {
   const session = sessionFor(req.params.id, req.user.username);
 
   if (!session) {
@@ -370,7 +380,7 @@ router.post('/session/:id/finish', (req, res) => {
     return res.status(409).json({ error: 'A chunk of this upload is still arriving' });
   }
 
-  const assembled = finishSession(session);
+  const assembled = await finishSession(session);
 
   if (assembled.error) {
     return res.status(assembled.status).json({ error: assembled.error, received: assembled.received });
@@ -382,7 +392,7 @@ router.post('/session/:id/finish', (req, res) => {
     res.status(result.status).json(result.body);
   } catch (error) {
     console.error('Upload error:', error);
-    deleteFile(assembled.file.path);
+    dropUnusedBlend(assembled.file.filePath);
     res.status(500).json({ error: error.message });
   }
 });

@@ -14,6 +14,7 @@ import downloads from './downloads.test.mjs';
 import scheduling from './scheduling.test.mjs';
 import sceneReading from './scene-reading.test.mjs';
 import spans from './spans.test.mjs';
+import sceneStore from './scene-store.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -31,7 +32,8 @@ const suites = [
   ['Downloads and persistence', downloads],
   ['Scheduling and overrides', scheduling],
   ['Reading an uploaded scene', sceneReading],
-  ['Frame spans', spans]
+  ['Frame spans', spans],
+  ['Storing scenes by content', sceneStore]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };
