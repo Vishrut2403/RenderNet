@@ -47,6 +47,10 @@ export const UPLOAD_CHUNK_BYTES = Math.min(
   MAX_CHUNK_BYTES
 );
 
+// One finished frame on its way back from a worker. A 4K OpenEXR carrying
+// several passes runs well past a hundred megabytes.
+export const MAX_FRAME_BYTES = Number(process.env.MAX_FRAME_BYTES) || 512 * 1024 * 1024;
+
 // An upload nobody came back to finish is holding disk the quota does not yet
 // count against it.
 export const PARTIAL_TTL_MS = Number(process.env.PARTIAL_TTL_MS) || 6 * 60 * 60 * 1000;

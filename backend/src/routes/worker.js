@@ -12,7 +12,7 @@ import {
 import { getJob } from '../job-views.js';
 import { getLease, liveLeases } from '../db.js';
 import path from 'path';
-import { dataPath } from '../paths.js';
+import { dataPath, MAX_FRAME_BYTES } from '../paths.js';
 import { parseFormats, primaryOf, extensionOf } from '../formats.js';
 import { isTiled } from '../composite.js';
 import { tileName, tilesPath } from '../tiles.js';
@@ -130,7 +130,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
   storage,
-  limits: { fileSize: 100 * 1024 * 1024 }
+  limits: { fileSize: MAX_FRAME_BYTES }
 });
 
 function validFrame(req, res, next) {
@@ -285,6 +285,13 @@ router.use((error, req, res, _next) => {
   if (req.file?.path) fs.rmSync(req.file.path, { force: true });
 
   console.warn(`Worker upload rejected: ${error.message}`);
+
+  if (error.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({
+      error: `A frame may not exceed ${Math.round(MAX_FRAME_BYTES / 1024 / 1024)}MB`
+    });
+  }
+
   res.status(400).json({ error: error.message });
 });
 

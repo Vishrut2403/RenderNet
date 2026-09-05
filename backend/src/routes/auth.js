@@ -63,7 +63,8 @@ router.post('/change-password', requireSession, route(async (req, res) => {
     return res.status(400).json({ error: 'Old and new passwords required' });
   }
   
-  const result = await changePassword(username, oldPassword, newPassword);
+  const result = await changePassword(username, oldPassword, newPassword,
+    req.headers.authorization?.replace('Bearer ', ''));
   
   if (result.success) {
     res.json(result);

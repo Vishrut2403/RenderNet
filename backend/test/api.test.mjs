@@ -127,12 +127,21 @@ export default async function run() {
     results.check('new signups are hashed with bcrypt',
       algoFor('tester').hashAlgo === 'bcrypt' && algoFor('tester').passwordHash.startsWith('$2b$'));
 
+    // Signed in somewhere else as well, which is what a changed password has to
+    // reach: whoever knew the old one is still holding a session opened with it.
+    const elsewhere = await login(base, 'tester', 'testpass123');
+
     const changed = await fetch(`${base}/auth/change-password`, {
       method: 'POST',
       headers: { ...auth(userToken), 'Content-Type': 'application/json' },
       body: JSON.stringify({ oldPassword: 'testpass123', newPassword: 'newpass456' })
     });
     results.check('password change succeeds', changed.status === 200, `got ${changed.status}`);
+
+    results.check('every other session opened with the old password is ended',
+      await status(`${base}/jobs/summary`, { headers: auth(elsewhere) }) === 401);
+    results.check('while the one that changed it carries on',
+      await status(`${base}/jobs/summary`, { headers: auth(userToken) }) === 200);
     results.check('new password authenticates', !!(await login(base, 'tester', 'newpass456')));
     results.check('old password no longer authenticates',
       await status(`${base}/auth/login`, {
@@ -291,6 +300,8 @@ export default async function run() {
     // A throwaway account: resetting one still in use below would lock the
     // token those checks depend on and pass them for the wrong reason.
     await signUp(base, 'resetme', 'originalpass');
+    const inUse = await login(base, 'resetme', 'originalpass');
+
     await fetch(`${base}/auth/admin/reset-password`, {
       method: 'POST',
       headers: { ...auth(adminToken), 'Content-Type': 'application/json' },
@@ -304,6 +315,8 @@ export default async function run() {
     // The admin who set it knows it, so the owner has to replace it.
     results.check('an admin reset hands the account back locked',
       afterReset.mustChangePassword === true, JSON.stringify(afterReset.mustChangePassword));
+    results.check('and signs out whoever was in it',
+      await status(`${base}/jobs/summary`, { headers: auth(inUse) }) === 401);
 
     console.log('\n  Worker callback authentication');
     results.check('worker route rejects a request with no secret',

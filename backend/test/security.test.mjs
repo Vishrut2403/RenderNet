@@ -3,12 +3,13 @@
 import fs from 'fs';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, signUp, SIGNUP_CODE,
-  createCertificate, httpsGet
+  createCertificate, httpsGet, status
 } from './helpers.mjs';
 
 const PORT = 5596;
 const CORS_PORT = 5597;
 const TLS_PORT = 5611;
+const PROXY_PORT = 5615;
 const ALLOWED = 'http://studio.local:8080';
 
 async function headersOf(url, options = {}) {
@@ -100,6 +101,8 @@ export default async function run() {
       api.headers.get('strict-transport-security') === null,
       api.headers.get('strict-transport-security'));
 
+    await behindAProxy(results);
+
   } finally {
     await stopServer(server);
     await stopServer(corsServer);
@@ -110,6 +113,38 @@ export default async function run() {
   await overTls(results);
 
   return results;
+}
+
+// Every request through a reverse proxy arrives from the proxy, so without
+// being told to read the forwarded address the lock is on the proxy and one
+// spree of guesses shuts signups for everybody.
+async function behindAProxy(results) {
+  const box = makeSandbox('security-proxy');
+  let server;
+
+  try {
+    console.log('\n  Guessing it from behind a proxy');
+
+    server = await startServer({ port: PROXY_PORT, cwd: box, env: { TRUST_PROXY: '1' } });
+
+    const guess = (from, name, code) => status(`${server.base}/auth/signup`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': from },
+      body: JSON.stringify({ username: name, password: 'guessing-password', code })
+    });
+
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await guess('203.0.113.5', `proxied${attempt}`, 'not-the-code');
+    }
+
+    results.check('the machine doing the guessing is locked out',
+      await guess('203.0.113.5', 'proxied6', 'not-the-code') === 429);
+    results.check('and everybody else behind the same proxy is not',
+      await guess('203.0.113.9', 'innocent', SIGNUP_CODE) === 200);
+  } finally {
+    await stopServer(server);
+    removeSandbox(box);
+  }
 }
 
 // Everything the farm carries - passwords, session tokens, whole scenes -

@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import bcrypt from 'bcrypt';
 import {
-  saveSession, loadSessions, deleteSession,
+  saveSession, loadSessions, deleteSession, deleteSessionsFor,
   saveUser, getUser, getAllUsers, countUsers
 } from './db.js';
 import { USERS_FILE } from './paths.js';
@@ -282,7 +282,18 @@ export async function signup(username, password, code, from = 'unknown') {
   return { success: true, message: 'Account created successfully' };
 }
 
-export async function changePassword(username, oldPassword, newPassword) {
+// A password is changed because the old one is no longer trusted, so every
+// session opened with it goes too - the one asking excepted, which is the page
+// the change was made from.
+function endOtherSessions(username, keep = null) {
+  for (const [token, session] of sessions) {
+    if (session.username === username && token !== keep) sessions.delete(token);
+  }
+
+  deleteSessionsFor(username, keep);
+}
+
+export async function changePassword(username, oldPassword, newPassword, keepToken = null) {
   const user = getUser(username);
 
   if (!user) {
@@ -302,6 +313,7 @@ export async function changePassword(username, oldPassword, newPassword) {
   user.passwordChangedAt = new Date().toISOString();
   user.mustChangePassword = 0;
   saveUser(user);
+  endOtherSessions(username, keepToken);
 
   console.log(`Password changed for user: ${username}`);
 
@@ -325,6 +337,8 @@ export async function adminResetPassword(targetUsername, newPassword) {
   // The admin who set it knows it, so the owner has to replace it.
   user.mustChangePassword = 1;
   saveUser(user);
+  // All of them: the account is being taken back from whoever was in it.
+  endOtherSessions(targetUsername);
 
   console.log(`Password reset for user: ${targetUsername}`);
 

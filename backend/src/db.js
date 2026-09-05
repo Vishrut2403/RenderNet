@@ -523,6 +523,13 @@ export function deleteSession(token) {
   db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
 
+// Everything but the one asking, so changing a password does not sign the
+// person doing it out of the page they are on.
+export function deleteSessionsFor(username, except = null) {
+  return db.prepare('DELETE FROM sessions WHERE username = ? AND token IS NOT ?')
+    .run(username, except).changes;
+}
+
 export function purgeExpiredSessions() {
   return db.prepare('DELETE FROM sessions WHERE expiresAt <= ?').run(Date.now()).changes;
 }

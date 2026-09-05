@@ -42,6 +42,16 @@ if (importSharedSecret()) {
 const app = express();
 const PORT = process.env.PORT || 5500;
 
+// Off unless a proxy really is in front: behind one, every request looks like
+// it came from the proxy and a lockout keyed on the caller locks everybody;
+// without one, anybody could set the header and claim to be any address.
+if (process.env.TRUST_PROXY) {
+  const hops = Number(process.env.TRUST_PROXY);
+
+  app.set('trust proxy', Number.isInteger(hops) ? hops : process.env.TRUST_PROXY);
+  console.log(`Trusting X-Forwarded-For from ${process.env.TRUST_PROXY}`);
+}
+
 app.use(securityHeaders);
 app.use(crossOrigin());
 app.use(express.json());

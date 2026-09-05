@@ -29,6 +29,9 @@ export function usePolling(fetcher, intervalFor, deps = []) {
       const result = await fetcherRef.current();
       if (stale()) return;
 
+      // Set here as well as on the state: the interval below is chosen from
+      // what was just fetched, and a render has not happened yet to record it.
+      dataRef.current = result;
       setData(result);
       setError(null);
     } catch (err) {

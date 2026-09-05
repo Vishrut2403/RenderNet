@@ -274,6 +274,8 @@ tree, so it is found however the server is started.
 | `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |
 | `USER_QUOTA_BYTES` | `10737418240` (10 GB) | Disk each user may hold in uploads and rendered frames |
 | `MAX_UPLOAD_BYTES` | `2147483648` (2 GB) | Largest scene a chunked upload may carry |
+| `MAX_FRAME_BYTES` | `536870912` (512 MB) | Largest single frame a worker may send back. A 4K OpenEXR with several passes is not small. |
+| `TRUST_PROXY` | *unset* | Set when a reverse proxy sits in front, to the number of proxies or to what Express accepts. Without it every request looks like it came from the proxy, so a lockout keyed on the caller locks everybody. |
 | `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |
 | `MIN_FREE_BYTES` | `5368709120` (5 GB) | Disk kept spare; below it uploads are refused and the queue holds |
 | `DB_BACKUPS_KEPT` | `7` | Database snapshots kept in `backups/`, one taken per start |

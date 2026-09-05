@@ -21,7 +21,8 @@ export default async function run() {
   const sandbox = makeSandbox('worker');
   const originalCwd = process.cwd();
   const restoreEnv = snapshotEnv(
-    ['WORKER_SECRET', 'BLENDER_PATH', 'API_URL', 'DB_PATH', 'DATA_DIR', 'MAX_FRAME_SPAN']);
+    ['WORKER_SECRET', 'BLENDER_PATH', 'API_URL', 'DB_PATH', 'DATA_DIR', 'MAX_FRAME_SPAN',
+      'MAX_FRAME_BYTES']);
 
   // Set before importing queue.js: db.js and render-worker.js read these at
   // module load.
@@ -34,6 +35,9 @@ export default async function run() {
   // job it sits on is short. Spans are proved against the endpoints by claiming
   // one here by hand rather than by leaving the worker room to take them.
   process.env.MAX_FRAME_SPAN = '1';
+  // Small enough to reach without moving megabytes about; what matters is that
+  // the cap is a setting rather than a number written into the route.
+  process.env.MAX_FRAME_BYTES = '2048';
 
   process.chdir(sandbox);
   fs.mkdirSync('uploads', { recursive: true });
@@ -191,6 +195,19 @@ export default async function run() {
     const wrongFrame = await uploadFrame(3, claims.get(4));
     results.check('a claim on another frame does not authorise this one',
       wrongFrame.status === 409, `got ${wrongFrame.status}`);
+
+    const oversized = new FormData();
+    oversized.set('frame', new File([Buffer.alloc(4096)], 'frame.png', { type: 'image/png' }));
+
+    const refused = await fetch(`${base}/jobs/${jobId}/frames/3`, {
+      method: 'POST',
+      headers: { ...secretHeader, 'x-lease-id': claims.get(3) },
+      body: oversized
+    });
+
+    results.check('a frame past the size limit is refused, and told what the limit is',
+      refused.status === 413 && /may not exceed/.test((await refused.json()).error ?? ''),
+      `got ${refused.status}`);
 
     let upload = await uploadFrame(3, claims.get(3));
     results.check('upload accepted', upload.status === 200, `got ${upload.status}`);
