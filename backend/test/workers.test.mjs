@@ -160,8 +160,24 @@ export default async function run() {
       remoteLog.includes(`Fetched the scene for job ${distant.body.jobId}`), remoteLog.slice(-400));
     results.check('and rendered frames of it',
       /frame \d+ \(/.test(remoteLog), remoteLog.slice(-400));
+
+    // A second range of the same shot, which is the ordinary way a scene comes
+    // back. The machine already holds those bytes and should not fetch them
+    // again: the server keeps one copy of a scene, and so does this.
+    const again = await submitJob(server.base, token, createFakeScene(sandbox, 'slow.blend'), {
+      frameStart: 4, frameEnd: 5
+    });
+    await waitForJob(server.base, token, again.body.jobId, 120000);
+
+    const fetches = remoteLog.match(/Fetched the scene/g)?.length ?? 0;
+    const scenes = fs.readdirSync(elsewhere).filter(name => name.endsWith('.blend'));
+
     results.check('keeping its own copy rather than the server\'s',
-      fs.existsSync(path.join(elsewhere, `job_${distant.body.jobId}.blend`)));
+      scenes.length === 1, scenes.join(','));
+    results.check('named after what the scene is, not which job wanted it',
+      /^[0-9a-f]{64}\.blend$/.test(scenes[0] ?? ''), scenes.join(','));
+    results.check('so the same scene is fetched once however many jobs render it',
+      fetches === 1, `${fetches} fetches`);
 
     removeSandbox(elsewhere);
 

@@ -3,15 +3,16 @@
 // the right places is checked further down, where a real one is installed.
 import fs from 'fs';
 import path from 'path';
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, adminSession,
   auth, submitJob, waitForJob, createFakeBlender, createFakeScene, createFixtureBlend,
-  blenderAvailable
+  blenderAvailable, BACKEND_ROOT
 } from './helpers.mjs';
 
 const PORT = 5602;
 const REAL_PORT = 5603;
+const COORDINATOR_PORT = 5616;
 
 // IHDR is fixed at the front of every PNG: width and height as big-endian
 // 32-bit integers, which is all that is needed to see how a frame was divided.
@@ -206,6 +207,8 @@ export default async function run() {
 // Whether a region lands where it belongs cannot be told from a stand-in that
 // writes the same pixel whatever it is asked for.
 async function againstRealBlender(results) {
+  await awayFromTheServer(results);
+
   console.log('\n  Put back together by Blender itself');
 
   if (!blenderAvailable()) {
@@ -284,6 +287,66 @@ async function againstRealBlender(results) {
   } finally {
     await stopServer(server);
     removeSandbox(sandbox);
+  }
+}
+
+// A farm whose rendering all happens elsewhere: the server coordinates and has
+// no Blender of its own. Putting the tiles together used to be the one thing it
+// did itself, so every region rendered and the still failed at the last step.
+async function awayFromTheServer(results) {
+  const sandbox = makeSandbox('tiles-coordinator');
+  const elsewhere = makeSandbox('tiles-elsewhere');
+
+  let server;
+  let worker;
+
+  try {
+    console.log('\n  Put together by a machine that is not the server');
+
+    server = await startServer({
+      port: COORDINATOR_PORT,
+      cwd: sandbox,
+      env: { WORKER_SLOTS: '0', BLENDER_PATH: '' }
+    });
+
+    worker = spawn(process.execPath, [path.join(BACKEND_ROOT, 'src', 'worker-main.js')], {
+      env: {
+        ...process.env,
+        API_URL: `http://127.0.0.1:${COORDINATOR_PORT}`,
+        WORKER_SECRET: 'test-worker-secret',
+        BLENDER_PATH: createFakeBlender(elsewhere),
+        WORKER_SCRATCH_DIR: elsewhere,
+        WORKER_REMOTE: '1',
+        WORKER_ID: 'the-render-box'
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    const token = await adminSession(server.base);
+    const still = await submitJob(server.base, token,
+      createFakeScene(sandbox, 'distant.blend'),
+      { frameStart: 2, frameEnd: 2, tiles: 4, skipAssetCheck: true });
+    const job = await waitForJob(server.base, token, still.body.jobId, 120000);
+
+    results.check('a still is finished on a farm whose server has no Blender',
+      job.status === 'completed' && job.composite === 'ready',
+      `${job.status}, composite ${job.composite}: ${job.error ?? ''}`);
+    results.check('and the picture is on the server, beside nothing else',
+      fs.existsSync(path.join(sandbox, job.outputFolder, 'frame_0002.png')),
+      fs.readdirSync(path.join(sandbox, job.outputFolder)).join(','));
+
+    // The machine that put it together was told it is somewhere else, so it
+    // fetched every region over HTTP rather than reading the server's disk.
+    const composed = fs.readFileSync(path.join(elsewhere, 'last-composite.txt'), 'utf8');
+
+    results.check('the pieces were fetched rather than read off the server',
+      JSON.parse(composed).tiles.every(tile => tile.startsWith(elsewhere)),
+      composed);
+  } finally {
+    worker?.kill('SIGKILL');
+    await stopServer(server);
+    removeSandbox(sandbox);
+    removeSandbox(elsewhere);
   }
 }
 

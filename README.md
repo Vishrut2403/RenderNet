@@ -24,8 +24,8 @@ The renderer runs as a separate `RenderWorker` reporting back over HTTP rather t
 
 ## What it does
 
-- Takes a `.blend` from a browser — engine, frame range, resolution, samples,
-  output formats — and hands the frames back as a ZIP or as a video.
+- Takes a `.blend` from a browser — engine, frame range and step, resolution,
+  samples, output formats — and hands the frames back as a ZIP or as a video.
 - Spreads a job across as many machines as you point at it, in spans of frames.
 - Splits a single heavy still into tiles rendered at once and puts it back together.
 - Renders one frame first and holds the rest until its owner approves it.
@@ -68,7 +68,8 @@ render it, and two people who send the same file are charged separately, because
 a quota nobody can predict is not a quota. The awkward part is the lifetime: a
 file that outlives any one job may only be deleted by the last job that could
 still render it, which is what cancelling, deleting and the retention sweep all
-have to agree on.
+have to agree on. A machine rendering somewhere else keeps its own copy under
+the same hash, so it downloads a scene once however many jobs of it it renders.
 
 **An interrupted render resumes rather than restarting.** Frames are tracked
 individually, so switching the machine off mid-job costs the frame in flight,
@@ -106,18 +107,21 @@ job urgent, which is as far as their reach goes.
 
 **A heavy still can be split across machines.** A single frame submitted in
 tiles is cut into regions, each claimed and rendered like any other unit of
-work, and Blender puts them back into one image once they have all arrived. It
-only pays off with more than one machine free: splitting a still on one
-workstation is the same work with more steps.
+work. Putting them back together is a unit of work too, claimed the same way:
+the machine that takes it reads the regions off the disk if it is the server's,
+and fetches them over HTTP if it is not. That matters on a farm whose server
+only coordinates — with `WORKER_SLOTS=0` it need not have Blender at all, and
+assembly used to be the one thing it insisted on doing itself. Splitting a still
+only pays off with more than one machine free: on one workstation it is the same
+work with more steps.
 
 **The form fills itself in from the scene.** A file is sent the moment it is
 chosen rather than on submit, so the workstation can open it in Blender while
 the rest of the form is being filled in, and answer with the frame range,
-engine, resolution, samples and format the scene was saved with. A field the
-artist has already set is left alone. Anything this farm cannot honour — an
-engine it does not run, a frame step it does not apply, a scene with no camera —
-is said rather than quietly dropped. Submitting queues the file already on
-disk, so it goes up once.
+engine, resolution, step, samples and format the scene was saved with. A field
+the artist has already set is left alone. Anything this farm cannot honour — an
+engine it does not run, a scene with no camera — is said rather than quietly
+dropped. Submitting queues the file already on disk, so it goes up once.
 
 **A test frame can be rendered first.** The rest of the range is held back until
 its owner has looked at that frame and approved it, so a wrong camera or a

@@ -88,6 +88,7 @@ function addColumnIfMissing(table, column, definition) {
 // Frames already done when the job was last resumed, so a restart that made
 // progress can be told from one that made none.
 addColumnIfMissing('jobs', 'framesAtResume', 'INTEGER DEFAULT 0');
+addColumnIfMissing('jobs', 'frameStep', 'INTEGER DEFAULT 1');
 
 // Set where somebody else has seen the password: the seeded admin, or a reset.
 addColumnIfMissing('users', 'mustChangePassword', 'INTEGER DEFAULT 0');
@@ -149,7 +150,7 @@ db.exec(
 );
 
 const COLUMNS = [
-  'id', 'status', 'filePath', 'outputPath', 'outputFolder', 'frameStart', 'frameEnd',
+  'id', 'status', 'filePath', 'outputPath', 'outputFolder', 'frameStart', 'frameEnd', 'frameStep',
   'renderEngine', 'originalFilename', 'owner', 'createdAt', 'startedAt', 'completedAt',
   'cancelledAt', 'error', 'totalFrames', 'currentFrame', 'progress', 'completedFrames',
   'failedFrames', 'interruptions', 'framesAtResume', 'priority', 'pausedBy',
@@ -179,6 +180,7 @@ export function loadJobs() {
 }
 
 export function deleteJob(id) {
+  db.prepare('DELETE FROM composites WHERE jobId = ?').run(id);
   db.prepare('DELETE FROM frames WHERE jobId = ?').run(id);
   db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
 }
@@ -188,10 +190,13 @@ const insertFrame = db.prepare(
    VALUES (@jobId, @frame, @status, @filename, @error, @attempts, @updatedAt)`
 );
 
-export const createFrames = db.transaction((jobId, frameStart, frameEnd) => {
+// A step renders every nth frame of the range, which is how a preview pass is
+// asked for. The rest of the farm never sees the step: it works from the rows
+// that come out of here.
+export const createFrames = db.transaction((jobId, frameStart, frameEnd, step = 1) => {
   const updatedAt = new Date().toISOString();
 
-  for (let frame = frameStart; frame <= frameEnd; frame++) {
+  for (let frame = frameStart; frame <= frameEnd; frame += Math.max(1, step)) {
     insertFrame.run({
       jobId, frame, status: 'pending', filename: null, error: null, attempts: 0, updatedAt
     });
@@ -408,6 +413,65 @@ export function getLease(leaseId) {
   };
 }
 
+// Putting a tiled still back together is work the farm claims like any other,
+// so it needs a claim of its own: one per job rather than one per frame, and
+// held apart from the job row so that saving the job cannot overwrite it.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS composites (
+    jobId INTEGER PRIMARY KEY,
+    leaseId TEXT,
+    leasedBy TEXT,
+    leaseExpiresAt TEXT
+  )
+`);
+
+export const leaseComposite = db.transaction((jobId, workerId, ttlMs) => {
+  const now = stamp();
+  const expiresAt = stamp(ttlMs);
+
+  const taken = db.prepare(
+    `INSERT INTO composites (jobId, leaseId, leasedBy, leaseExpiresAt) VALUES (?, ?, ?, ?)
+     ON CONFLICT(jobId) DO UPDATE SET leaseId = excluded.leaseId,
+       leasedBy = excluded.leasedBy, leaseExpiresAt = excluded.leaseExpiresAt
+     WHERE composites.leaseExpiresAt IS NULL OR composites.leaseExpiresAt <= ?`
+  ).run(jobId, crypto.randomUUID(), workerId, expiresAt, now).changes === 1;
+
+  return taken ? getCompositeLease(db.prepare(
+    'SELECT leaseId FROM composites WHERE jobId = ?').get(jobId).leaseId) : null;
+});
+
+export function getCompositeLease(leaseId) {
+  const row = db.prepare(
+    `SELECT jobId, leasedBy, leaseExpiresAt AS expiresAt FROM composites WHERE leaseId = ?`
+  ).get(leaseId);
+
+  return row ? { ...row, leaseId } : null;
+}
+
+export function renewComposite(leaseId, ttlMs) {
+  const expiresAt = stamp(ttlMs);
+
+  const renewed = db.prepare(
+    'UPDATE composites SET leaseExpiresAt = ? WHERE leaseId = ? AND leaseExpiresAt > ?'
+  ).run(expiresAt, leaseId, stamp()).changes > 0;
+
+  return renewed ? expiresAt : null;
+}
+
+export function releaseComposite(leaseId) {
+  return db.prepare('DELETE FROM composites WHERE leaseId = ?').run(leaseId).changes > 0;
+}
+
+export function clearJobComposite(jobId) {
+  return db.prepare('DELETE FROM composites WHERE jobId = ?').run(jobId).changes;
+}
+
+export function liveComposites() {
+  return db.prepare(
+    'SELECT jobId, leasedBy, leaseExpiresAt AS expiresAt FROM composites WHERE leaseExpiresAt > ?'
+  ).all(stamp());
+}
+
 export function liveLeases() {
   return db.prepare(
     `SELECT jobId, frame, leasedBy, leaseExpiresAt AS expiresAt
@@ -484,7 +548,7 @@ const backfillFrames = db.transaction(() => {
   for (const job of stale) {
     if (!Number.isInteger(job.frameStart) || !Number.isInteger(job.frameEnd)) continue;
 
-    createFrames(job.id, job.frameStart, job.frameEnd);
+    createFrames(job.id, job.frameStart, job.frameEnd, job.frameStep ?? 1);
 
     for (const filename of JSON.parse(job.uploadedFrames || '[]')) {
       const frame = Number(String(filename).match(/(\d+)/)?.[1]);

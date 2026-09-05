@@ -590,13 +590,14 @@ export async function status(url, options) {
 }
 
 export async function submitJob(base, token, blendPath, {
-  frameStart, frameEnd, engine = 'CYCLES', priority = 0, resolutionPercent, samples, formats,
-  exrCodec, exrDepth, jpegQuality, skipAssetCheck, testFrame, tiles
+  frameStart, frameEnd, frameStep, engine = 'CYCLES', priority = 0, resolutionPercent, samples,
+  formats, exrCodec, exrDepth, jpegQuality, skipAssetCheck, testFrame, tiles
 }) {
   const form = new FormData();
   form.set('blend', new Blob([fs.readFileSync(blendPath)]), path.basename(blendPath));
   form.set('frameStart', String(frameStart));
   form.set('frameEnd', String(frameEnd));
+  if (frameStep !== undefined) form.set('frameStep', String(frameStep));
   form.set('renderEngine', engine);
   form.set('priority', String(priority));
   if (resolutionPercent !== undefined) form.set('resolutionPercent', String(resolutionPercent));

@@ -106,12 +106,13 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true, 
 // Strings whichever way the file goes up: the server reads a multipart form and
 // a JSON body the same way.
 function uploadSettings({
-  frameStart, frameEnd, renderEngine, priority, resolutionPercent, samples, formats,
+  frameStart, frameEnd, frameStep, renderEngine, priority, resolutionPercent, samples, formats,
   exrCodec, exrDepth, jpegQuality, skipAssetCheck, testFrame, tiles
 }) {
   const settings = {
     frameStart: String(frameStart),
     frameEnd: String(frameEnd),
+    frameStep: String(frameStep ?? 1),
     renderEngine,
     resolutionPercent: String(resolutionPercent),
     formats: (formats ?? ['PNG']).join(','),

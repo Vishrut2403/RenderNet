@@ -121,7 +121,15 @@ function checkSettings(body, owner, size) {
     return refuse(400, 'Frame range must be positive and end must not precede start');
   }
 
-  if (end - start + 1 > MAX_FRAMES) {
+  const step = body.frameStep === undefined || body.frameStep === '' ? 1 : Number(body.frameStep);
+
+  if (!Number.isInteger(step) || step < 1) {
+    return refuse(400, 'frameStep must be a whole number of 1 or more');
+  }
+
+  const rendered = Math.floor((end - start) / step) + 1;
+
+  if (rendered > MAX_FRAMES) {
     return refuse(400, `Frame range exceeds the ${MAX_FRAMES} frame limit`);
   }
 
@@ -130,11 +138,15 @@ function checkSettings(body, owner, size) {
     : Number(body.testFrame);
 
   if (testFrame !== null) {
-    if (!Number.isInteger(testFrame) || testFrame < start || testFrame > end) {
-      return refuse(400, `testFrame must be a whole frame from ${start} to ${end}`);
+    // One of the frames this job will actually render: holding back everything
+    // else to wait for a frame that is never rendered would stop the job dead.
+    if (!Number.isInteger(testFrame) || testFrame < start || testFrame > end
+      || (testFrame - start) % step !== 0) {
+      return refuse(400, `testFrame must be one of the frames from ${start} to ${end}`
+        + (step > 1 ? ` in steps of ${step}` : ''));
     }
 
-    if (start === end) {
+    if (rendered < 2) {
       return refuse(400, 'A single-frame job has nothing to hold back for approval');
     }
   }
@@ -208,6 +220,7 @@ function checkSettings(body, owner, size) {
     settings: {
       frameStart: start,
       frameEnd: end,
+      frameStep: step,
       renderEngine,
       owner,
       priority: Number(body.priority) === 1 ? 1 : 0,
@@ -327,7 +340,6 @@ function warningsFor(scene, settings, scenes) {
   if (!settings.renderEngine) notes.push(`This farm does not run ${scene.engine}`);
   if (!settings.format) notes.push(`This farm does not write ${scene.format}`);
   if (!scene.camera) notes.push(`${scene.name} has no camera`);
-  if (scene.frameStep > 1) notes.push(`Frame step ${scene.frameStep} is not applied`);
   if (scenes.length > 1) notes.push(`${scenes.length} scenes; ${scene.name} renders`);
 
   return notes;

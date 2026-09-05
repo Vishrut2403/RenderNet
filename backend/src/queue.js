@@ -8,9 +8,13 @@ import {
   createFrames, getFrames, countFramesByStatus,
   markFrameDone, markFramePending, markFrameAttemptFailed, resetFailedFrames,
   leaseFrames, renewLease, releaseLease, getLease, liveLeases, clearJobLeases,
-  holdFramesExcept, releaseHeldFrames
+  holdFramesExcept, releaseHeldFrames,
+  leaseComposite, renewComposite, releaseComposite, getCompositeLease,
+  liveComposites, clearJobComposite
 } from './db.js';
-import { DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY } from './formats.js';
+import {
+  DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY, primaryOf
+} from './formats.js';
 import {
   workerCanRender, engineIsOffered, machines, workerCount, touchWorker
 } from './worker-registry.js';
@@ -19,8 +23,7 @@ import { queueWaits as waitsFor, forgetTiming, frameTimings } from './estimates.
 import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
 import { diskIsTooFull, heldForDisk, deleteJobFiles, forgetUsage } from './storage.js';
-import { isTiled, startComposite } from './composite.js';
-import { tilesPath } from './tiles.js';
+import { isTiled, tilesPath, compositeName } from './tiles.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
@@ -47,7 +50,7 @@ let lastFailure = null;
 function reconcileFrames(job) {
   if (getFrames(job.id).length === 0 && Number.isInteger(job.frameStart)) {
     if (isTiled(job)) createFrames(job.id, 1, job.tiles);
-    else createFrames(job.id, job.frameStart, job.frameEnd);
+    else createFrames(job.id, job.frameStart, job.frameEnd, job.frameStep);
   }
 
   let done = 0;
@@ -125,6 +128,12 @@ export function resumeInterruptedJobs() {
   if (resumed) processQueue();
 }
 
+// How many frames a range actually renders, which a step makes fewer than the
+// range is wide.
+function framesIn({ frameStart, frameEnd, frameStep }) {
+  return Math.floor((frameEnd - frameStart) / Math.max(1, frameStep ?? 1)) + 1;
+}
+
 export function addToQueue(jobData) {
   const jobId = nextJobId();
   const outputFolder = path.join('renders', `render_${jobId}`);
@@ -138,6 +147,7 @@ export function addToQueue(jobData) {
     outputFolder,
     frameStart: jobData.frameStart,
     frameEnd: jobData.frameEnd,
+    frameStep: jobData.frameStep ?? 1,
     renderEngine: jobData.renderEngine || 'CYCLES',
     originalFilename: jobData.originalFilename,
     owner: jobData.owner || 'anonymous',
@@ -145,7 +155,7 @@ export function addToQueue(jobData) {
     startedAt: null,
     completedAt: null,
     error: null,
-    totalFrames: jobData.tiles ?? jobData.frameEnd - jobData.frameStart + 1,
+    totalFrames: jobData.tiles ?? framesIn(jobData),
     currentFrame: null,
     progress: 0,
     completedFrames: 0,
@@ -174,7 +184,7 @@ export function addToQueue(jobData) {
   // A tiled still is claimed a region at a time, so its units of work are the
   // tiles rather than the one frame they all belong to.
   if (isTiled(job)) createFrames(jobId, 1, job.tiles);
-  else createFrames(jobId, job.frameStart, job.frameEnd);
+  else createFrames(jobId, job.frameStart, job.frameEnd, job.frameStep);
   if (job.testFrame) holdFramesExcept(jobId, job.testFrame);
   saveJob(job);
   forgetUsage(job.owner);
@@ -509,6 +519,7 @@ function promoteNext() {
   // A claim left from a stint that has already ended would make the job
   // unfinishable.
   clearJobLeases(jobId);
+  clearJobComposite(jobId);
 
   job.status = 'rendering';
   job.startedAt = new Date().toISOString();
@@ -537,13 +548,20 @@ function processQueue() {
 
 const drainTimers = new Map();
 
+// A frame being rendered, or the tiles being put together: both are a machine
+// holding on to the job.
+function stillClaimed(jobId) {
+  return liveLeases().some(lease => lease.jobId === jobId)
+    || liveComposites().some(claim => claim.jobId === jobId);
+}
+
 // A worker in another process cannot be reached from here, so a stopped job is
 // only finished with once every claim on it has gone.
 function whenWorkersLetGo(jobId) {
   if (drainTimers.has(jobId)) return;
 
   const check = () => {
-    if (liveLeases().some(lease => lease.jobId === jobId)) {
+    if (stillClaimed(jobId)) {
       const timer = setTimeout(check, DRAIN_POLL_MS);
       timer.unref?.();
       drainTimers.set(jobId, timer);
@@ -615,6 +633,35 @@ function spanFor(job) {
   return Math.max(1, Math.min(Math.floor(SPAN_MS / perFrame), share, MAX_SPAN));
 }
 
+// Offered before frames: it is the last thing a tiled still needs, and until it
+// is done the job holds a slot.
+function compositeFromActive(workerId) {
+  for (const job of activeJobs()) {
+    if (!isTiled(job) || job.composite !== 'waiting') continue;
+    if (!workerCanRender(workerId, job.renderEngine)) continue;
+
+    const lease = leaseComposite(job.id, workerId, LEASE_TTL_MS);
+
+    if (!lease) continue;
+
+    return {
+      ...lease,
+      ttlMs: LEASE_TTL_MS,
+      renderEngine: job.renderEngine,
+      blendPath: dataPath(job.filePath),
+      tilesDir: dataPath(tilesPath(job.outputFolder)),
+      composite: {
+        tiles: job.tiles,
+        format: primaryOf(job.formats),
+        resolutionPercent: job.resolutionPercent,
+        name: compositeName(job)
+      }
+    };
+  }
+
+  return null;
+}
+
 function leaseFromActive(workerId) {
   for (const job of activeJobs()) {
     // A worker that cannot render the engine would fail every frame it took,
@@ -657,7 +704,7 @@ function parkUnrenderable() {
 
     if (!job || job.status !== 'rendering') continue;
     if (engineIsOffered(job.renderEngine)) continue;
-    if (liveLeases().some(lease => lease.jobId === jobId)) continue;
+    if (stillClaimed(jobId)) continue;
 
     job.status = 'pending';
     job.startedAt = null;
@@ -679,23 +726,25 @@ export function leaseNextFrame(workerId) {
   parkUnrenderable();
 
   for (;;) {
-    const lease = leaseFromActive(workerId);
+    const lease = compositeFromActive(workerId) ?? leaseFromActive(workerId);
 
     if (lease) return lease;
     if (!promoteNext()) break;
   }
 
   // Nothing claimable can mean a job is finished, which its own last upload
-  // cannot tell while that claim is still open.
+  // cannot tell while that claim is still open - or that its last tile has
+  // landed and it is ready to be put together, which is work this worker can
+  // take now rather than on its next round.
   for (const jobId of [...active]) settleJob(jobId);
 
-  return null;
+  return compositeFromActive(workerId);
 }
 
 // Refused once the job is no longer rendering, which is how a worker learns it
 // was cancelled or preempted.
 export function renewFrameLease(leaseId) {
-  const lease = getLease(leaseId);
+  const lease = getLease(leaseId) ?? getCompositeLease(leaseId);
 
   if (!lease) return { ok: false, reason: 'unknown' };
 
@@ -703,7 +752,9 @@ export function renewFrameLease(leaseId) {
 
   if (!job || job.status !== 'rendering') return { ok: false, reason: 'stopped' };
 
-  const expiresAt = renewLease(leaseId, LEASE_TTL_MS);
+  const expiresAt = lease.frames
+    ? renewLease(leaseId, LEASE_TTL_MS)
+    : renewComposite(leaseId, LEASE_TTL_MS);
 
   if (expiresAt) touchWorker(lease.leasedBy);
 
@@ -711,11 +762,13 @@ export function renewFrameLease(leaseId) {
 }
 
 export function releaseFrameLease(leaseId) {
-  const lease = getLease(leaseId);
+  const lease = getLease(leaseId) ?? getCompositeLease(leaseId);
 
   if (!lease) return false;
 
-  releaseLease(leaseId);
+  if (lease.frames) releaseLease(leaseId);
+  else releaseComposite(leaseId);
+
   settleJob(lease.jobId);
 
   return true;
@@ -737,7 +790,7 @@ function settleJob(jobId) {
   }
 
   if (counts.pending > 0) return;
-  if (liveLeases().some(lease => lease.jobId === jobId)) return;
+  if (stillClaimed(jobId)) return;
 
   if (isTiled(job)) return settleTiles(job, counts);
 
@@ -760,6 +813,9 @@ function settleJob(jobId) {
 
 // Every region has to arrive: a still with one tile missing is not a picture,
 // so a tile that runs out of attempts fails the job rather than leaving a hole.
+// Putting them together is then a unit of work like any other, waiting for a
+// machine to claim it rather than being done here - the server may not be one
+// of the machines that renders.
 function settleTiles(job, counts) {
   if (counts.failed > 0) {
     failJob(job.id, `${counts.failed} of ${job.tiles} tiles failed to render`);
@@ -768,12 +824,34 @@ function settleTiles(job, counts) {
 
   if (job.composite) return;
 
-  console.log(`Job ${job.id}: all ${job.tiles} tiles in, putting them together`);
+  job.composite = 'waiting';
+  saveJob(job);
 
-  startComposite(job.id, error => {
-    if (error) failJob(job.id, `The tiles could not be put together: ${error}`);
-    else completeJob(job.id, { successfulFrames: counts.done, failedFrames: 0 });
-  });
+  console.log(`Job ${job.id}: all ${job.tiles} tiles in, waiting to be put together`);
+}
+
+// The finished picture has arrived, or a machine has said it could not make one.
+export function recordComposite(jobId, error) {
+  const job = jobs.get(jobId);
+
+  if (!job || job.status !== 'rendering') return null;
+
+  job.composite = error ? 'failed' : 'ready';
+  saveJob(job);
+
+  if (error) {
+    console.error(`Job ${jobId}: could not put the tiles together: ${error}`);
+    failJob(jobId, `The tiles could not be put together: ${error}`);
+  } else {
+    forgetUsage(job.owner);
+    console.log(`Job ${jobId}: tiles put together`);
+    completeJob(jobId, {
+      successfulFrames: countFramesByStatus(jobId).done,
+      failedFrames: 0
+    });
+  }
+
+  return job;
 }
 
 function jobFilesExist(job) {

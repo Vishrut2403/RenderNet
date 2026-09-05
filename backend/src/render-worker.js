@@ -6,7 +6,7 @@ import fetch from 'node-fetch';
 import { findBlenderExecutable, renderableEngines } from './utils/blender-check.js';
 import { launch, terminate } from './utils/process-control.js';
 import { primaryOf, extrasOf, extensionOf } from './formats.js';
-import { GRID_PYTHON } from './tiles.js';
+import { GRID_PYTHON, COMPOSITE_SCRIPT, tileName } from './tiles.js';
 
 const BLENDER_PATH = process.env.BLENDER_PATH || findBlenderExecutable() || 'blender';
 const API_URL = process.env.API_URL || 'http://localhost:5500';
@@ -110,6 +110,19 @@ if EXTRAS:
 bpy.app.handlers.render_write.append(announce)
 `;
 
+// Scenes are stored as uploads/<hash>/<name>, so the directory a scene is in
+// says what it is. Anything else - a job from before scenes were stored that
+// way - falls back to the job it belongs to.
+function sceneName(blendPath) {
+  const holding = path.basename(path.dirname(blendPath ?? ''));
+
+  return /^[0-9a-f]{64}$/.test(holding) ? holding : null;
+}
+
+function lastLine(output) {
+  return output.split('\n').map(line => line.trim()).filter(Boolean).pop() ?? '';
+}
+
 function describeSpan(frames) {
   if (frames.length === 1) return `frame ${frames[0]}`;
 
@@ -192,9 +205,11 @@ class RenderWorker {
     return true;
   }
 
-  // Kept, so a hundred frames of one scene cost one transfer.
-  async fetchBlend(jobId) {
-    const cached = path.join(SCRATCH_DIR, `job_${jobId}.blend`);
+  // Kept under what the scene is rather than which job wanted it: the server
+  // stores a scene once however many jobs render it, and this machine
+  // downloads it once too. A second frame range of the same shot is free.
+  async fetchBlend(jobId, blendPath) {
+    const cached = path.join(SCRATCH_DIR, `${sceneName(blendPath) ?? `job_${jobId}`}.blend`);
 
     if (fs.existsSync(cached)) return cached;
 
@@ -225,7 +240,9 @@ class RenderWorker {
     if (!lease) return false;
 
     this.abandoned = false;
-    await this.renderLeasedSpan(lease);
+
+    if (lease.composite) await this.assembleLeasedStill(lease);
+    else await this.renderLeasedSpan(lease);
 
     return true;
   }
@@ -276,7 +293,7 @@ class RenderWorker {
 
     if (remote) {
       try {
-        blendPath = await this.fetchBlend(jobId);
+        blendPath = await this.fetchBlend(jobId, lease.blendPath);
       } catch (error) {
         // Charged to the first frame only: nothing in the span was attempted.
         console.error(`Could not fetch the scene for job ${jobId}: ${error.message}`);
@@ -362,6 +379,145 @@ class RenderWorker {
     }
   }
 
+  // Every region of a still, whether they are on this machine's own disk or have
+  // to be fetched. The picture is made here and handed back like a frame.
+  async assembleLeasedStill(lease) {
+    const { leaseId, jobId, composite } = lease;
+    const outputDir = path.join(SCRATCH_DIR, `composite_${jobId}`);
+
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    console.log(`\n🧩 Job ${jobId}, putting ${composite.tiles} tiles together`);
+
+    this.startRenewing(lease);
+
+    // The same test the renders use: a machine told it is somewhere else does not
+    // reach for server paths that happen to exist on this one.
+    const remote = process.env.WORKER_REMOTE === '1' || !fs.existsSync(lease.blendPath);
+
+    try {
+      const blendPath = remote ? await this.fetchBlend(jobId, lease.blendPath) : lease.blendPath;
+      const tiles = await this.gatherTiles(lease, outputDir, remote);
+      const output = path.join(outputDir, composite.name);
+      const failure = await this.putTogether(blendPath, outputDir, tiles, output, composite);
+
+      if (this.abandoned) return;
+
+      if (failure) await this.reportComposite(jobId, leaseId, failure);
+      else if (!await this.uploadComposite(jobId, leaseId, output)) {
+        await this.reportComposite(jobId, leaseId, 'The picture was made but could not be sent');
+      }
+    } catch (error) {
+      if (!this.abandoned) await this.reportComposite(jobId, leaseId, error.message);
+    } finally {
+      this.stopRenewing();
+      await this.releaseLease(leaseId);
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  }
+
+  // Straight off the disk where the server keeps them, or over HTTP where this
+  // machine is somewhere else.
+  async gatherTiles(lease, outputDir, remote) {
+    const extension = extensionOf(lease.composite.format);
+    const tiles = [];
+
+    for (let index = 1; index <= lease.composite.tiles; index++) {
+      const name = tileName(index) + extension;
+      const beside = path.join(lease.tilesDir, name);
+
+      if (!remote && fs.existsSync(beside)) {
+        tiles.push(beside);
+        continue;
+      }
+
+      const response = await fetch(`${WORKER_BASE}/jobs/${lease.jobId}/tiles/${index}`, {
+        headers: workerHeaders({ 'x-lease-id': lease.leaseId })
+      });
+
+      if (!response.ok) throw new Error(`Tile ${index} could not be fetched`);
+
+      const here = path.join(outputDir, name);
+      fs.writeFileSync(here, Buffer.from(await response.arrayBuffer()));
+      tiles.push(here);
+    }
+
+    return tiles;
+  }
+
+  // Resolves to what went wrong, or null.
+  putTogether(blendPath, outputDir, tiles, output, composite) {
+    return new Promise(resolve => {
+      const script = path.join(outputDir, 'composite.py');
+
+      fs.writeFileSync(script, COMPOSITE_SCRIPT);
+
+      const spec = {
+        tiles,
+        count: composite.tiles,
+        format: composite.format,
+        resolutionPercent: composite.resolutionPercent ?? null,
+        output
+      };
+
+      const blender = launch(BLENDER_PATH, [
+        '-b', blendPath,
+        '--factory-startup',
+        '-noaudio',
+        '-P', script
+      ], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: { ...process.env, RENDERNET_TILE_SPEC: JSON.stringify(spec) }
+      });
+
+      this.currentProcess = blender;
+
+      let said = '';
+      blender.stdout.on('data', chunk => { said = (said + chunk).slice(-OUTPUT_TAIL); });
+      blender.stderr.on('data', chunk => { said = (said + chunk).slice(-OUTPUT_TAIL); });
+
+      blender.on('error', error => resolve(error.message));
+
+      blender.on('close', code => {
+        this.currentProcess = null;
+
+        if (code !== 0) return resolve(lastLine(said) || `Blender exited with code ${code}`);
+        if (!fs.existsSync(output)) return resolve('Blender wrote no picture');
+
+        resolve(null);
+      });
+    });
+  }
+
+  async uploadComposite(jobId, leaseId, file) {
+    try {
+      const form = new FormData();
+
+      form.append('composite', fs.createReadStream(file), { filename: path.basename(file) });
+
+      const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/composite`, {
+        method: 'POST',
+        headers: form.getHeaders(workerHeaders({ 'x-lease-id': leaseId })),
+        body: form
+      });
+
+      return response.ok;
+    } catch (error) {
+      console.error(`Could not send the finished picture: ${error.message}`);
+      return false;
+    }
+  }
+
+  async reportComposite(jobId, leaseId, error) {
+    console.error(`❌ Job ${jobId}: the tiles could not be put together: ${error}`);
+
+    await fetch(`${WORKER_BASE}/jobs/${jobId}/composite/failed`, {
+      method: 'POST',
+      headers: workerHeaders({ 'Content-Type': 'application/json', 'x-lease-id': leaseId }),
+      body: JSON.stringify({ error })
+    }).catch(reason => console.error(`Could not report it: ${reason.message}`));
+  }
+
   // Resolves to whether this frame has been dealt with. A frame announced whose
   // files are not there is left to the accounting pass, which is the one place
   // a failure is decided.
@@ -432,7 +588,8 @@ class RenderWorker {
       // The job has stopped - cancelled, or paused for something more urgent.
       // A refused renewal is how a worker finds that out without the server
       // having to reach into it.
-      console.warn(`Claim on ${describeSpan(lease.frames)} refused, abandoning it`);
+      console.warn(`Claim on ${lease.frames ? describeSpan(lease.frames) : `job ${lease.jobId}`}`
+        + ' refused, abandoning it');
       this.cancel();
     }, every);
 

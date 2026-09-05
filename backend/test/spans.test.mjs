@@ -123,6 +123,23 @@ export default async function run() {
     await fetch(`${server.base}/jobs/${stalling.body.jobId}/cancel`,
       { method: 'POST', headers: auth(token) });
 
+    console.log('\n  Rendering every nth frame of a range');
+
+    // A preview pass. The frames are not next to each other, which a claim
+    // covering a span already handles: Blender takes the list it is given.
+    const stepped = await submitJob(server.base, token,
+      createFakeScene(sandbox, 'stepped.blend'),
+      { frameStart: 1, frameEnd: 10, frameStep: 3 });
+    const preview = await waitForJob(server.base, token, stepped.body.jobId, 120000);
+    const asked = launchesFor(sandbox, 'stepped.blend').flat().sort((a, b) => a - b);
+
+    results.check('the job counts only the frames it will render',
+      preview.totalFrames === 4, `${preview.totalFrames} of an expected 4`);
+    results.check('and renders exactly those', preview.completedFrames === 4,
+      `${preview.completedFrames} delivered`);
+    results.check('Blender was asked for every third frame and no other',
+      asked.join(',') === '1,4,7,10', asked.join(','));
+
     console.log('\n  A slow scene is still claimed a frame at a time');
 
     // 'slow' takes 2s a frame against a span budget of 3s, so only one fits.

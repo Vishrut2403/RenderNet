@@ -7,7 +7,7 @@ import { jobs } from './job-store.js';
 import { forgetUsage } from './storage.js';
 import { dataPath } from './paths.js';
 import { PREVIEWABLE_EXTENSIONS } from './formats.js';
-import { isTiled } from './composite.js';
+import { isTiled } from './tiles.js';
 
 const DEFAULT_FPS = Number(process.env.VIDEO_FPS) || 24;
 

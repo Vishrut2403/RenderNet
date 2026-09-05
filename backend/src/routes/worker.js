@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import fs from 'fs';
 import {
+  recordComposite,
   updateJobProgress,
   recordFrameUpload,
   recordFrameFailure,
@@ -10,12 +11,12 @@ import {
   releaseFrameLease
 } from '../queue.js';
 import { getJob } from '../job-views.js';
-import { getLease, liveLeases } from '../db.js';
+import { getLease, getCompositeLease, liveLeases } from '../db.js';
 import path from 'path';
 import { dataPath, MAX_FRAME_BYTES } from '../paths.js';
 import { parseFormats, primaryOf, extensionOf } from '../formats.js';
-import { isTiled } from '../composite.js';
-import { tileName, tilesPath } from '../tiles.js';
+import { isTiled } from '../tiles.js';
+import { tileName, tilesPath, compositeName } from '../tiles.js';
 import { announceWorker } from '../worker-registry.js';
 import { machineFor } from '../worker-tokens.js';
 
@@ -67,6 +68,23 @@ function requireLease(req, res, next) {
   }
 
   req.leaseId = leaseId;
+  next();
+}
+
+// The machine putting a still back together holds a claim on the job rather
+// than on a frame, and it is the only one that may fetch the pieces or hand the
+// picture back.
+function requireComposite(req, res, next) {
+  const leaseId = req.headers['x-lease-id'];
+  const lease = typeof leaseId === 'string' ? getCompositeLease(leaseId) : null;
+
+  if (!lease
+    || lease.jobId !== req.jobId
+    || !heldBy(lease, req.machine.id)
+    || new Date(lease.expiresAt) <= new Date()) {
+    return res.status(409).json({ error: `Job ${req.jobId} is not yours to put together` });
+  }
+
   next();
 }
 
@@ -241,6 +259,65 @@ router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, re
   });
 });
 
+
+// A machine that is not on the server's own disk fetches the pieces over HTTP,
+// the way it fetches the scene.
+router.get('/jobs/:id/tiles/:index', loadJob, requireRendering, requireComposite, (req, res) => {
+  const index = Number(req.params.index);
+
+  if (!Number.isInteger(index) || index < 1 || index > req.job.tiles) {
+    return res.status(400).json({ error: `Tile ${req.params.index} is not one of this still's` });
+  }
+
+  const file = dataPath(tilesPath(req.job.outputFolder),
+    tileName(index) + extensionOf(primaryOf(req.job.formats)));
+
+  if (!fs.existsSync(file)) {
+    return res.status(404).json({ error: `Tile ${index} of job ${req.jobId} is not on disk` });
+  }
+
+  res.sendFile(file);
+});
+
+const composite = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        const folder = dataPath(req.job.outputFolder);
+        fs.mkdirSync(folder, { recursive: true });
+        cb(null, folder);
+      } catch (error) {
+        cb(error);
+      }
+    },
+    // Named here rather than taken from what arrived: it is the one frame of
+    // the scene, in the format the job asked for.
+    filename: (req, file, cb) => cb(null, compositeName(req.job))
+  }),
+  limits: { fileSize: MAX_FRAME_BYTES }
+});
+
+router.post('/jobs/:id/composite', loadJob, requireRendering, requireComposite,
+  composite.single('composite'), (req, res) => {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No picture uploaded' });
+    }
+
+    const job = recordComposite(req.jobId, null);
+
+    if (!job) {
+      fs.rmSync(req.file.path, { force: true });
+      return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
+    }
+
+    res.json({ success: true, stored: req.file.filename });
+  });
+
+router.post('/jobs/:id/composite/failed', loadJob, requireRendering, requireComposite,
+  (req, res) => {
+    recordComposite(req.jobId, req.body?.error || 'Unknown error');
+    res.json({ success: true });
+  });
 
 router.post('/jobs/:id/frames/:frame/failed', loadJob, requireRendering, validFrame, requireLease, (req, res) => {
   const frame = Number(req.params.frame);

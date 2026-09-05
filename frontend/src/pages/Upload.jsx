@@ -7,6 +7,7 @@ export function Upload({ onSubmitted, notify }) {
   const [file, setFile] = useState(null);
   const [frameStart, setFrameStart] = useState(1);
   const [frameEnd, setFrameEnd] = useState(1);
+  const [frameStep, setFrameStep] = useState(1);
   // Asked for rather than hardcoded, so the form cannot offer an engine the
   // server would refuse or miss one it has gained.
   const [engines, setEngines] = useState([]);
@@ -39,7 +40,9 @@ export function Upload({ onSubmitted, notify }) {
   // whose upload is still finishing has been replaced.
   const picked = useRef(0);
 
-  const frameCount = Math.max(0, Number(frameEnd) - Number(frameStart) + 1);
+  const frameCount = Number(frameEnd) < Number(frameStart)
+    ? 0
+    : Math.floor((Number(frameEnd) - Number(frameStart)) / Math.max(1, Number(frameStep))) + 1;
   const single = frameCount === 1;
   const busy = progress !== null || submitting;
 
@@ -72,6 +75,7 @@ export function Upload({ onSubmitted, notify }) {
 
     fill('frameStart', setFrameStart, settings.frameStart);
     fill('frameEnd', setFrameEnd, settings.frameEnd);
+    fill('frameStep', setFrameStep, settings.frameStep);
     fill('engine', setEngine, settings.renderEngine);
     fill('resolutionPercent', setResolutionPercent, settings.resolutionPercent);
     fill('samples', setSamples, settings.samples);
@@ -153,7 +157,7 @@ export function Upload({ onSubmitted, notify }) {
     if (chosen.length === 0) return setError('Choose at least one output format');
 
     const settings = {
-      frameStart, frameEnd, renderEngine: engine, priority: urgent,
+      frameStart, frameEnd, frameStep, renderEngine: engine, priority: urgent,
       resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality,
       skipAssetCheck, testFrame: testFirst ? frameStart : null,
       tiles: single ? tiles : 0
@@ -186,7 +190,8 @@ export function Upload({ onSubmitted, notify }) {
   const labelOf = (list, id) => list.find(item => item.id === id)?.label ?? id;
 
   function facts({ active, settings }) {
-    const parts = [active, `frames ${settings.frameStart}–${settings.frameEnd}`];
+    const parts = [active, `frames ${settings.frameStart}–${settings.frameEnd}`
+      + (settings.frameStep > 1 ? ` by ${settings.frameStep}` : '')];
 
     if (settings.renderEngine) parts.push(labelOf(engines, settings.renderEngine));
     if (settings.resolutionPercent) parts.push(`${settings.resolutionPercent}%`);
@@ -269,6 +274,15 @@ export function Upload({ onSubmitted, notify }) {
             min="0"
             value={frameEnd}
             onChange={e => setFrameEnd(e.target.value)}
+            required
+          />
+          <Field
+            label="Step"
+            name="frameStep"
+            type="number"
+            min="1"
+            value={frameStep}
+            onChange={e => setFrameStep(e.target.value)}
             required
           />
           <label className="field">

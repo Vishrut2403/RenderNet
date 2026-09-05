@@ -9,7 +9,7 @@ import { mintDownloadToken, readDownloadToken } from '../download-tokens.js';
 import { getLatestDoneFrame } from '../db.js';
 import { PREVIEWABLE_EXTENSIONS } from '../formats.js';
 import { videoName } from '../video.js';
-import { isTiled, compositeName } from '../composite.js';
+import { isTiled, compositeName } from '../tiles.js';
 import { dataPath, RETENTION_DAYS } from '../paths.js';
 
 const router = express.Router();
