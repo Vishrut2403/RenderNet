@@ -366,6 +366,10 @@ export function rerunJob(jobId) {
   // The stored .blend is the one that was checked, so running it again can only
   // produce the same frames with the same files missing, or the same simulation
   // nobody has baked.
+  // A scene nobody can put right by trying again: the stored .blend is the one
+  // that was looked at, so it can only fail the same way. 'missing' is only
+  // reachable on rows from before the farm started asking for the files instead
+  // of refusing the job, and is kept for exactly those.
   if (job.assetCheck === 'missing' || job.assetCheck === 'unbaked') {
     return { success: false, error: job.error };
   }

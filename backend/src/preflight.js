@@ -3,30 +3,15 @@ import os from 'os';
 import path from 'path';
 import { launch, terminate } from './utils/process-control.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
+import { REFERENCED_PYTHON } from './scene-references.js';
 
 const MARKER = 'RENDERNET_PREFLIGHT ';
 const TIMEOUT_MS = Number(process.env.PREFLIGHT_TIMEOUT_MS) || 120 * 1000;
 const REPORTED = 8;
 
-// Walked datablock by datablock rather than through blend_paths, which also
-// reports Blender's own bundled assets - stored relative to the .blend, so they
-// resolve somewhere else entirely once a file is uploaded, and every scene
-// would look broken. Packed files are skipped because packing is the fix being
-// asked for.
+// Packed files are skipped because packing is the fix being asked for.
 const SCRIPT = `import bpy, os, json
-
-
-def referenced():
-    data = bpy.data
-
-    for image in data.images:
-        if image.source in {'FILE', 'SEQUENCE', 'MOVIE', 'TILED'}:
-            yield image
-
-    for group in (data.libraries, data.sounds, data.movieclips, data.volumes,
-                  data.cache_files, data.fonts):
-        for block in group:
-            yield block
+${REFERENCED_PYTHON}
 
 
 def described(scene):

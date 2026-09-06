@@ -8,6 +8,7 @@ import { launch, terminate } from './utils/process-control.js';
 import { BlenderSession, sessionKey, DAEMON_SCRIPT, FRAME_DONE } from './blender-session.js';
 import { primaryOf, extrasOf, extensionOf } from './formats.js';
 import { GRID_PYTHON, COMPOSITE_SCRIPT, tileName } from './tiles.js';
+import { REFERENCED_PYTHON } from './scene-references.js';
 
 const BLENDER_PATH = process.env.BLENDER_PATH || findBlenderExecutable() || 'blender';
 const API_URL = process.env.API_URL || 'http://localhost:5500';
@@ -49,6 +50,7 @@ scene.render.border_max_y = region['y1'] / height
 `;
 
 const OUTPUT_SCRIPT = `import bpy, os, json
+${REFERENCED_PYTHON}
 
 PRIMARY = os.environ.get('RENDERNET_PRIMARY_FORMAT', '')
 EXTRAS = [pair.split(':') for pair in os.environ.get('RENDERNET_EXTRA_FORMATS', '').split(',') if pair]
@@ -104,17 +106,27 @@ def announce(scene, _depsgraph=None):
 
 # Files the artist handed over for things the scene reaches for and did not
 # bring. The .blend is not rewritten: the datablock is pointed at the copy that
-# came with the job, which is the same picture and none of the upload.
+# came with the job, which is the same picture and none of the upload. The same
+# walk that reported them missing, so nothing can be asked for and then not
+# used.
 SUPPLIED = os.environ.get('RENDERNET_ASSETS', '')
 
 if SUPPLIED:
     with open(SUPPLIED) as handle:
         given = json.load(handle)
 
-    for image in bpy.data.images:
-        if image.source == 'FILE' and not image.packed_file and image.filepath in given:
-            image.filepath = given[image.filepath]
-            image.reload()
+    for block in referenced():
+        if getattr(block, 'packed_file', None) or block.filepath not in given:
+            continue
+
+        block.filepath = given[block.filepath]
+
+        # Images and libraries read again on demand; the rest are picked up
+        # from the path when they are next needed.
+        again = getattr(block, 'reload', None)
+
+        if again:
+            again()
 
 
 if PRIMARY:
