@@ -275,6 +275,32 @@ if (args.includes('-P') && !args.includes('-o')) {
   // A line per opening, so a test can count what reading a scene twice cost.
   record('readings.txt', scene + '\\n', true);
 
+  // The real script points these datablocks at what the artist handed over
+  // before deciding anything is missing, so a supplied file has stopped being
+  // missing by the time the walk sees it.
+  const manifest = process.env.RENDERNET_ASSETS;
+  const given = manifest && fs.existsSync(manifest)
+    ? Object.keys(JSON.parse(fs.readFileSync(manifest, 'utf8')))
+    : [];
+  const stillWanted = files => files.filter(file => !given.includes(file));
+
+  // 'layered' stands for a linked .blend: what that file itself reaches for is
+  // invisible until it has been supplied, so the second reading names something
+  // the first one could not have known about.
+  if (scene.includes('layered')) {
+    const readings = fs.readFileSync(path.join(records, 'readings.txt'), 'utf8')
+      .split('\\n').filter(line => line === scene).length;
+
+    fs.writeSync(1, 'RENDERNET_PREFLIGHT ' + JSON.stringify({
+      missing: stillWanted(readings > 1 ? ['/home/artist/rig/bark.png'] : ['/home/artist/rig.blend']),
+      unpacked: [],
+      unbaked: [],
+      active: 'Scene',
+      scenes: []
+    }) + '\\n');
+    process.exit(0);
+  }
+
   if (scene.includes('unreadable')) process.exit(0);
 
   const main = {
@@ -296,7 +322,7 @@ if (args.includes('-P') && !args.includes('-o')) {
     : [main];
 
   fs.writeSync(1, 'RENDERNET_PREFLIGHT ' + JSON.stringify({
-    missing: missing,
+    missing: stillWanted(missing),
     unpacked: unpacked,
     unbaked: unbaked,
     active: main.name,

@@ -3,7 +3,7 @@ import os from 'os';
 import path from 'path';
 import { launch, terminate } from './utils/process-control.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
-import { REFERENCED_PYTHON } from './scene-references.js';
+import { REFERENCED_PYTHON, SUPPLIED_PYTHON } from './scene-references.js';
 
 const MARKER = 'RENDERNET_PREFLIGHT ';
 const TIMEOUT_MS = Number(process.env.PREFLIGHT_TIMEOUT_MS) || 120 * 1000;
@@ -12,6 +12,7 @@ const REPORTED = 8;
 // Packed files are skipped because packing is the fix being asked for.
 const SCRIPT = `import bpy, os, json
 ${REFERENCED_PYTHON}
+${SUPPLIED_PYTHON}
 
 
 def described(scene):
@@ -54,6 +55,10 @@ def unbaked():
     if world is not None and not world.point_cache.is_baked:
         yield 'the scene (rigid body)'
 
+
+# Before anything is judged: a file already handed over is not missing, and a
+# library only shows what it needs once it has been opened.
+apply_supplied(os.environ.get('RENDERNET_ASSETS', ''))
 
 missing = []
 unpacked = []
@@ -106,8 +111,8 @@ let queued = Promise.resolve();
 // One Blender at a time, whoever is asking: a burst of uploads would otherwise
 // put a Blender per job on a machine that is meant to be spending itself on
 // renders.
-function readBlend(blendPath) {
-  const next = queued.then(() => openScene(blendPath));
+function readBlend(blendPath, supplied) {
+  const next = queued.then(() => openScene(blendPath, supplied));
 
   queued = next.catch(() => {});
 
@@ -129,8 +134,8 @@ function basename(file) {
   return String(file).split(/[\\/]/).pop();
 }
 
-export function checkScene(blendPath) {
-  return readBlend(blendPath).then(report => ({
+export function checkScene(blendPath, supplied = null) {
+  return readBlend(blendPath, supplied).then(report => ({
     checked: report !== null,
     missing: (report?.missing ?? []).map(asDependency),
     unpacked: report?.unpacked ?? [],
@@ -150,7 +155,7 @@ export function readScene(blendPath) {
     }));
 }
 
-function openScene(blendPath) {
+function openScene(blendPath, supplied = null) {
   return new Promise(resolve => {
     const blender = findBlenderExecutable();
 
@@ -160,7 +165,8 @@ function openScene(blendPath) {
     fs.writeFileSync(scriptPath, SCRIPT);
 
     const probe = launch(blender, ['-b', blendPath, '-P', scriptPath], {
-      stdio: ['ignore', 'pipe', 'pipe']
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, RENDERNET_ASSETS: supplied ?? '' }
     });
 
     let output = '';

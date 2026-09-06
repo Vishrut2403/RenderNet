@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { dataPath } from './paths.js';
 
@@ -22,4 +23,21 @@ export function assetFilename(storedPath, originalName) {
 
 export function assetPath(job, storedPath, originalName) {
   return path.join(assetsDir(job), assetFilename(storedPath, originalName));
+}
+
+// What the scene stores against where its copy actually is, for the scripts
+// that have to open the file as the render will see it. Null when the job has
+// been given nothing, which is the ordinary case.
+export function writeManifest(job, assets) {
+  if (assets.length === 0) return null;
+
+  const directory = assetsDir(job);
+  const manifest = path.join(directory, 'manifest.json');
+  const given = Object.fromEntries(
+    assets.map(asset => [asset.storedPath, path.join(directory, asset.filename)]));
+
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(manifest, JSON.stringify(given));
+
+  return manifest;
 }

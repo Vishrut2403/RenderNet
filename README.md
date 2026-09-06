@@ -131,6 +131,14 @@ is never rewritten: the render points that datablock at the copy it was given,
 so the scene keeps its hash and stays shared with every other job that renders
 it. Blender renders a texture it cannot find as magenta and reports success, so
 the check is the only thing standing between that and a finished job.
+
+The scene is looked at again once the last file arrives, rather than queued on
+the strength of the first answer. A linked `.blend` is the reason: it cannot be
+packed into the scene that links it — `Pack Resources` collects images, sounds
+and fonts and leaves libraries where they are — and until it has been supplied
+Blender cannot open it to see what it reaches for in turn. So supplying one can
+turn up a second round of missing files, and a job queued without looking again
+would render half dressed and call itself finished.
 Files that are *here but not packed into it* are subtler: a machine somewhere
 else is sent the `.blend` and nothing beside it, so that job is kept on the
 machine that can see them rather than rendered untextured elsewhere and called

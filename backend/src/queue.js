@@ -27,7 +27,7 @@ import {
   diskIsTooFull, tooFullToCarryOn, heldForDisk, deleteJobFiles, forgetUsage
 } from './storage.js';
 import { isTiled, tilesPath, compositeName } from './tiles.js';
-import { assetsDir } from './supplied-assets.js';
+import { assetsDir, writeManifest } from './supplied-assets.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
@@ -206,7 +206,10 @@ export function addToQueue(jobData) {
 // A scene that reaches for textures it did not bring renders untextured rather
 // than failing, and nobody wants to find that out at frame 500.
 function startSceneCheck(job) {
-  checkScene(dataPath(job.filePath)).then(({ checked, missing, unpacked, unbaked }) => {
+  // Opened as the render will see it: a file already handed over is not
+  // missing, and a linked .blend only says what it needs once it has been
+  // opened, which is why supplying one can turn up more.
+  checkScene(dataPath(job.filePath), writeManifest(job, jobAssets(job.id))).then(({ checked, missing, unpacked, unbaked }) => {
     const current = jobs.get(job.id);
 
     // Deleted or cancelled while Blender was reading it.
@@ -278,14 +281,17 @@ export function supplyAsset(jobId, storedPath, { filename, bytes }) {
   const left = wanted.filter(entry => !supplied.has(entry.stored));
 
   job.missingAssets = JSON.stringify(left);
-  if (left.length === 0) job.assetCheck = 'ok';
+
+  // Looked at again rather than queued: a linked .blend that has only just
+  // arrived brings its own references with it, and those are missing too.
+  if (left.length === 0) job.assetCheck = 'checking';
 
   saveJob(job);
   forgetUsage(job.owner);
 
   console.log(`Job ${jobId} was given ${filename}, ${left.length} file(s) still wanted`);
 
-  if (left.length === 0 && !preemptFor(job)) processQueue();
+  if (left.length === 0) startSceneCheck(job);
 
   return { wanted: left };
 }

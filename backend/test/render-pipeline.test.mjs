@@ -1311,6 +1311,54 @@ export default async function run() {
       supplied.status === 'completed' && supplied.completedFrames === 40,
       `${supplied.status}, ${supplied.completedFrames} of 40`);
 
+    console.log('\n  A file that brings its own needs with it');
+
+    // A linked .blend cannot be packed into the scene that links it, and until
+    // it has been supplied Blender cannot open it to see what it reaches for in
+    // turn. So the job is looked at again once the last file arrives, rather
+    // than queued on the strength of a check that could not have known.
+    const layered = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'layered.blend'),
+      { frameStart: 1, frameEnd: 2 }
+    );
+    const layeredId = layered.body.jobId;
+
+    await waitForCondition(
+      async () => (await getJob(assetServer.base, assetToken, layeredId)).assetCheck === 'waiting',
+      { label: 'the job to ask for the linked file' });
+
+    const asksFor = await getJob(assetServer.base, assetToken, layeredId);
+
+    results.check('it asks for the linked file first',
+      asksFor.missingAssets?.join(',') === 'rig.blend',
+      JSON.stringify(asksFor.missingAssets));
+
+    await supply(layeredId, asksFor.awaitingAssets[0].stored, 'rig.blend');
+
+    // Nothing else arrives to trigger this: the job has everything it was
+    // asked for, and looking again is what turns up the rest.
+    await waitForCondition(
+      async () => {
+        const now = await getJob(assetServer.base, assetToken, layeredId);
+        return now.assetCheck === 'waiting' && now.missingAssets?.join(',') === 'bark.png';
+      },
+      { label: 'the second round of missing files to be noticed' });
+
+    const roundTwo = await getJob(assetServer.base, assetToken, layeredId);
+
+    results.check('and once it arrives, asks for what that file needs in turn',
+      roundTwo.missingAssets?.join(',') === 'bark.png', JSON.stringify(roundTwo.missingAssets));
+    results.check('rather than rendering it half dressed', roundTwo.completedFrames === 0,
+      `${roundTwo.completedFrames} frames rendered`);
+
+    await supply(layeredId, roundTwo.awaitingAssets[0].stored, 'bark.png');
+
+    const dressed = await waitForJob(assetServer.base, assetToken, layeredId, 60000);
+
+    results.check('and renders once nothing is left to ask for',
+      dressed.status === 'completed' && dressed.completedFrames === 2,
+      `${dressed.status}, ${dressed.completedFrames} of 2`);
+
     const anyway = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'unpacked.blend'),
       { frameStart: 1, frameEnd: 1, skipAssetCheck: true }
