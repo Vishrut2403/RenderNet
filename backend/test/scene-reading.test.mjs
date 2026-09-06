@@ -253,7 +253,10 @@ textured('Wall', r'${path.join(box, 'nowhere', 'gone.png')}', 3)
 
     const { checkScene } = await import('../src/preflight.js');
     const report = await checkScene(blend);
-    const named = list => list.map(file => path.basename(file));
+    // A missing file is reported as what the scene stores and where that led,
+    // so it can be replaced; one that is merely unpacked is still just a path.
+    const named = list =>
+      list.map(entry => (typeof entry === 'string' ? path.basename(entry) : entry.name));
 
     results.check(names[0], named(report.missing).join(',') === 'gone.png',
       JSON.stringify(named(report.missing)));
