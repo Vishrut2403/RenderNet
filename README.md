@@ -391,12 +391,19 @@ tree with `taskkill` rather than escalating SIGTERM to SIGKILL. That path and th
 quoting that carries a Blender path through `cmd.exe` are also checked directly
 from any OS, so a mistake in either shows up before CI does.
 
-A further job installs a pinned Blender and runs the suite again with nothing
-skipped, on every push and every pull request. That is where the checks on what
-Blender itself writes actually run — the formats, what opening a scene reports,
-a Blender kept open across several claims — rather than only on a machine that
-happens to have one. The download is cached against its version, so it is paid
-once per Blender rather than once per run.
+A further pair of jobs installs a pinned Blender — on Linux and on Windows, the
+platform the workstation actually is — and runs the suite again, on every push
+and every pull request. That is where the checks on what Blender itself writes
+run: the formats, what opening a scene reports, a Blender kept open across
+several claims. The download is cached against its version, so it is paid once
+per Blender rather than once per run.
+
+Those jobs set `REQUIRE_TOOLS=blender,ffmpeg`, because a check that skips itself
+still passes: a Blender that stopped being found would otherwise take every
+render-dependent check out of the run and leave the badge green. Naming a tool
+turns a skip for want of it into a failure, while leaving alone the skips that
+are about what a machine can do — an engine that will not render headless is a
+fact about the runner, not a broken install.
 
 ---
 

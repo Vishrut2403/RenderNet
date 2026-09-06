@@ -40,6 +40,19 @@ const suites = [
 
 const totals = { pass: 0, fail: 0, skip: 0 };
 const failures = [];
+const skips = [];
+
+// A check that skips itself for want of Blender or ffmpeg is right on a machine
+// without them and wrong in a job that just installed one - there the skip is
+// how a broken install would pass unnoticed. Naming a tool here turns that into
+// a failure, while leaving alone the skips that are about what a machine can
+// actually do, such as an engine that will not render headless.
+const required = (process.env.REQUIRE_TOOLS ?? '')
+  .split(',').map(tool => tool.trim().toLowerCase()).filter(Boolean);
+
+function wanted({ why }) {
+  return required.some(tool => why.toLowerCase().includes(tool));
+}
 
 for (const [title, suite] of suites) {
   console.log(`\n${title}`);
@@ -51,6 +64,7 @@ for (const [title, suite] of suites) {
     totals.fail += result.fail;
     totals.skip += result.skip;
     failures.push(...result.failures);
+    skips.push(...(result.skips ?? []));
   } catch (error) {
     totals.fail++;
     failures.push(`${title}: suite crashed - ${error.message}`);
@@ -66,4 +80,11 @@ if (failures.length) {
   for (const failure of failures) console.log(`  - ${failure}`);
 }
 
-process.exit(totals.fail === 0 ? 0 : 1);
+const missing = skips.filter(wanted);
+
+if (missing.length) {
+  console.log(`\nSkipped for a tool this run was told it has (${required.join(', ')}):`);
+  for (const skip of missing) console.log(`  - ${skip.name} (${skip.why})`);
+}
+
+process.exit(totals.fail === 0 && missing.length === 0 ? 0 : 1);

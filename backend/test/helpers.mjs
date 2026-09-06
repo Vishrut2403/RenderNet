@@ -8,7 +8,7 @@ import os from 'os';
 export const BACKEND_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 export function createResults(suiteName) {
-  const results = { suite: suiteName, pass: 0, fail: 0, skip: 0, failures: [] };
+  const results = { suite: suiteName, pass: 0, fail: 0, skip: 0, failures: [], skips: [] };
 
   results.check = (name, condition, detail = '') => {
     if (condition) {
@@ -23,6 +23,7 @@ export function createResults(suiteName) {
 
   results.skipped = (name, why) => {
     results.skip++;
+    results.skips.push({ name: `${suiteName}: ${name}`, why });
     console.log(`  skip  ${name} (${why})`);
   };
 

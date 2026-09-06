@@ -83,15 +83,26 @@ jobs:
         run: npm test
 
   render:
-    name: full suite with Blender
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: full suite with Blender · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
-    # Pinned rather than taken from apt, which ships whatever the runner image
-    # happens to carry. Tracks the workstation, which is kept on the latest.
+    # Pinned rather than taken from a package manager, which ships whatever the
+    # runner image happens to carry. Tracks the workstation, which is kept on
+    # the latest. Both hashes are Blender's own, from the release's .sha256.
     env:
       BLENDER_VERSION: '5.2.0'
-      BLENDER_SHA256: '96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48'
+      BLENDER_SHA256_LINUX: '96f6c181a30f4950607839dc84d42a354b250d8a0231b098b59b7bc69c351c48'
+      BLENDER_SHA256_WINDOWS: '2d184b626c001692c362291911293b6a297179d618d95e9e9192c3a80318adc4'
+      # Both are installed below, so a check that skips itself for want of
+      # either is a broken install passing unnoticed. Named here, it fails
+      # instead. Skips about what a machine can do - an engine that will not
+      # render headless - are left alone.
+      REQUIRE_TOOLS: blender,ffmpeg
 
     steps:
       - uses: actions/checkout@v5
@@ -105,7 +116,7 @@ jobs:
             frontend/package-lock.json
 
       # Keyed on the version, so changing it downloads again and nothing else
-      # does. Three hundred megabytes on every pull request is what this saves.
+      # does. Three hundred megabytes a run is what this saves.
       - name: Cache Blender
         id: blender
         uses: actions/cache@v4
@@ -114,27 +125,58 @@ jobs:
           key: blender-${{ runner.os }}-${{ env.BLENDER_VERSION }}
 
       - name: Install Blender
-        if: steps.blender.outputs.cache-hit != 'true'
+        if: runner.os == 'Linux' && steps.blender.outputs.cache-hit != 'true'
         run: |
           archive="blender-$BLENDER_VERSION-linux-x64.tar.xz"
           curl -fsSL -O "https://download.blender.org/release/Blender${BLENDER_VERSION%.*}/$archive"
-          echo "$BLENDER_SHA256  $archive" | sha256sum -c -
+          echo "$BLENDER_SHA256_LINUX  $archive" | sha256sum -c -
           mkdir -p "$HOME/blender"
           tar -xJf "$archive" -C "$HOME/blender" --strip-components=1
 
-      # Separate from the download, which a cache hit skips.
+      - name: Install Blender
+        if: runner.os == 'Windows' && steps.blender.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $series = $env:BLENDER_VERSION -replace '\.\d+$', ''
+          $archive = "blender-$env:BLENDER_VERSION-windows-x64.zip"
+          Invoke-WebRequest "https://download.blender.org/release/Blender$series/$archive" -OutFile $archive
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $env:BLENDER_SHA256_WINDOWS) {
+            throw "$archive hashed $actual, expected $env:BLENDER_SHA256_WINDOWS"
+          }
+          Expand-Archive $archive -DestinationPath unpacked
+          # The zip carries one directory of its own, and the PATH entry below
+          # wants blender.exe directly inside it. Held in a variable rather than
+          # indexed inline, which PowerShell reads as an argument, not a path.
+          $inner = (Get-ChildItem unpacked -Directory)[0].FullName
+          Move-Item $inner "$env:USERPROFILE\blender"
+
+      # Separate from the download, which a cache hit skips. Written per
+      # platform because a path Git Bash understands is not one Windows does.
       - name: Put Blender on PATH
+        if: runner.os == 'Linux'
         run: echo "$HOME/blender" >> "$GITHUB_PATH"
+
+      - name: Put Blender on PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          "$env:USERPROFILE\blender" | Out-File $env:GITHUB_PATH -Append -Encoding utf8
 
       # Separate so a missing system library fails here, plainly, rather than as
       # every render-dependent check at once.
       - name: Check Blender runs
         run: blender --version
 
-      # Without it the encode test skips itself, and the video path is then
-      # covered nowhere.
+      # Without it the encode test skips itself, and REQUIRE_TOOLS above turns
+      # that into a failure rather than letting the video path go uncovered.
       - name: Install ffmpeg
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install ffmpeg
+        if: runner.os == 'Windows'
+        run: choco install ffmpeg -y --no-progress
 
       - name: Install backend
         working-directory: backend
