@@ -280,20 +280,22 @@ if (args.includes('-P') && !args.includes('-o')) {
   process.exit(0);
 }
 
-// One launch may be asked for a span of frames, the way Blender takes them.
-const frames = String(valueOf('-f')).split(',').map(Number);
-const frame = frames[0];
+// Frames arrive on stdin now, a span to a line, the way the worker drives the
+// real Blender: one process serves as many claims as its command line suits.
+const readline = require('readline');
+
 const EXTENSIONS = { PNG: '.png', JPEG: '.jpg', OPEN_EXR: '.exr' };
 const extension = EXTENSIONS[valueOf('-F')] || '.png';
+const outputDir = path.dirname(valueOf('-o'));
 const targetFor = f => valueOf('-o').replace('####', String(f).padStart(4, '0')) + extension;
-const target = targetFor(frame);
 
 // Recorded so a test can assert on the command line the worker built and the
 // environment it set, which is where the render settings become visible.
 record('last-args.txt', args.join(' '));
 
-// A line per launch, which is what says whether a span was rendered in one.
-record('launches.txt', scene + ' ' + valueOf('-f') + '\\n', true);
+// A line per process start, against one per span below: the two together are
+// what say whether a second claim reused the Blender the first one started.
+record('launches.txt', scene + '\\n', true);
 record('last-env.txt', Object.entries(process.env)
   .filter(([name]) => name.startsWith('RENDERNET_'))
   .map(([name, value]) => name + '=' + value)
@@ -304,8 +306,8 @@ if (scene.includes('stubborn')) {
   setInterval(() => {}, 1000);
   // Until this exists the process is still bootable and a SIGTERM kills it
   // outright, so the caller has to wait for it before cancelling.
-  fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.writeFileSync(path.join(path.dirname(target), 'refusing-to-exit'), '');
+  fs.mkdirSync(outputDir, { recursive: true });
+  fs.writeFileSync(path.join(outputDir, 'refusing-to-exit'), '');
 }
 
 if (scene.includes('noisy')) {
@@ -328,12 +330,7 @@ if (scene.includes('broken')) {
   process.exit(1);
 }
 
-// 'flaky' fails its second frame until a 'fixed' marker appears beside the
-// scene, so a job can fail for a reason somebody then puts right. Real Blender
-// writes the frames it reached before giving up, and so does this.
-const failAt = scene.includes('flaky') && !marked('fixed') && frames.includes(2) ? 2 : null;
-
-function pauseFor(f) {
+function pauseFor(f, frames) {
   // 'uneven' renders far slower on one of the machines than the other, which is
   // what a farm of a workstation and a laptop looks like.
   if (scene.includes('uneven')) return process.env.WORKER_ID?.endsWith('1') ? 900 : 60;
@@ -352,12 +349,17 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-(async () => {
+async function renderSpan(frames) {
+  // 'flaky' fails its second frame until a 'fixed' marker appears beside the
+  // scene, so a job can fail for a reason somebody then puts right. Real
+  // Blender writes the frames it reached before giving up, and so does this.
+  const failAt = scene.includes('flaky') && !marked('fixed') && frames.includes(2) ? 2 : null;
+
   for (const f of frames) {
-    await sleep(pauseFor(f));
+    await sleep(pauseFor(f, frames));
 
     if (f === failAt) {
-      fs.writeSync(1, 'Error: frame 2 cannot be rendered yet\\n');
+      fs.writeSync(1, 'RENDERNET_SPAN_FAILED frame 2 cannot be rendered yet\\n');
       process.exit(1);
     }
 
@@ -377,6 +379,21 @@ function sleep(ms) {
     // Stands in for the render_write handler, which is what lets the worker
     // deliver a frame before the launch that made it has finished.
     fs.writeSync(1, 'RENDERNET_FRAME_DONE ' + f + '\\n');
+  }
+}
+
+(async () => {
+  fs.writeSync(1, 'RENDERNET_READY\\n');
+
+  for await (const line of readline.createInterface({ input: process.stdin })) {
+    const frames = JSON.parse(line);
+
+    // A line per span, which is what says how many frames one claim covered.
+    record('spans.txt', scene + ' ' + frames.join(',') + '\\n', true);
+
+    await renderSpan(frames);
+
+    fs.writeSync(1, 'RENDERNET_SPAN_DONE\\n');
   }
 
   process.exit(0);

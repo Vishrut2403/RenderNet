@@ -316,7 +316,15 @@ async function unevenMachines(results) {
     // measured starts. A machine nobody has timed yet is treated as average,
     // which is the only honest thing to do and is not what this is about.
     const warmUp = await submitJob(server.base, token, scene,
-      { frameStart: 1, frameEnd: 8, skipAssetCheck: true });
+      { frameStart: 1, frameEnd: 40, skipAssetCheck: true });
+
+    // The job finishing is not enough: the fast machine can render all of it
+    // while the slow one is still on its first frame, and the slow one would
+    // then reach the job below still unmeasured.
+    await waitForCondition(
+      () => rendersFromLog(server.getLog()).some(render => render.worker === '1'),
+      { label: 'the slow machine to render a frame, so it has a rate' });
+
     await waitForJob(server.base, token, warmUp.body.jobId, 180000);
 
     // Long enough that a claim is never bounded by what is left of the job,

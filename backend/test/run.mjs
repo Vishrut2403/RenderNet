@@ -14,6 +14,7 @@ import downloads from './downloads.test.mjs';
 import scheduling from './scheduling.test.mjs';
 import sceneReading from './scene-reading.test.mjs';
 import spans from './spans.test.mjs';
+import frameOrder from './frame-order.test.mjs';
 import sceneStore from './scene-store.test.mjs';
 
 const suites = [
@@ -33,6 +34,7 @@ const suites = [
   ['Scheduling and overrides', scheduling],
   ['Reading an uploaded scene', sceneReading],
   ['Frame spans', spans],
+  ['The order frames are claimed in', frameOrder],
   ['Storing scenes by content', sceneStore]
 ];
 

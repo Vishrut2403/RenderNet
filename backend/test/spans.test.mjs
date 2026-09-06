@@ -6,14 +6,38 @@ import path from 'path';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   adminSession, submitJob, waitForJob, createFakeBlender, createFakeScene, getJob,
-  waitForCondition, auth
+  waitForCondition, auth, blenderAvailable, createFixtureBlend
 } from './helpers.mjs';
 
 const PORT = 5613;
 
-// Every launch the stand-in served, as the frames each was asked for.
-function launchesFor(sandbox, scene) {
+// How many Blenders the stand-in was asked to be, against how many spans they
+// were between them given.
+function startsFor(sandbox, scene) {
   const log = path.join(sandbox, 'uploads', 'launches.txt');
+
+  if (!fs.existsSync(log)) return 0;
+
+  return fs.readFileSync(log, 'utf8').split('\n').filter(line => line.includes(scene)).length;
+}
+
+// The stand-in cannot say anything about a real Blender, and the worker only
+// prints this line when it starts one, so counting them is what says whether a
+// real Blender was kept open across claims.
+function blendersStarted(sandbox, scene) {
+  const logs = path.join(sandbox, 'logs');
+
+  if (!fs.existsSync(logs)) return 0;
+
+  return fs.readdirSync(logs)
+    .flatMap(name => fs.readFileSync(path.join(logs, name), 'utf8').split('\n'))
+    .filter(line => line.includes('Running:') && line.includes(scene))
+    .length;
+}
+
+// Every span the stand-in was given, as the frames each covered.
+function spansFor(sandbox, scene) {
+  const log = path.join(sandbox, 'uploads', 'spans.txt');
 
   if (!fs.existsSync(log)) return [];
 
@@ -54,8 +78,8 @@ export default async function run() {
     // claim of all is a single frame - and rendering it is what makes every
     // span after it possible.
     results.check('with nothing measured yet, the first claim is one frame',
-      launchesFor(sandbox, 'measure.blend')[0]?.length === 1,
-      JSON.stringify(launchesFor(sandbox, 'measure.blend')));
+      spansFor(sandbox, 'measure.blend')[0]?.length === 1,
+      JSON.stringify(spansFor(sandbox, 'measure.blend')));
 
     console.log('\n  A measured job is rendered in spans');
 
@@ -63,7 +87,7 @@ export default async function run() {
       frameStart: 1, frameEnd: 8
     });
     const job = await waitForJob(server.base, token, spanned.body.jobId, 120000);
-    const launches = launchesFor(sandbox, 'spanned.blend');
+    const launches = spansFor(sandbox, 'spanned.blend');
 
     results.check('the job completed', job.status === 'completed', job.status);
     results.check('every frame arrived', job.completedFrames === 8, `${job.completedFrames} of 8`);
@@ -73,7 +97,7 @@ export default async function run() {
       launches.some(frames => frames.length > 1), JSON.stringify(launches));
     results.check('no launch exceeded MAX_FRAME_SPAN',
       launches.every(frames => frames.length <= 4), JSON.stringify(launches));
-    results.check('each launch was asked for its frames in one -f list',
+    results.check('each span was asked for as one list of frames',
       launches.every(frames => frames.every(Number.isInteger)), JSON.stringify(launches));
 
     const rendered = launches.flat().sort((a, b) => a - b);
@@ -82,6 +106,17 @@ export default async function run() {
       new Set(rendered).size === rendered.length, rendered.join(','));
     results.check('and between them the launches covered the range',
       new Set(rendered).size === 8, rendered.join(','));
+
+    console.log('\n  One Blender serves every claim it can');
+
+    // Spreading the cost of starting Blender over a span is worth less than not
+    // paying it: the process is kept open and fed the next span, so a worker
+    // that keeps claiming from one job parses the scene once.
+    const starts = startsFor(sandbox, 'spanned.blend');
+
+    results.check('a job of several spans started fewer Blenders than it had spans',
+      starts < launches.length, `${starts} started for ${launches.length} spans`);
+    results.check('one Blender covered all of them', starts === 1, `${starts} started`);
 
     console.log('\n  A span cut short keeps what it rendered');
 
@@ -131,7 +166,7 @@ export default async function run() {
       createFakeScene(sandbox, 'stepped.blend'),
       { frameStart: 1, frameEnd: 10, frameStep: 3 });
     const preview = await waitForJob(server.base, token, stepped.body.jobId, 120000);
-    const asked = launchesFor(sandbox, 'stepped.blend').flat().sort((a, b) => a - b);
+    const asked = spansFor(sandbox, 'stepped.blend').flat().sort((a, b) => a - b);
 
     results.check('the job counts only the frames it will render',
       preview.totalFrames === 4, `${preview.totalFrames} of an expected 4`);
@@ -163,8 +198,69 @@ export default async function run() {
 
     results.check('the slow job completed', slowJob.status === 'completed', slowJob.status);
     results.check('no span held more than a couple of its frames',
-      launchesFor(sandbox, 'slow.blend').every(each => each.length <= 2),
-      JSON.stringify(launchesFor(sandbox, 'slow.blend')));
+      spansFor(sandbox, 'slow.blend').every(each => each.length <= 2),
+      JSON.stringify(spansFor(sandbox, 'slow.blend')));
+
+    console.log('\n  Closing Blender between claims when told to');
+
+    // A Blender held open holds the scene in memory with it, which a machine
+    // short of memory would rather have back.
+    await stopServer(server);
+    server = await startServer({
+      port: PORT,
+      cwd: sandbox,
+      env: {
+        BLENDER_PATH: createFakeBlender(sandbox),
+        WORKER_SLOTS: '1',
+        FRAME_SPAN_MS: '60000',
+        MAX_FRAME_SPAN: '2',
+        BLENDER_IDLE_MS: '0'
+      }
+    });
+
+    const closingToken = await adminSession(server.base);
+    const closing = await submitJob(server.base, closingToken,
+      createFakeScene(sandbox, 'closed.blend'), { frameStart: 1, frameEnd: 6 });
+    const closed = await waitForJob(server.base, closingToken, closing.body.jobId, 120000);
+
+    results.check('the job completed', closed.status === 'completed', closed.status);
+    results.check('BLENDER_IDLE_MS=0 starts a Blender for every span',
+      startsFor(sandbox, 'closed.blend') === spansFor(sandbox, 'closed.blend').length,
+      `${startsFor(sandbox, 'closed.blend')} started`
+      + ` for ${spansFor(sandbox, 'closed.blend').length} spans`);
+    results.check('and it still renders every frame', closed.completedFrames === 6,
+      `${closed.completedFrames} of 6`);
+
+    console.log('\n  A real Blender across real claims');
+
+    // Everything above answers a stand-in that this repository wrote. Whether
+    // Blender itself will sit on a pipe waiting for the next span, and render
+    // what arrives, is not something a stand-in can be asked.
+    if (!blenderAvailable()) {
+      results.skipped('one Blender covered a range claimed a frame at a time',
+        'Blender not installed');
+      results.skipped('and rendered every frame of it', 'Blender not installed');
+    } else {
+      await stopServer(server);
+      server = await startServer({
+        port: PORT,
+        cwd: sandbox,
+        env: { WORKER_SLOTS: '1', FRAME_SPAN_MS: '60000', MAX_FRAME_SPAN: '1' }
+      });
+
+      const realToken = await adminSession(server.base);
+      const fixture = createFixtureBlend(sandbox, { name: 'resident.blend' });
+      const real = await submitJob(server.base, realToken, fixture,
+        { frameStart: 1, frameEnd: 4 });
+      const rendered = await waitForJob(server.base, realToken, real.body.jobId, 300000);
+
+      results.check('one Blender covered a range claimed a frame at a time',
+        blendersStarted(sandbox, 'resident.blend') === 1,
+        `${blendersStarted(sandbox, 'resident.blend')} started`);
+      results.check('and rendered every frame of it',
+        rendered.status === 'completed' && rendered.completedFrames === 4,
+        `${rendered.status}, ${rendered.completedFrames} of 4`);
+    }
   } finally {
     await stopServer(server);
     removeSandbox(sandbox);

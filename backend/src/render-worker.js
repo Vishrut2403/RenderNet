@@ -5,6 +5,7 @@ import FormData from 'form-data';
 import fetch from 'node-fetch';
 import { findBlenderExecutable, renderableEngines } from './utils/blender-check.js';
 import { launch, terminate } from './utils/process-control.js';
+import { BlenderSession, sessionKey, DAEMON_SCRIPT, FRAME_DONE } from './blender-session.js';
 import { primaryOf, extrasOf, extensionOf } from './formats.js';
 import { GRID_PYTHON, COMPOSITE_SCRIPT, tileName } from './tiles.js';
 
@@ -16,6 +17,10 @@ const CYCLES_DEVICE = process.env.CYCLES_DEVICE || 'CPU';
 const OUTPUT_TAIL = 4000;
 const KILL_GRACE_MS = 5000;
 const RENEW_EVERY_MS = 5000;
+// How long a Blender with nothing left to render is kept open for the next
+// claim. Zero closes it after every span, which is what a machine short of
+// memory wants.
+const IDLE_MS = Number(process.env.BLENDER_IDLE_MS ?? 60000);
 
 const SCRATCH_DIR = process.env.WORKER_SCRATCH_DIR
   || path.join(os.tmpdir(), 'rendernet-worker');
@@ -42,10 +47,6 @@ scene.render.border_max_x = region['x1'] / width
 scene.render.border_min_y = region['y0'] / height
 scene.render.border_max_y = region['y1'] / height
 `;
-
-// Said by the script as each frame's files land, so a span hands its frames
-// back as it goes rather than all at the end.
-const FRAME_DONE = 'RENDERNET_FRAME_DONE ';
 
 const OUTPUT_SCRIPT = `import bpy, os
 
@@ -149,6 +150,56 @@ function filesFor(stem, primary, extras, frame) {
   return written;
 }
 
+// Everything a Blender launch is told apart from which frames to render, which
+// is what lets one serve every claim it can. The frames go in over stdin.
+function blenderCommand(blendPath, outputDir, renderEngine, overrides, output) {
+  // '####' pads the frame number to four digits; a single '#' does not pad at
+  // all, so the written and expected names never agree.
+  const { primary = 'PNG', extras = [], outputScript, prefix = 'frame_' } = output;
+
+  const args = [
+    '-b', blendPath,
+    '-E', renderEngine,
+    // Forced so the extension is predictable whatever the .blend specifies.
+    '-F', primary,
+    '-o', path.join(outputDir, `${prefix}####`)
+  ];
+
+  // Blender has no flag for resolution or sample count, so they are set on the
+  // loaded scene instead. One line with no newlines: on Windows this whole
+  // command may travel through cmd.exe, which cannot carry them.
+  const expression = sceneOverrides(renderEngine, overrides);
+
+  if (expression) args.push('--python-expr', expression);
+
+  args.push('-P', outputScript);
+
+  if (renderEngine === 'CYCLES') {
+    // Add-on options are only recognised after '--'; earlier, Blender treats
+    // them as a file to open. Read before the script runs, so a script that
+    // waits for work does not hold the device up.
+    args.push('--', '--cycles-device', CYCLES_DEVICE);
+  }
+
+  // Passed as environment rather than script arguments: Blender hands its own
+  // leftovers to the script and the quoting is one less thing to get wrong on
+  // Windows.
+  const env = {
+    ...process.env,
+    RENDERNET_FRAME_DIR: outputDir,
+    RENDERNET_FRAME_PREFIX: prefix,
+    RENDERNET_PRIMARY_FORMAT: primary,
+    RENDERNET_EXTRA_FORMATS: extras.map(id => `${id}:${extensionOf(id)}`).join(','),
+    RENDERNET_EXR_CODEC: output.exrCodec ?? '',
+    RENDERNET_EXR_DEPTH: output.exrDepth ?? '',
+    RENDERNET_JPEG_QUALITY: output.jpegQuality == null ? '' : String(output.jpegQuality),
+    RENDERNET_TILE_INDEX: output.tile ? String(output.tile.index) : '',
+    RENDERNET_TILE_COUNT: output.tile ? String(output.tile.of) : ''
+  };
+
+  return { args, env };
+}
+
 // Blender has no flag for either, so they are set on the loaded scene.
 function sceneOverrides(renderEngine, { resolutionPercent, samples } = {}) {
   const assignments = [];
@@ -183,18 +234,22 @@ class RenderWorker {
     this.stopping = false;
     this.killTimer = null;
     this.renewTimer = null;
+    this.session = null;
+    this.idleTimer = null;
   }
 
   stop() {
     this.stopping = true;
     this.cancel();
+    this.dropSession();
   }
 
   cancel() {
     this.abandoned = true;
 
     const running = this.currentProcess;
-    if (!running) return false;
+
+    if (!running) return this.dropSession();
 
     // A Blender that ignores the stop request keeps the queue waiting behind it.
     if (terminate(running)) {
@@ -203,6 +258,53 @@ class RenderWorker {
     }
 
     return true;
+  }
+
+  // The Blender held open between claims, if there is one. Reused only when the
+  // command line and environment would have been identical, so everything that
+  // used to be decided at launch still is.
+  async sessionFor(args, env) {
+    clearTimeout(this.idleTimer);
+
+    if (this.session?.alive && this.session.key === sessionKey(BLENDER_PATH, args, env)) {
+      return this.session;
+    }
+
+    this.dropSession();
+
+    console.log(`   Running: ${BLENDER_PATH} ${args.join(' ')}`);
+
+    const session = new BlenderSession(BLENDER_PATH, args, env);
+
+    this.session = session;
+    await session.start();
+
+    return session;
+  }
+
+  // Held for the next claim rather than closed, so a worker that keeps claiming
+  // from one job parses the scene once instead of once a span.
+  holdSession() {
+    clearTimeout(this.idleTimer);
+
+    if (!this.session || IDLE_MS <= 0) {
+      this.dropSession();
+      return;
+    }
+
+    this.idleTimer = setTimeout(() => this.dropSession(), IDLE_MS);
+    this.idleTimer.unref?.();
+  }
+
+  dropSession() {
+    clearTimeout(this.idleTimer);
+
+    const held = this.session;
+
+    this.session = null;
+    held?.kill();
+
+    return held !== null;
   }
 
   // Kept under what the scene is rather than which job wanted it: the server
@@ -304,10 +406,14 @@ class RenderWorker {
       }
     }
 
-    // Named per span: workers sharing a job share the folder, and one of them
-    // rewriting the file another is reading would break that render.
-    const outputScript = path.join(outputDir, `output_${frames[0]}.py`);
-    fs.writeFileSync(outputScript, lease.tile ? TILE_SCRIPT + OUTPUT_SCRIPT : OUTPUT_SCRIPT);
+    // Named per worker rather than per span: workers sharing a job share the
+    // folder, and one of them rewriting the file another is reading would break
+    // that render. A name that changed between spans would also be a different
+    // command line, and so a Blender that could not be reused.
+    const outputScript = path.join(outputDir, `render_${this.workerId.replace(/\W/g, '_')}.py`);
+
+    fs.writeFileSync(outputScript,
+      (lease.tile ? TILE_SCRIPT + OUTPUT_SCRIPT : OUTPUT_SCRIPT) + DAEMON_SCRIPT);
 
     // A tile renders one scene frame under the number of its region; everything
     // else renders the frames it was given.
@@ -370,6 +476,7 @@ class RenderWorker {
       if (!this.abandoned) await this.accountFor(lease, handled, failure);
     } finally {
       this.stopRenewing();
+      this.holdSession();
 
       // However the span ended: a job being cancelled waits for exactly this,
       // and a span that finished before the first renewal never heard about it.
@@ -608,112 +715,11 @@ class RenderWorker {
     }).catch(error => console.error(`Could not let go of the frame: ${error.message}`));
   }
 
-  renderFrames(blendPath, frames, outputDir, renderEngine, overrides = {}, output = {}) {
-    return new Promise((resolve, reject) => {
-      // '####' pads the frame number to four digits; a single '#' does not pad
-      // at all, so the written and expected names never agree.
-      const { primary = 'PNG', extras = [], outputScript, prefix = 'frame_' } = output;
-      const outputPattern = path.join(outputDir, `${prefix}####`);
+  async renderFrames(blendPath, frames, outputDir, renderEngine, overrides = {}, output = {}) {
+    const { args, env } = blenderCommand(blendPath, outputDir, renderEngine, overrides, output);
+    const session = await this.sessionFor(args, env);
 
-      const args = [
-        '-b', blendPath,
-        '-E', renderEngine,
-        // Forced so the extension is predictable whatever the .blend specifies.
-        '-F', primary,
-        '-o', outputPattern
-      ];
-
-      // Blender has no flag for resolution or sample count, so they are set on
-      // the loaded scene instead. One line with no newlines: on Windows this
-      // whole command may travel through cmd.exe, which cannot carry them.
-      const expression = sceneOverrides(renderEngine, overrides);
-      if (expression) args.push('--python-expr', expression);
-
-      args.push('-P', outputScript);
-
-      // Last, because Blender renders when it reaches this and ignores what
-      // follows. A comma-separated list renders the whole span in one launch.
-      args.push('-f', frames.join(','));
-
-      if (renderEngine === 'CYCLES') {
-        // Add-on options are only recognised after '--'; earlier, Blender
-        // treats them as a file to open.
-        args.push('--', '--cycles-device', CYCLES_DEVICE);
-      }
-
-      console.log(`   Running: ${BLENDER_PATH} ${args.join(' ')}`);
-
-      // Passed as environment rather than script arguments: Blender hands its
-      // own leftovers to the script and the quoting is one less thing to get
-      // wrong on Windows.
-      const env = {
-        ...process.env,
-        RENDERNET_FRAME_DIR: outputDir,
-        RENDERNET_FRAME_PREFIX: prefix,
-        RENDERNET_PRIMARY_FORMAT: primary,
-        RENDERNET_EXTRA_FORMATS: extras.map(id => `${id}:${extensionOf(id)}`).join(','),
-        RENDERNET_EXR_CODEC: output.exrCodec ?? '',
-        RENDERNET_EXR_DEPTH: output.exrDepth ?? '',
-        RENDERNET_JPEG_QUALITY: output.jpegQuality == null ? '' : String(output.jpegQuality),
-        RENDERNET_TILE_INDEX: output.tile ? String(output.tile.index) : '',
-        RENDERNET_TILE_COUNT: output.tile ? String(output.tile.of) : ''
-      };
-
-      const blender = launch(BLENDER_PATH, args, { stdio: ['ignore', 'pipe', 'pipe'], env });
-      this.currentProcess = blender;
-
-      let stdout = '';
-      let stderr = '';
-      let pending = '';
-
-      // Both pipes have to be drained. An unread one fills its buffer and
-      // blocks Blender mid-write, and nothing here would ever time out.
-      blender.stdout.on('data', (data) => {
-        stdout = (stdout + data).slice(-OUTPUT_TAIL);
-
-        // Read a line at a time: a chunk can end mid-marker, and half a frame
-        // number is worse than none.
-        pending += data;
-
-        const lines = pending.split('\n');
-        pending = lines.pop();
-
-        for (const line of lines) {
-          const said = line.indexOf(FRAME_DONE);
-
-          if (said > -1) output.onFrame?.(Number(line.slice(said + FRAME_DONE.length)));
-        }
-      });
-
-      blender.stderr.on('data', (data) => {
-        stderr = (stderr + data).slice(-OUTPUT_TAIL);
-      });
-
-      blender.on('close', (code, signal) => {
-        this.currentProcess = null;
-        clearTimeout(this.killTimer);
-
-        if (signal) {
-          reject(new Error(`Blender terminated by signal ${signal}`));
-          return;
-        }
-
-        if (code !== 0) {
-          // Blender reports most failures on stdout, not stderr.
-          const detail = (stderr.trim() || stdout.trim()).slice(-500);
-          reject(new Error(`Blender exited with code ${code}: ${detail}`));
-          return;
-        }
-
-        resolve();
-      });
-
-      blender.on('error', (err) => {
-        this.currentProcess = null;
-        clearTimeout(this.killTimer);
-        reject(new Error(`Failed to start Blender: ${err.message}`));
-      });
-    });
+    return session.renderSpan(frames, output.onFrame);
   }
 
   // On this machine the file is already on a disk the server can read, so it is

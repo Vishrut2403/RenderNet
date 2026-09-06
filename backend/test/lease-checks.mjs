@@ -24,8 +24,9 @@ export async function checkLeases(db, results) {
     const second = one(JOB, 'worker-b');
     // The whole point: worker B must not be handed the frame worker A is
     // already rendering, or both would render and upload it.
-    results.check('a second worker is given the next frame, not the same one',
-      second?.frames[0] === 2 && second?.leaseId !== first?.leaseId, JSON.stringify(second));
+    results.check('a second worker is given another frame, not the same one',
+      second?.frames[0] !== first?.frames[0] && second?.leaseId !== first?.leaseId,
+      JSON.stringify(second));
 
     one(JOB, 'worker-c');
     results.check('once every frame is claimed there is nothing left to give',
@@ -40,19 +41,26 @@ export async function checkLeases(db, results) {
     const SPAN = 900006;
     db.createFrames(SPAN, 1, 10);
 
+    // Not 1,2,3,4: frames are claimed in bit-reversed order, so four frames of
+    // ten reach from one end of the range to the other rather than covering its
+    // first two seconds. The first frame is still the first one claimed, which
+    // is what measures the span size and what a test frame renders.
     const span = db.leaseFrames(SPAN, 'worker-span', TTL, 4);
     results.check('a claim for several frames returns them under one lease',
-      span?.frames.join(',') === '1,2,3,4', JSON.stringify(span));
+      span?.frames.join(',') === '1,3,5,9', JSON.stringify(span));
+    results.check('and they reach across the range rather than sitting at its start',
+      span.frames[0] === 1 && span.frames[span.frames.length - 1] >= 8,
+      JSON.stringify(span?.frames));
     results.check('every frame in the span carries that one lease id',
       db.getFrames(SPAN).filter(frame => frame.leaseId === span.leaseId).length === 4);
 
     const after = db.leaseFrames(SPAN, 'worker-after', TTL, 4);
-    results.check('the next worker gets the frames beyond the span',
-      after?.frames.join(',') === '5,6,7,8', JSON.stringify(after));
+    results.check('the next worker gets the frames the first one left',
+      after?.frames.join(',') === '2,6,7,10', JSON.stringify(after));
 
     const rest = db.leaseFrames(SPAN, 'worker-rest', TTL, 4);
     results.check('a span asking for more than is left gets what there is',
-      rest?.frames.join(',') === '9,10', JSON.stringify(rest));
+      rest?.frames.join(',') === '4,8', JSON.stringify(rest));
 
     const spanRenewed = db.renewLease(span.leaseId, TTL * 2);
     results.check('renewing a span extends every frame in it',
@@ -64,7 +72,7 @@ export async function checkLeases(db, results) {
     results.check('releasing a span frees all of its frames at once',
       db.getFrames(SPAN).filter(frame => frame.leaseId === span.leaseId).length === 0);
     results.check('and they go back out in one piece',
-      db.leaseFrames(SPAN, 'worker-again', TTL, 4)?.frames.join(',') === '1,2,3,4');
+      db.leaseFrames(SPAN, 'worker-again', TTL, 4)?.frames.join(',') === '1,3,5,9');
 
     console.log('\n  What a frame of a span is timed at');
 

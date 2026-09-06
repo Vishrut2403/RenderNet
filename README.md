@@ -70,6 +70,32 @@ Blender writes them rather than when the launch ends, so a span cut short keeps
 everything it had already rendered, and only the frame Blender actually stopped
 on is charged a failed attempt.
 
+**And that launch is not paid once a claim either.** Blender is kept running
+between claims and fed the next span over its own standard input, so a worker
+that keeps claiming from one job parses the scene and builds its acceleration
+structure once rather than once a span. Six frames of the fixture as three
+claims take 11.64s a launch at a time against 9.20s through one Blender, startup
+included. It is reused only when the command line and environment would have
+been identical, so everything that used to be decided at launch - the scene, the
+engine, the output pattern, the region of a tile - still is; anything else
+starts a new one. A held Blender holds the scene in memory with it, so it is let
+go after `BLENDER_IDLE_MS` with nothing to render, and setting that to 0 closes
+it after every span.
+
+**Frames are claimed spread out, not in order.** A range rendered from its start
+means the artist watches the first seconds of a shot appear and learns nothing
+about the rest until it is nearly done. Frames are claimed in bit-reversed order
+instead - the first frame, then the middle one, then the quarters - so a job an
+eighth of the way through is an even sample of the whole range, and a camera
+that goes wrong at frame 400 is seen while there is still something to be done
+about it. The first frame is still claimed first, which is what measures every
+span after it and what a test frame renders. It costs a little: on this
+repository's fixture, twelve frames scattered across a range take about 3% longer
+than twelve consecutive ones, because each frame is a bigger step for Blender to
+re-evaluate - a share that shrinks as frames get heavier, and `FRAME_ORDER=sequential`
+gives the old order back. Each claim's own frames are still handed to Blender in
+ascending order.
+
 **A scene is stored by what is in it.** An upload is kept under the SHA-256 of
 its bytes, at `uploads/<hash>/<the name it was given>`, so submitting the same
 file again — a second frame range of one shot, a re-run after a failure, two
@@ -324,6 +350,8 @@ tree, so it is found however the server is started.
 | `WORKER_SCRATCH_DIR` | a temp directory | Where a remote worker keeps scenes and frames |
 | `FRAME_SPAN_MS` | `60000` | How much rendering one claim may cover, so the cost of starting Blender is spread over several frames |
 | `MAX_FRAME_SPAN` | `16` | Most frames one claim may cover, whatever the time budget allows |
+| `BLENDER_IDLE_MS` | `60000` | How long a Blender with nothing to render is kept open for the next claim. `0` closes it after every span, for a machine short of memory |
+| `FRAME_ORDER` | `spread` | Order a job's frames are claimed in. `spread` samples the whole range early; `sequential` renders it from the start |
 | `LEASE_TTL_MS` | `30000` | How long a worker's claim on a frame lasts before another may take it. A frame whose machine has gone is stranded until it runs out. |
 | `PREFLIGHT_TIMEOUT_MS` | `120000` | How long the pre-render scene check may take before the job is queued anyway |
 | `FFMPEG_PATH` | auto-detected | ffmpeg executable, for making a video of the frames. Without it that button says so |
@@ -335,8 +363,8 @@ tree, so it is found however the server is started.
 
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
-cd frontend && npm test        # 36 checks, Vitest and Testing Library
-cd backend  && npm test        # 534 checks
+cd frontend && npm test        # 55 checks, Vitest and Testing Library
+cd backend  && npm test        # 697 checks
 npm run lint                   # from the root, covers both packages
 ```
 
@@ -349,8 +377,9 @@ throws it all away.
 Set `VITE_PROXY_TARGET=http://host:5500` to point the dev server at a backend
 elsewhere. Tests run in temporary directories with their own databases and never
 touch real uploads, renders or accounts. A stand-in for Blender covers everything
-that only needs frames on disk, so without a real one installed just 13 of the
-534 skip — what is left are the checks on what Blender itself writes. The
+that only needs frames on disk, so without a real one installed a handful of
+checks skip themselves and the rest runs — what skips is what only Blender
+itself can answer, which is why CI installs one. The
 frontend's own tests cover what the browser does with the API rather than how it
 looks: chunked upload and its resume, the paged job list, and which actions a
 job card offers in which state.
@@ -361,6 +390,13 @@ it matters most: with no signals, cancelling a render means killing a process
 tree with `taskkill` rather than escalating SIGTERM to SIGKILL. That path and the
 quoting that carries a Blender path through `cmd.exe` are also checked directly
 from any OS, so a mistake in either shows up before CI does.
+
+A further job installs a pinned Blender and runs the suite again with nothing
+skipped, on every push and every pull request. That is where the checks on what
+Blender itself writes actually run — the formats, what opening a scene reports,
+a Blender kept open across several claims — rather than only on a machine that
+happens to have one. The download is cached against its version, so it is paid
+once per Blender rather than once per run.
 
 ---
 

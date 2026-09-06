@@ -80,9 +80,11 @@ db.exec(`
 function addColumnIfMissing(table, column, definition) {
   const existing = db.prepare(`PRAGMA table_info(${table})`).all();
 
-  if (!existing.some(info => info.name === column)) {
-    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
-  }
+  if (existing.some(info => info.name === column)) return false;
+
+  db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+
+  return true;
 }
 
 // Frames already done when the job was last resumed, so a restart that made
@@ -145,6 +147,13 @@ addColumnIfMissing('frames', 'leaseExpiresAt', 'TEXT');
 // rendered a frame is what says how fast that machine is.
 addColumnIfMissing('frames', 'renderedBy', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS idx_frames_lease ON frames(leaseId)');
+
+// The order frames are claimed in, which is not the order they are numbered in.
+// Rows from before this take their frame number, which is the order they were
+// already being rendered in.
+if (addColumnIfMissing('frames', 'ordinal', 'INTEGER')) {
+  db.exec('UPDATE frames SET ordinal = frame');
+}
 
 // Only the measured frames, which is what the timings read and a fraction of
 // the table while a job is still running.
@@ -272,19 +281,42 @@ export function deleteJob(id) {
 }
 
 const insertFrame = db.prepare(
-  `INSERT OR IGNORE INTO frames (jobId, frame, status, filename, error, attempts, updatedAt)
-   VALUES (@jobId, @frame, @status, @filename, @error, @attempts, @updatedAt)`
+  `INSERT OR IGNORE INTO frames (jobId, frame, status, filename, error, attempts, ordinal, updatedAt)
+   VALUES (@jobId, @frame, @status, @filename, @error, @attempts, @ordinal, @updatedAt)`
 );
+
+// Claimed in bit-reversed order - the first frame, then the middle one, then the
+// quarters - so a job half done is an even sample of the whole range rather than
+// its opening seconds. A camera that goes wrong at frame 400 is then seen while
+// there is still something to be done about it. The first frame stays first,
+// which is what measures the span size and what a test frame renders.
+function spreadOrder(count) {
+  if (process.env.FRAME_ORDER === 'sequential' || count < 2) return index => index;
+
+  const bits = 32 - Math.clz32(count - 1);
+
+  return (index) => {
+    let key = 0;
+
+    for (let bit = 0; bit < bits; bit++) key = (key << 1) | ((index >> bit) & 1);
+
+    return key;
+  };
+}
 
 // A step renders every nth frame of the range, which is how a preview pass is
 // asked for. The rest of the farm never sees the step: it works from the rows
 // that come out of here.
 export const createFrames = db.transaction((jobId, frameStart, frameEnd, step = 1) => {
   const updatedAt = new Date().toISOString();
+  const stride = Math.max(1, step);
+  const keyOf = spreadOrder(Math.floor((frameEnd - frameStart) / stride) + 1);
+  let index = 0;
 
-  for (let frame = frameStart; frame <= frameEnd; frame += Math.max(1, step)) {
+  for (let frame = frameStart; frame <= frameEnd; frame += stride) {
     insertFrame.run({
-      jobId, frame, status: 'pending', filename: null, error: null, attempts: 0, updatedAt
+      jobId, frame, status: 'pending', filename: null, error: null, attempts: 0,
+      ordinal: keyOf(index++), updatedAt
     });
   }
 });
@@ -425,7 +457,7 @@ const claimable = db.prepare(
   `SELECT frame FROM frames
     WHERE jobId = ? AND status = 'pending'
       AND (leaseExpiresAt IS NULL OR leaseExpiresAt <= ?)
-    ORDER BY frame LIMIT ?`
+    ORDER BY ordinal, frame LIMIT ?`
 );
 
 const claim = db.prepare(
@@ -462,6 +494,11 @@ export const leaseFrames = db.transaction((jobId, workerId, ttlMs, wanted) => {
 
     if (taken) frames.push(row.frame);
   }
+
+  // Which frames a claim covers is decided by the order above; which order
+  // Blender is then given them in is not, and ascending is the cheaper one to
+  // render.
+  frames.sort((a, b) => a - b);
 
   return frames.length > 0 ? { leaseId, leasedBy: workerId, expiresAt, jobId, frames } : null;
 });

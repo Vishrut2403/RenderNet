@@ -824,12 +824,19 @@ export default async function run() {
     const listJobs = async () =>
       (await (await fetch(`${waitServer.base}/jobs`, { headers: auth(waitToken) })).json()).jobs;
 
+    // Read as the condition is tested rather than after it: a short job can
+    // finish in the gap between the two, and then there is nothing rendering
+    // left to ask about.
+    let all = [];
+
     await waitForCondition(
-      async () => (await listJobs()).some(job => job.status === 'rendering'),
+      async () => {
+        all = await listJobs();
+        return all.some(job => job.status === 'rendering');
+      },
       { label: 'the urgent job to take over' }
     );
 
-    const all = await listJobs();
     const inFlight = all.find(job => job.status === 'rendering');
 
     results.check('the job being rendered is promised nothing',
