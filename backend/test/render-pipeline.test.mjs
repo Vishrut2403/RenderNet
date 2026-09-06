@@ -1589,9 +1589,14 @@ export default async function run() {
     const eatingToken = await adminSession(eatingServer.base);
     // Twenty megabytes a frame at two seconds a frame: enough bytes to cross
     // the reserve, and slow enough that free space is read again on the way.
+    // The range is far longer than the half dozen frames that should cross it,
+    // because the reserve is pinned to what the disk had before the server
+    // started and this machine is free to hand space back in the meantime. A
+    // job that could finish inside that drift would pass by completing, which
+    // is the one outcome this must not read as success.
     const eating = await submitJob(
       eatingServer.base, eatingToken, createFakeScene(eatingBox, 'fat-slow.blend'),
-      { frameStart: 1, frameEnd: 10, skipAssetCheck: true }
+      { frameStart: 1, frameEnd: 30, skipAssetCheck: true }
     );
 
     const putBack = await waitForCondition(
