@@ -364,7 +364,7 @@ tree, so it is found however the server is started.
 ```bash
 cd frontend && npm run dev     # Vite on :8080, proxies /api to the backend
 cd frontend && npm test        # 55 checks, Vitest and Testing Library
-cd backend  && npm test        # 697 checks
+cd backend  && npm test        # 705 checks
 npm run lint                   # from the root, covers both packages
 ```
 
@@ -383,6 +383,14 @@ itself can answer, which is why CI installs one. The
 frontend's own tests cover what the browser does with the API rather than how it
 looks: chunked upload and its resume, the paged job list, and which actions a
 job card offers in which state.
+
+One suite is about installing a release rather than running one. Every other
+suite starts from an empty database, so nothing else ever runs a migration
+against rows somebody already had — which is the state every real workstation
+is in. It renders a job partway, takes the database back to the previous
+release's shape, starts the new one on it, and checks that a job already queued
+is carried over and finished in the order it was always going to be rendered in
+rather than resequenced underneath whoever is waiting on it.
 
 CI runs the whole suite on Linux and Windows against Node 22 and 24 — the only
 place it meets the platform the workstation actually runs. Windows differs where

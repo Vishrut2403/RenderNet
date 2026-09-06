@@ -15,6 +15,7 @@ import scheduling from './scheduling.test.mjs';
 import sceneReading from './scene-reading.test.mjs';
 import spans from './spans.test.mjs';
 import frameOrder from './frame-order.test.mjs';
+import upgrading from './upgrading.test.mjs';
 import sceneStore from './scene-store.test.mjs';
 
 const suites = [
@@ -35,6 +36,7 @@ const suites = [
   ['Reading an uploaded scene', sceneReading],
   ['Frame spans', spans],
   ['The order frames are claimed in', frameOrder],
+  ['Upgrading over an existing database', upgrading],
   ['Storing scenes by content', sceneStore]
 ];
 
