@@ -60,15 +60,19 @@ report.
 seconds of parsing and scene building whether it then renders one frame or ten:
 on this repository's own fixture, five separate launches take 8.5s against 2.0s
 for one launch of five frames. So a claim covers as many frames as fit in
-`FRAME_SPAN_MS`, measured against the job's own median frame time *and the rate
-of the machine asking*. Its first frame goes out alone, because rendering it is
-what measures the rest; after that a slow scene is still claimed a frame at a
-time and a fast one in handfuls, a laptop is given less to hold than the
-workstation beside it, and a span is never more than one machine's share of
-what is left. Frames go back as
-Blender writes them rather than when the launch ends, so a span cut short keeps
-everything it had already rendered, and only the frame Blender actually stopped
-on is charged a failed attempt.
+`FRAME_SPAN_MS`, measured against what a frame of *this job* has cost *this
+machine*. Every machine's first claim on a job is a single frame, because
+rendering one is the only thing that says what the scene costs it; after that a
+slow scene is still claimed a frame at a time and a fast one in handfuls, a
+laptop is given less to hold than the workstation beside it, and a span is never
+more than one machine's share of what is left. Comparing a machine's recent rate
+against the farm's looked like it would skip that first frame, and does not: the
+two medians are taken over different sets of frames, so whichever machine
+rendered most of them lately pulls both towards itself and every machine reads
+as average. CI caught that as a laptop being handed eight frames where three was
+the honest number. Frames go back as Blender writes them rather than when the
+launch ends, so a span cut short keeps everything it had already rendered, and
+only the frame Blender actually stopped on is charged a failed attempt.
 
 **And that launch is not paid once a claim either.** Blender is kept running
 between claims and fed the next span over its own standard input, so a worker

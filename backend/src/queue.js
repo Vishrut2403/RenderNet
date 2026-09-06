@@ -19,7 +19,7 @@ import {
   workerCanRender, engineIsOffered, machines, workerCount, touchWorker
 } from './worker-registry.js';
 import { checkScene, missingAssetsMessage, unbakedMessage } from './preflight.js';
-import { queueWaits as waitsFor, forgetTiming, frameTimings, paceOf } from './estimates.js';
+import { queueWaits as waitsFor, forgetTiming, machineFrameMs } from './estimates.js';
 import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
 import {
@@ -642,15 +642,14 @@ function spanFor(job, workerId) {
   // Every tile crops the scene differently, so each is its own Blender anyway.
   if (isTiled(job)) return 1;
 
-  // This job's own frames only: scenes differ by orders of magnitude.
-  const measured = frameTimings([job.id]).get(job.id)?.medianMs;
+  // What this scene costs this machine. A slow one given the same span as a
+  // fast one sits on work the fast one could have finished.
+  const perFrame = machineFrameMs(job.id, workerId);
 
-  // Nothing measured yet. One frame, which is what measures it.
-  if (!measured) return 1;
-
-  // What the scene costs, at the rate this machine works at: a slow one given
-  // the same span as a fast one sits on work the fast one could have finished.
-  const perFrame = measured * paceOf(workerId);
+  // Nothing measured for this machine on this job. One frame, which is what
+  // measures it - the rule the job's own first frame already follows, applied
+  // to each machine that joins.
+  if (!perFrame) return 1;
 
   const left = Math.max(1, (job.totalFrames ?? 1) - (job.completedFrames ?? 0));
   // Leaves the other machines something to claim.

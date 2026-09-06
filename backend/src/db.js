@@ -364,13 +364,15 @@ export function recentFrameDurations(limit = 200) {
   ).all(limit).map(row => row.durationMs);
 }
 
-// What one machine has been taking lately, across whatever it has rendered.
-export function recentDurationsBy(workerId, limit = 50) {
+// What one machine takes over a frame of one job. A machine's rate on other
+// scenes says nothing about this one, and the job's own median is whatever mix
+// of machines has rendered it so far.
+export function jobDurationsBy(jobId, workerId, limit = 50) {
   return db.prepare(
     `SELECT durationMs FROM frames
-      WHERE renderedBy = ? AND durationMs IS NOT NULL
+      WHERE jobId = ? AND renderedBy = ? AND durationMs IS NOT NULL
       ORDER BY updatedAt DESC LIMIT ?`
-  ).all(workerId, limit).map(row => row.durationMs);
+  ).all(jobId, workerId, limit).map(row => row.durationMs);
 }
 
 // One job's measured frames, which is all that job's timings depend on. The

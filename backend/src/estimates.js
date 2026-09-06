@@ -1,5 +1,5 @@
 import {
-  recentFrameDurations, frameDurationsFor, recentDurationsBy, liveLeases
+  recentFrameDurations, frameDurationsFor, jobDurationsBy, liveLeases
 } from './db.js';
 
 const CACHE_TTL_MS = 10 * 1000;
@@ -34,17 +34,16 @@ function median(values) {
   return values.length === 0 ? null : [...values].sort((a, b) => a - b)[values.length >> 1];
 }
 
-// How this machine compares with the farm: above one is slower. A ratio rather
-// than a rate of its own, because a frame's weight comes from the scene. Read
-// each time - once a claim - so a machine's first spans are not sized as if it
-// were an average one.
-export function paceOf(workerId) {
-  if (!workerId) return 1;
-
-  const mine = median(recentDurationsBy(workerId));
-  const farm = typicalFrameMs();
-
-  return mine && farm ? mine / farm : 1;
+// What a frame of this job costs this machine, from its own frames of it and
+// nothing else. Comparing a machine's recent rate with the farm's looked like
+// it would answer this without waiting for a measurement, and does not: the two
+// medians are taken over different sets of frames - one job's, and the farm's
+// last few hundred - so whichever machine rendered most of them recently pulls
+// both towards itself and the comparison says every machine is average. Null
+// until this machine has rendered a frame of this job, which is what measures
+// it.
+export function machineFrameMs(jobId, workerId) {
+  return workerId ? median(jobDurationsBy(jobId, workerId)) : null;
 }
 
 // Only the jobs asked about: working out every job in the farm to render a

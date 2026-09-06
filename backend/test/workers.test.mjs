@@ -312,21 +312,8 @@ async function unevenMachines(results) {
     const token = await adminSession(server.base);
     const scene = createFakeScene(box, 'uneven.blend');
 
-    // A short job first, so both machines have a rate before the one being
-    // measured starts. A machine nobody has timed yet is treated as average,
-    // which is the only honest thing to do and is not what this is about.
-    const warmUp = await submitJob(server.base, token, scene,
-      { frameStart: 1, frameEnd: 40, skipAssetCheck: true });
-
-    // The job finishing is not enough: the fast machine can render all of it
-    // while the slow one is still on its first frame, and the slow one would
-    // then reach the job below still unmeasured.
-    await waitForCondition(
-      () => rendersFromLog(server.getLog()).some(render => render.worker === '1'),
-      { label: 'the slow machine to render a frame, so it has a rate' });
-
-    await waitForJob(server.base, token, warmUp.body.jobId, 180000);
-
+    // No warm-up job: what a machine takes over a frame is measured on the job
+    // it is rendering, so a rate gathered on another one would not carry over.
     // Long enough that a claim is never bounded by what is left of the job,
     // which would taper the spans on its own and prove nothing.
     const job = await submitJob(server.base, token, scene,
@@ -340,10 +327,13 @@ async function unevenMachines(results) {
     results.check('the job finished', finished.status === 'completed', finished.status);
     results.check('both machines took part', slow.length > 0 && fast.length > 0,
       `worker-0 ${fast.length} claims, worker-1 ${slow.length}`);
-    // Fifteen times slower a frame, against a three-second claim: a handful of
-    // frames at most, where the fast one reaches the cap.
-    results.check('the slow one is never given more than a few frames at a time',
-      Math.max(...slow) <= 6, `up to ${Math.max(...slow)}: ${slow.join(',')}`);
+    // Fifteen times slower a frame, against a three-second claim: three frames,
+    // after the single frame that measures it. Every machine gets that one
+    // frame first, because nothing else says what this scene costs it.
+    results.check('the slow one takes one frame to measure itself',
+      slow[0] === 1, slow.join(','));
+    results.check('and is never given more than a few frames at a time after it',
+      Math.max(...slow) <= 4, `up to ${Math.max(...slow)}: ${slow.join(',')}`);
     results.check('while the fast one is given as much as a claim may hold',
       Math.max(...fast) >= 10, `up to ${Math.max(...fast)}: ${fast.join(',')}`);
   } finally {
