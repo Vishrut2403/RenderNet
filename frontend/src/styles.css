@@ -528,6 +528,10 @@ button, input, select { font: inherit; color: inherit; }
 
 .missing-assets { margin: 8px 0 0; padding: 0 0 0 18px; color: var(--text-3); font-size: 13px; }
 
+.missing-assets li { display: flex; align-items: baseline; gap: 10px; }
+
+.missing-assets label { cursor: pointer; }
+
 .active-job + .active-job { margin-top: 22px; padding-top: 6px; border-top: 1px solid var(--line-soft); }
 
 .holders { margin: 14px 0 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 6px 20px; }

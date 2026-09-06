@@ -122,7 +122,15 @@ queue keeping every frame it delivered.
 
 **A scene is checked for what would render it wrongly, not just for what would
 stop it.** Three things come back from opening it. Files it reaches for and did
-not bring fail the job before a frame is spent, which is the ordinary case.
+not bring stop the job before a frame is spent — and then the farm asks for
+them rather than refusing the whole thing. The scene is already on the disk and
+is one texture short; making somebody pack a two gigabyte file and send it again
+to supply five megabytes is the cost being avoided. Each file is handed over on
+its own, kept with the job that supplied it rather than pooled, and the `.blend`
+is never rewritten: the render points that datablock at the copy it was given,
+so the scene keeps its hash and stays shared with every other job that renders
+it. Blender renders a texture it cannot find as magenta and reports success, so
+the check is the only thing standing between that and a finished job.
 Files that are *here but not packed into it* are subtler: a machine somewhere
 else is sent the `.blend` and nothing beside it, so that job is kept on the
 machine that can see them rather than rendered untextured elsewhere and called
@@ -157,6 +165,13 @@ who has asked for a minute, however many jobs each of them submitted, and the
 cost is taken from frames actually measured on this farm rather than guessed at.
 Nobody is billed for last week: once nothing is queued or rendering the clocks
 are cleared. An urgent job still goes in front of all of it.
+
+The wait each queued job is promised is costed the same way, job by job, rather
+than at the farm's average frame: what is ahead of you is those jobs' frames,
+and scenes differ by orders of magnitude. Costing it at the farm's median told
+somebody they would start in 165ms when the five frames ahead of them took two
+seconds each. The farm's rate is kept for a job that has never rendered and so
+has nothing of its own to go on.
 
 **An admin can override the answer.** Holding a job stops it and keeps it
 stopped — it goes back to the queue with the frames it has already rendered and

@@ -51,6 +51,20 @@ export function JobCard({ job, onChanged, onError }) {
         ]
       : null;
 
+  async function hand(stored, file) {
+    if (!file) return;
+
+    setBusy(true);
+    try {
+      await api.supplyAsset(job.id, stored, file);
+      onChanged?.();
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function remove() {
     if (!confirm(`Delete job ${job.id}? Its frames are removed from the workstation.`)) return;
 
@@ -266,7 +280,24 @@ export function JobCard({ job, onChanged, onError }) {
 
       {job.error && <p className="job-error">{job.error}</p>}
 
-      {job.missingAssets?.length > 0 && (
+      {job.awaitingAssets?.length > 0 ? (
+        <ul className="missing-assets">
+          {job.awaitingAssets.map(entry => (
+            <li key={entry.stored}>
+              <span>{entry.name}</span>
+              <label className="linkish">
+                Choose
+                <input
+                  type="file"
+                  hidden
+                  disabled={busy}
+                  onChange={event => hand(entry.stored, event.target.files?.[0])}
+                />
+              </label>
+            </li>
+          ))}
+        </ul>
+      ) : job.missingAssets?.length > 0 && (
         <ul className="missing-assets">
           {job.missingAssets.map(file => <li key={file}>{file}</li>)}
         </ul>

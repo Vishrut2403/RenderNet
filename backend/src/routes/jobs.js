@@ -1,14 +1,29 @@
 import express from 'express';
+import fs from 'fs';
+import path from 'path';
+import multer from 'multer';
 import {
   cancelJob, getQueueStatus, getQueuePosition, deleteJobAndFiles, setJobPriority, rerunJob,
-  approveJob, holdJob, releaseJob, pinJob
+  approveJob, holdJob, releaseJob, pinJob, supplyAsset
 } from '../queue.js';
+import { assetsDir, assetPath } from '../supplied-assets.js';
+import { PARTIALS_DIR, MAX_UPLOAD_BYTES } from '../paths.js';
 import { getJob, listJobs, jobsSummary, DEFAULT_PAGE, MAX_PAGE } from '../job-views.js';
 import { usageFor, usageByOwner } from '../storage.js';
 import { startVideo } from '../video.js';
 import { requireAdmin } from '../auth.js';
 
 const router = express.Router();
+
+// A texture the scene asked for. Landed among the part-uploads first, because
+// where it belongs depends on which dependency it answers for.
+const supplied = multer({
+  storage: multer.diskStorage({
+    destination: PARTIALS_DIR,
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${path.basename(file.originalname)}`)
+  }),
+  limits: { fileSize: MAX_UPLOAD_BYTES }
+});
 
 const STATUSES = ['pending', 'rendering', 'completed', 'failed', 'cancelled'];
 
@@ -143,6 +158,52 @@ router.post('/:id/approve', (req, res) => {
   }
 
   res.json(result);
+});
+
+// One file for one thing the scene reaches for. The .blend already on disk is
+// left alone: the render points that datablock at this copy instead, which is
+// what saves re-uploading a two gigabyte scene to supply a texture.
+router.post('/:id/assets', supplied.single('asset'), (req, res) => {
+  const jobId = Number(req.params.id);
+  const job = getJob(jobId);
+  const arrived = req.file?.path;
+
+  const refuse = (status, error) => {
+    if (arrived) fs.rmSync(arrived, { force: true });
+    return res.status(status).json({ error });
+  };
+
+  if (!job) return refuse(404, 'Job not found');
+  if (!canAccess(job, req.user)) return refuse(403, 'Access denied');
+  if (!arrived) return refuse(400, 'No file was sent');
+
+  const storedPath = req.body?.for;
+
+  if (!storedPath || typeof storedPath !== 'string') {
+    return refuse(400, 'Say which file this answers for');
+  }
+
+  if (!job.awaitingAssets?.some(entry => entry.stored === storedPath)) {
+    return refuse(400, 'The job is not waiting for that file');
+  }
+
+  const target = assetPath(job, storedPath, req.file.originalname);
+
+  try {
+    fs.mkdirSync(assetsDir(job), { recursive: true });
+    fs.renameSync(arrived, target);
+  } catch (error) {
+    return refuse(500, `Could not store the file: ${error.message}`);
+  }
+
+  const result = supplyAsset(jobId, storedPath, {
+    filename: path.basename(target),
+    bytes: req.file.size
+  });
+
+  if (result.error) return res.status(400).json({ error: result.error });
+
+  res.json({ wanted: result.wanted });
 });
 
 router.post('/:id/rerun', (req, res) => {

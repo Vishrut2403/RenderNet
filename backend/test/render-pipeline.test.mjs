@@ -857,6 +857,58 @@ export default async function run() {
     removeSandbox(waitBox);
   }
 
+  // The wait somebody is promised has to be costed the same way the queue they
+  // are in was ordered, or the two disagree: the order says the heavy job ahead
+  // of them is expensive and the estimate says it is average.
+  const heavyBox = makeSandbox('heavy');
+  let heavyServer;
+
+  try {
+    console.log('\n  Waiting behind a job that is slower than the farm');
+
+    heavyServer = await startServer({
+      port: PORT + 14,
+      cwd: heavyBox,
+      env: { BLENDER_PATH: createFakeBlender(heavyBox) }
+    });
+
+    const heavyToken = await adminSession(heavyServer.base);
+
+    // Fills the farm's recent frames with quick ones, so its median frame is
+    // nothing like the frame of the job that renders next.
+    const quick = await submitJob(heavyServer.base, heavyToken,
+      createFakeScene(heavyBox, 'quick.blend'), { frameStart: 1, frameEnd: 12 });
+    await waitForJob(heavyServer.base, heavyToken, quick.body.jobId, 60000);
+
+    // Two seconds a frame against a farm whose recent frames took milliseconds.
+    const heavy = await submitJob(heavyServer.base, heavyToken,
+      createFakeScene(heavyBox, 'slow-shot.blend'), { frameStart: 1, frameEnd: 6 });
+
+    await waitForCondition(
+      async () => (await getJob(heavyServer.base, heavyToken, heavy.body.jobId))
+        .completedFrames >= 1,
+      { label: 'the heavy job to measure one of its own frames' });
+
+    const behind = await submitJob(heavyServer.base, heavyToken,
+      createFakeScene(heavyBox, 'behind.blend'), { frameStart: 1, frameEnd: 2 });
+    const queued = await getJob(heavyServer.base, heavyToken, behind.body.jobId);
+    const inFront = await getJob(heavyServer.base, heavyToken, heavy.body.jobId);
+    const left = inFront.totalFrames - inFront.completedFrames;
+
+    results.check('the job in front is the slow one and is still going',
+      inFront.status === 'rendering' && left > 0, `${inFront.status}, ${left} left`);
+    // Costed at the farm's median it would be a few hundred milliseconds, which
+    // is the answer this is here to rule out.
+    results.check('the wait is costed at what the job in front actually takes',
+      queued.startsIn > left * 1000,
+      `${queued.startsIn}ms promised for ${left} frames at ~2s each`);
+    results.check('and is not so far out that it has stopped meaning anything',
+      queued.startsIn < left * 4000, `${queued.startsIn}ms for ${left} frames`);
+  } finally {
+    await stopServer(heavyServer);
+    removeSandbox(heavyBox);
+  }
+
   // Blender has no flag for either, so they are only visible in the command
   // line the worker builds.
   const settingsBox = makeSandbox('settings');
@@ -1194,36 +1246,70 @@ export default async function run() {
       assetServer.base, assetToken, createFakeScene(assetBox, 'unpacked.blend'),
       { frameStart: 1, frameEnd: 40 }
     );
-    const unpackedJob = await waitForJob(assetServer.base, assetToken, unpacked.body.jobId, 60000);
+    const wantingId = unpacked.body.jobId;
 
-    results.check('a scene missing its textures fails', unpackedJob.status === 'failed',
-      unpackedJob.status);
+    // Not a failure. The scene is already on the disk and is two textures
+    // short, and re-uploading it to supply them is the whole cost being
+    // avoided, so the job waits for the files instead.
+    await waitForCondition(
+      async () => (await getJob(assetServer.base, assetToken, wantingId)).assetCheck === 'waiting',
+      { label: 'the job to ask for what it is missing' });
+
+    const wanting = await getJob(assetServer.base, assetToken, wantingId);
+
+    results.check('a scene missing its textures is not failed',
+      wanting.status === 'pending', wanting.status);
     // The point of checking first: no worker time is spent on frames that were
     // going to come out wrong.
-    results.check('without rendering a frame of it', unpackedJob.completedFrames === 0,
-      `${unpackedJob.completedFrames} frames rendered`);
-    results.check('and says how to put it right',
-      unpackedJob.error?.includes('Pack Resources'), unpackedJob.error);
+    results.check('without rendering a frame of it', wanting.completedFrames === 0,
+      `${wanting.completedFrames} frames rendered`);
     results.check('naming the files, without the artist\'s own folders',
-      unpackedJob.missingAssets?.join(',') === 'wood.png,metal.png',
-      JSON.stringify(unpackedJob.missingAssets));
+      wanting.missingAssets?.join(',') === 'wood.png,metal.png',
+      JSON.stringify(wanting.missingAssets));
+    results.check('and the path each one answers for, so it can be replaced',
+      wanting.awaitingAssets?.length === 2
+      && wanting.awaitingAssets.every(entry => typeof entry.stored === 'string' && entry.stored),
+      JSON.stringify(wanting.awaitingAssets));
 
-    // The button next to the failure would otherwise undo the check: the stored
-    // scene is the one that was looked at, so it can only fail the same way.
-    const rerun = await fetch(`${assetServer.base}/jobs/${unpacked.body.jobId}/rerun`, {
-      method: 'POST', headers: auth(assetToken)
-    });
-    const rerunBody = await rerun.json();
+    const supply = async (jobId, storedPath, name) => {
+      const form = new FormData();
+      form.set('for', storedPath);
+      form.set('asset', new File([Buffer.alloc(64, 7)], name, { type: 'image/png' }));
 
-    results.check('it cannot be rerun into rendering anyway', rerun.status === 400,
-      `${rerun.status} ${JSON.stringify(rerunBody)}`);
-    results.check('and the refusal says what to do about it',
-      rerunBody.error?.includes('Pack Resources'), rerunBody.error);
+      const response = await fetch(`${assetServer.base}/jobs/${jobId}/assets`, {
+        method: 'POST', headers: auth(assetToken), body: form
+      });
 
-    const stillFailed = await getJob(assetServer.base, assetToken, unpacked.body.jobId);
-    results.check('the job is left where it was',
-      stillFailed.status === 'failed' && stillFailed.completedFrames === 0,
-      `${stillFailed.status}: ${stillFailed.completedFrames} frames`);
+      return { status: response.status, body: await response.json().catch(() => ({})) };
+    };
+
+    const stray = await supply(wantingId, '/nowhere/unwanted.png', 'unwanted.png');
+
+    results.check('a file the scene never asked for is refused', stray.status === 400,
+      `${stray.status} ${JSON.stringify(stray.body)}`);
+
+    const [first, second] = wanting.awaitingAssets;
+    const one = await supply(wantingId, first.stored, first.name);
+
+    results.check('the first file is accepted', one.status === 200, JSON.stringify(one.body));
+    results.check('and the job still wants the other', one.body.wanted?.length === 1,
+      JSON.stringify(one.body.wanted));
+
+    const halfway = await getJob(assetServer.base, assetToken, wantingId);
+
+    results.check('so it is still not started', halfway.status === 'pending'
+      && halfway.assetCheck === 'waiting', `${halfway.status} / ${halfway.assetCheck}`);
+
+    const both = await supply(wantingId, second.stored, second.name);
+
+    results.check('the last one leaves nothing wanted', both.body.wanted?.length === 0,
+      JSON.stringify(both.body.wanted));
+
+    const supplied = await waitForJob(assetServer.base, assetToken, wantingId, 60000);
+
+    results.check('and the job renders without the scene being uploaded again',
+      supplied.status === 'completed' && supplied.completedFrames === 40,
+      `${supplied.status}, ${supplied.completedFrames} of 40`);
 
     const anyway = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'unpacked.blend'),

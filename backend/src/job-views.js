@@ -17,9 +17,24 @@ function parseMissing(stored) {
   if (!stored) return null;
 
   try {
-    return JSON.parse(stored).map(file => file.split(/[\\/]/).pop());
+    // Reports from before the farm asked for these files named them by path.
+    return JSON.parse(stored)
+      .map(file => (typeof file === 'string' ? file.split(/[\\/]/).pop() : file.name));
   } catch {
     return null;
+  }
+}
+
+// What the job is waiting to be given, with the path each one answers for. Only
+// a job the scene check stopped has any.
+function awaitingAssets(job) {
+  if (job.assetCheck !== 'waiting') return [];
+
+  try {
+    return JSON.parse(job.missingAssets || '[]')
+      .map(entry => ({ stored: entry.stored, name: entry.name }));
+  } catch {
+    return [];
   }
 }
 
@@ -45,6 +60,7 @@ function enrich(page, errorsByJob) {
   return page.map(job => ({
     ...job,
     missingAssets: parseMissing(job.missingAssets),
+    awaitingAssets: awaitingAssets(job),
     timing: timings.get(job.id) ?? null,
     frameErrors: errorsByJob.get(job.id) ?? [],
     startsIn: waits.get(job.id) ?? null
@@ -58,6 +74,7 @@ export function getJob(jobId) {
   return {
     ...job,
     missingAssets: parseMissing(job.missingAssets),
+    awaitingAssets: awaitingAssets(job),
     frameErrors: getFailedFrames(jobId).map(asFrameError),
     timing: frameTimings([jobId]).get(jobId) ?? null,
     startsIn: queueWaits().get(jobId) ?? null

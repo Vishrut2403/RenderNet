@@ -11,7 +11,7 @@ import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, blenderAvailable, blenderEngines,
   engineRenders, createFixtureBlend, exrHeader, EXR_COMPRESSION, EXR_HALF, EXR_FLOAT,
-  ffmpegAvailable, waitForCondition,
+  ffmpegAvailable, waitForCondition, meanColour, getJob,
   adminSession, signUp, SIGNUP_CODE, ADMIN_PASSWORD
 } from './helpers.mjs';
 
@@ -440,30 +440,76 @@ export default async function run() {
 
     // The asset check is a script run inside Blender against a real scene, so a
     // scene that genuinely reaches for a file that is not there is the only way
-    // to know it reports one.
+    // to know it reports one. The texture is linked to the shader and strongly
+    // red, so a frame rendered without it is Blender's magenta rather than a
+    // picture that merely looks slightly different.
+    const texture = path.join(sandbox, 'wood.png');
     const wanting = createFixtureBlend(sandbox, {
       name: 'wanting.blend',
       extra: [
+        "img = bpy.data.images.new('wood', 8, 8)",
+        'img.pixels = [c for _ in range(64) for c in (1.0, 0.0, 0.0, 1.0)]',
+        `img.filepath_raw = r'${texture}'`,
+        "img.file_format = 'PNG'",
+        'img.save()',
         "mat = bpy.data.materials.new('Textured')",
         'mat.use_nodes = True',
-        "img = bpy.data.images.new('missing_tex', 8, 8)",
-        "img.filepath = '/nowhere/rendernet/wood.png'",
-        "img.source = 'FILE'",
         "node = mat.node_tree.nodes.new('ShaderNodeTexImage')",
-        'node.image = img',
-        "bpy.data.objects['Cube'].data.materials.append(mat)"
+        `node.image = bpy.data.images.load(r'${texture}')`,
+        "links = mat.node_tree.links",
+        "links.new(node.outputs['Color'], mat.node_tree.nodes['Principled BSDF'].inputs['Base Color'])",
+        // Into the slot the faces actually use: appending would leave the cube
+        // on whatever material it already had.
+        "bpy.data.objects['Cube'].data.materials.clear()",
+        "bpy.data.objects['Cube'].data.materials.append(mat)",
+        // A black world, so what the frame averages to is the textured cube
+        // rather than the backdrop around it.
+        "bpy.context.scene.world.node_tree.nodes['Background']"
+        + '.inputs[0].default_value = (0.0, 0.0, 0.0, 1.0)'
       ].join('\n')
     });
 
-    const wantingJob = await waitForJob(base, adminToken, (await submitJob(base, adminToken, wanting, {
+    const wantingId = (await submitJob(base, adminToken, wanting, {
       frameStart: 1, frameEnd: 1
-    })).body.jobId);
+    })).body.jobId;
+
+    await waitForCondition(
+      async () => (await getJob(base, adminToken, wantingId)).assetCheck === 'waiting',
+      { label: 'the scene check to ask for the texture' });
+
+    const wantingJob = await getJob(base, adminToken, wantingId);
 
     results.check('a scene reaching for a file it did not bring is stopped before rendering',
-      wantingJob.status === 'failed' && wantingJob.completedFrames === 0,
-      `${wantingJob.status}: ${wantingJob.error}`);
+      wantingJob.status === 'pending' && wantingJob.completedFrames === 0,
+      `${wantingJob.status}: ${wantingJob.completedFrames} frames`);
     results.check('and the file it wanted is named',
       wantingJob.missingAssets?.includes('wood.png'), JSON.stringify(wantingJob.missingAssets));
+
+    // What the artist would do: hand over the one file rather than pack and
+    // upload the whole scene again.
+    const handOver = new FormData();
+    handOver.set('for', wantingJob.awaitingAssets[0].stored);
+    handOver.set('asset', new File([fs.readFileSync(texture)], 'wood.png', { type: 'image/png' }));
+
+    const given = await fetch(`${base}/jobs/${wantingId}/assets`, {
+      method: 'POST', headers: auth(adminToken), body: handOver
+    });
+
+    results.check('the file is accepted', given.status === 200, String(given.status));
+
+    const textured = await waitForJob(base, adminToken, wantingId);
+
+    results.check('and the scene renders without being uploaded again',
+      textured.status === 'completed' && textured.completedFrames === 1,
+      `${textured.status}: ${textured.error || ''}`);
+
+    // The proof that the datablock was really repointed: Blender renders a
+    // texture it cannot find as magenta, where this one is red.
+    const colour = meanColour(path.join(sandbox, textured.outputFolder, 'frame_0001.png'));
+
+    results.check('and it is the texture that was supplied, not the missing-file magenta',
+      colour !== null && colour.red > colour.blue * 2,
+      JSON.stringify(colour));
 
     // The ordinary fixture has nothing outside itself, so the same check has to
     // let it through - a check that stopped everything would be worse than none.

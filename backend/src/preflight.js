@@ -90,10 +90,13 @@ for block in referenced():
     if os.path.exists(resolved):
         unpacked.append(resolved)
     else:
-        missing.append(resolved)
+        # Both: the path as the file stores it is what names the datablock to
+        # repoint later, and the resolved one is what says where it looked.
+        missing.append({'stored': stored, 'resolved': resolved})
 
 print('${MARKER}' + json.dumps({
-    'missing': sorted(set(missing)),
+    'missing': sorted({item['stored']: item for item in missing}.values(),
+                      key=lambda item: item['resolved']),
     'unpacked': sorted(set(unpacked)),
     'unbaked': sorted(set(unbaked())),
     'active': bpy.context.scene.name,
@@ -130,10 +133,21 @@ function readBlend(blendPath) {
 // reaches for and did not bring, files only this machine can see, and
 // simulations nobody has baked. Anything that goes wrong with the check itself
 // lets the job through: a broken preflight must not be able to stop the farm.
+// Reports from before this named a missing file by its resolved path alone.
+function asDependency(entry) {
+  return typeof entry === 'string'
+    ? { stored: entry, resolved: entry, name: basename(entry) }
+    : { ...entry, name: basename(entry.stored ?? entry.resolved ?? '') };
+}
+
+function basename(file) {
+  return String(file).split(/[\\/]/).pop();
+}
+
 export function checkScene(blendPath) {
   return readBlend(blendPath).then(report => ({
     checked: report !== null,
-    missing: report?.missing ?? [],
+    missing: (report?.missing ?? []).map(asDependency),
     unpacked: report?.unpacked ?? [],
     unbaked: report?.unbaked ?? []
   }));
@@ -210,14 +224,4 @@ export function unbakedMessage(unbaked) {
     + 'The farm renders frames side by side and out of order, which a simulation '
     + 'stepped as it renders cannot survive. In Blender: bake the cache, save, '
     + 'and upload again.';
-}
-
-export function missingAssetsMessage(missing) {
-  const shown = missing.slice(0, REPORTED).map(file => path.basename(file));
-  const rest = missing.length - shown.length;
-
-  return `${missing.length} file${missing.length === 1 ? '' : 's'} the scene needs `
-    + `${missing.length === 1 ? 'is' : 'are'} not packed into it and not on this machine: `
-    + `${shown.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}. `
-    + 'In Blender: File → External Data → Pack Resources, save, and upload again.';
 }

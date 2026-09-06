@@ -572,6 +572,42 @@ export function getLease(leaseId) {
   };
 }
 
+// A file the artist handed over to fix a job the scene check stopped. Kept per
+// job rather than pooled by content: one job's upload must not quietly satisfy
+// another's missing texture, and dying with the job is the whole of its
+// lifetime - no reference counting, no sweep.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS job_assets (
+    jobId INTEGER NOT NULL,
+    storedPath TEXT NOT NULL,
+    filename TEXT NOT NULL,
+    bytes INTEGER NOT NULL DEFAULT 0,
+    updatedAt TEXT,
+    PRIMARY KEY (jobId, storedPath)
+  )
+`);
+
+// Replaced rather than added twice, so supplying the same one again is a fix
+// rather than an error.
+export function recordJobAsset({ jobId, storedPath, filename, bytes }) {
+  db.prepare(
+    `INSERT INTO job_assets (jobId, storedPath, filename, bytes, updatedAt)
+     VALUES (@jobId, @storedPath, @filename, @bytes, @updatedAt)
+     ON CONFLICT(jobId, storedPath) DO UPDATE SET
+       filename = excluded.filename, bytes = excluded.bytes, updatedAt = excluded.updatedAt`
+  ).run({ jobId, storedPath, filename, bytes, updatedAt: new Date().toISOString() });
+}
+
+export function jobAssets(jobId) {
+  return db.prepare(
+    'SELECT storedPath, filename, bytes FROM job_assets WHERE jobId = ? ORDER BY storedPath'
+  ).all(jobId);
+}
+
+export function deleteJobAssets(jobId) {
+  return db.prepare('DELETE FROM job_assets WHERE jobId = ?').run(jobId).changes;
+}
+
 // Putting a tiled still back together is work the farm claims like any other,
 // so it needs a claim of its own: one per job rather than one per frame, and
 // held apart from the job row so that saving the job cannot overwrite it.

@@ -320,6 +320,14 @@ export const api = {
 
   approveJob: id => request(`/jobs/${id}/approve`, { method: 'POST' }),
 
+  supplyAsset: (id, stored, file) => {
+    const form = new FormData();
+    form.append('for', stored);
+    form.append('asset', file);
+
+    return request(`/jobs/${id}/assets`, { method: 'POST', body: form });
+  },
+
   machines: () => request('/machines'),
 
   addMachine: name => request('/machines', { method: 'POST', body: { name } }),

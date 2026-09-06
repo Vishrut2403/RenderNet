@@ -8,6 +8,7 @@ import {
   createFrames, getFrames, countFramesByStatus,
   markFrameDone, markFramePending, markFrameAttemptFailed, resetFailedFrames,
   leaseFrames, renewLease, releaseLease, getLease, liveLeases, clearJobLeases,
+  recordJobAsset, jobAssets,
   holdFramesExcept, releaseHeldFrames,
   leaseComposite, renewComposite, releaseComposite, getCompositeLease,
   liveComposites, clearJobComposite, releaseLeasesOf, releaseCompositesOf
@@ -18,7 +19,7 @@ import {
 import {
   workerCanRender, engineIsOffered, machines, workerCount, touchWorker
 } from './worker-registry.js';
-import { checkScene, missingAssetsMessage, unbakedMessage } from './preflight.js';
+import { checkScene, unbakedMessage } from './preflight.js';
 import { queueWaits as waitsFor, forgetTiming, machineFrameMs } from './estimates.js';
 import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
@@ -26,6 +27,7 @@ import {
   diskIsTooFull, tooFullToCarryOn, heldForDisk, deleteJobFiles, forgetUsage
 } from './storage.js';
 import { isTiled, tilesPath, compositeName } from './tiles.js';
+import { assetsDir } from './supplied-assets.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
 const MAX_INTERRUPTIONS = 2;
@@ -210,9 +212,14 @@ function startSceneCheck(job) {
     // Deleted or cancelled while Blender was reading it.
     if (!current || current.status !== 'pending') return;
 
+    // Not a failure: the scene is already here and is one texture short, and
+    // re-uploading it to supply one file is the whole cost being avoided. The
+    // job keeps its place in the queue and waits for what it is missing.
     if (checked && missing.length > 0) {
-      refuse(current, 'missing', missingAssetsMessage(missing), JSON.stringify(missing));
-      console.log(`Job ${current.id} reaches for ${missing.length} file(s) it did not bring`);
+      current.assetCheck = 'waiting';
+      current.missingAssets = JSON.stringify(missing);
+      saveJob(current);
+      console.log(`Job ${current.id} is waiting for ${missing.length} file(s) it did not bring`);
       return;
     }
 
@@ -236,6 +243,51 @@ function startSceneCheck(job) {
 
     if (!preemptFor(current)) processQueue();
   });
+}
+
+// What a job is still waiting for, as the artist sees it.
+export function assetsWanted(job) {
+  if (job.assetCheck !== 'waiting') return [];
+
+  try {
+    return JSON.parse(job.missingAssets || '[]');
+  } catch {
+    return [];
+  }
+}
+
+// A file handed over for something the scene reaches for and did not bring. The
+// .blend is left exactly as uploaded - the render points the datablock at this
+// copy instead - so the scene keeps its hash and stays shared with every other
+// job that renders it.
+export function supplyAsset(jobId, storedPath, { filename, bytes }) {
+  const job = jobs.get(jobId);
+
+  if (!job) return { error: 'Job not found' };
+
+  const wanted = assetsWanted(job);
+
+  if (wanted.length === 0) return { error: 'This job is not waiting for any files' };
+  if (!wanted.some(entry => entry.stored === storedPath)) {
+    return { error: 'The job does not reach for that file' };
+  }
+
+  recordJobAsset({ jobId, storedPath, filename, bytes });
+
+  const supplied = new Set(jobAssets(jobId).map(asset => asset.storedPath));
+  const left = wanted.filter(entry => !supplied.has(entry.stored));
+
+  job.missingAssets = JSON.stringify(left);
+  if (left.length === 0) job.assetCheck = 'ok';
+
+  saveJob(job);
+  forgetUsage(job.owner);
+
+  console.log(`Job ${jobId} was given ${filename}, ${left.length} file(s) still wanted`);
+
+  if (left.length === 0 && !preemptFor(job)) processQueue();
+
+  return { wanted: left };
 }
 
 function refuse(job, verdict, message, detail) {
@@ -524,6 +576,7 @@ function promoteNext() {
   const next = renderQueue.findIndex(id => {
     const queued = jobs.get(id);
     return queued?.assetCheck !== 'checking'
+      && queued?.assetCheck !== 'waiting'
       && !queued?.heldBy
       && engineIsOffered(queued?.renderEngine);
   });
@@ -704,6 +757,13 @@ function leaseFromActive(workerId, local) {
         ...lease,
         ttlMs: LEASE_TTL_MS,
         blendPath: dataPath(job.filePath),
+        // Files the artist handed over, named by the path the scene stores, so
+        // the render can point each datablock at the copy it was given.
+        assets: jobAssets(job.id).map(asset => ({
+          stored: asset.storedPath,
+          filename: asset.filename,
+          path: path.join(assetsDir(job), asset.filename)
+        })),
         outputDir: workerScratchDir(job.id),
         renderEngine: job.renderEngine,
         formats: job.formats,

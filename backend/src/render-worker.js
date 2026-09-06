@@ -48,7 +48,7 @@ scene.render.border_min_y = region['y0'] / height
 scene.render.border_max_y = region['y1'] / height
 `;
 
-const OUTPUT_SCRIPT = `import bpy, os
+const OUTPUT_SCRIPT = `import bpy, os, json
 
 PRIMARY = os.environ.get('RENDERNET_PRIMARY_FORMAT', '')
 EXTRAS = [pair.split(':') for pair in os.environ.get('RENDERNET_EXTRA_FORMATS', '').split(',') if pair]
@@ -100,6 +100,21 @@ def save_extras(scene, _depsgraph=None):
 # worker reads this as it goes.
 def announce(scene, _depsgraph=None):
     print('${FRAME_DONE}%d' % scene.frame_current, flush=True)
+
+
+# Files the artist handed over for things the scene reaches for and did not
+# bring. The .blend is not rewritten: the datablock is pointed at the copy that
+# came with the job, which is the same picture and none of the upload.
+SUPPLIED = os.environ.get('RENDERNET_ASSETS', '')
+
+if SUPPLIED:
+    with open(SUPPLIED) as handle:
+        given = json.load(handle)
+
+    for image in bpy.data.images:
+        if image.source == 'FILE' and not image.packed_file and image.filepath in given:
+            image.filepath = given[image.filepath]
+            image.reload()
 
 
 if PRIMARY:
@@ -194,7 +209,8 @@ function blenderCommand(blendPath, outputDir, renderEngine, overrides, output) {
     RENDERNET_EXR_DEPTH: output.exrDepth ?? '',
     RENDERNET_JPEG_QUALITY: output.jpegQuality == null ? '' : String(output.jpegQuality),
     RENDERNET_TILE_INDEX: output.tile ? String(output.tile.index) : '',
-    RENDERNET_TILE_COUNT: output.tile ? String(output.tile.of) : ''
+    RENDERNET_TILE_COUNT: output.tile ? String(output.tile.of) : '',
+    RENDERNET_ASSETS: output.assetManifest ?? ''
   };
 
   return { args, env };
@@ -333,6 +349,43 @@ class RenderWorker {
     return cached;
   }
 
+  // Files handed over for a scene that reaches outside itself. Read off the
+  // server's disk where this machine is the server, fetched over HTTP where it
+  // is not - the same rule the scene itself follows.
+  async gatherAssets(lease, outputDir, remote) {
+    const assets = lease.assets ?? [];
+
+    if (assets.length === 0) return null;
+
+    const given = {};
+
+    for (const asset of assets) {
+      if (!remote && asset.path && fs.existsSync(asset.path)) {
+        given[asset.stored] = asset.path;
+        continue;
+      }
+
+      const local = path.join(outputDir, 'supplied', asset.filename);
+
+      if (!fs.existsSync(local)) {
+        const response = await fetch(
+          `${WORKER_BASE}/jobs/${lease.jobId}/assets/${asset.filename}`,
+          { headers: workerHeaders() });
+
+        if (!response.ok) {
+          throw new Error(`the server answered ${response.status} for ${asset.filename}`);
+        }
+
+        fs.mkdirSync(path.dirname(local), { recursive: true });
+        fs.writeFileSync(local, Buffer.from(await response.arrayBuffer()));
+      }
+
+      given[asset.stored] = local;
+    }
+
+    return given;
+  }
+
   // Resolves to whether there was anything to do.
   async claimAndRender() {
     if (this.stopping) return false;
@@ -415,6 +468,25 @@ class RenderWorker {
     fs.writeFileSync(outputScript,
       (lease.tile ? TILE_SCRIPT + OUTPUT_SCRIPT : OUTPUT_SCRIPT) + DAEMON_SCRIPT);
 
+    let assetManifest = '';
+
+    try {
+      const given = await this.gatherAssets(lease, outputDir, remote);
+
+      if (given) {
+        assetManifest = path.join(outputDir, `assets_${this.workerId.replace(/\W/g, '_')}.json`);
+        fs.writeFileSync(assetManifest, JSON.stringify(given));
+      }
+    } catch (error) {
+      // Rendering without them is the untextured picture the check exists to
+      // prevent, so the span is given up rather than delivered wrong.
+      console.error(`Could not gather the files for job ${jobId}: ${error.message}`);
+      await this.reportFrameFailure(
+        jobId, frames[0], `Worker could not fetch a supplied file: ${error.message}`, leaseId);
+      await this.releaseLease(leaseId);
+      return;
+    }
+
     // A tile renders one scene frame under the number of its region; everything
     // else renders the frames it was given.
     const sceneFrames = lease.tile ? [lease.sceneFrame] : frames;
@@ -462,7 +534,8 @@ class RenderWorker {
           exrCodec: lease.exrCodec,
           exrDepth: lease.exrDepth,
           jpegQuality: lease.jpegQuality,
-          tile: lease.tile
+          tile: lease.tile,
+          assetManifest
         }
       );
     } catch (error) {

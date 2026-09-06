@@ -16,6 +16,7 @@ import path from 'path';
 import { dataPath, MAX_FRAME_BYTES } from '../paths.js';
 import { workerScratchDir } from '../job-store.js';
 import { startsWith } from '../utils/file-utils.js';
+import { assetsDir } from '../supplied-assets.js';
 import { parseFormats, primaryOf, extensionOf, signatureFor } from '../formats.js';
 import { isTiled } from '../tiles.js';
 import { tileName, tilesPath, compositeName } from '../tiles.js';
@@ -263,6 +264,24 @@ router.get('/jobs/:id/blend', loadJob, (req, res) => {
   }
 
   res.sendFile(blend);
+});
+
+// A file the artist handed over for something the scene reaches for. Served on
+// the same terms as the scene itself: only to a machine rendering this job, and
+// only from inside that job's own folder.
+router.get('/jobs/:id/assets/:filename', loadJob, (req, res) => {
+  if (!liveLeases().some(lease => lease.jobId === req.jobId && heldBy(lease, req.machine.id))) {
+    return res.status(403).json({ error: `No claim on job ${req.jobId}` });
+  }
+
+  const directory = assetsDir(req.job);
+  const file = path.resolve(directory, path.basename(req.params.filename));
+
+  if (!file.startsWith(directory + path.sep) || !fs.existsSync(file)) {
+    return res.status(404).json({ error: 'No such file for this job' });
+  }
+
+  res.sendFile(file);
 });
 
 router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, requireLease, upload.single('frame'), (req, res) => {

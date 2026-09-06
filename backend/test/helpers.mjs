@@ -122,6 +122,30 @@ bpy.ops.wm.save_as_mainfile(filepath=r'${blendPath}')
   return blendPath;
 }
 
+// The average colour of a rendered frame, read by the only thing here that can
+// open one. Enough to tell a texture that arrived from Blender's magenta stand
+// in for one that did not.
+export function meanColour(imagePath) {
+  const script = `
+import bpy, numpy
+image = bpy.data.images.load(r'${imagePath}')
+buffer = numpy.empty(len(image.pixels), dtype=numpy.float32)
+image.pixels.foreach_get(buffer)
+mean = buffer.reshape(-1, 4)[:, :3].mean(axis=0)
+print('RENDERNET_MEAN %.4f %.4f %.4f' % tuple(mean))
+`;
+
+  const probe = spawnSync('blender', ['-b', '--python-expr', script],
+    { encoding: 'utf8', timeout: 120000 });
+  const line = (probe.stdout || '').split('\n').find(text => text.includes('RENDERNET_MEAN'));
+
+  if (!line) return null;
+
+  const [red, green, blue] = line.split(/\s+/).slice(1).map(Number);
+
+  return { red, green, blue };
+}
+
 const PNG_1X1 = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
   'base64'

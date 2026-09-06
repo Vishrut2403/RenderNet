@@ -92,13 +92,21 @@ export function queueWaits(running, queued) {
   // Frames render side by side, so the work ahead is shared between workers.
   const workers = Math.max(new Set(liveLeases().map(lease => lease.leasedBy)).size, 1);
 
+  // What is ahead of you is those jobs' frames, not the farm's average one, and
+  // scenes differ by orders of magnitude. The farm's rate is for a job that has
+  // never rendered and has nothing of its own to go on. This is the same
+  // measure the queue is ordered by, so what somebody is promised and where
+  // they were put cannot disagree.
+  const timings = frameTimings([...running, ...queued].map(job => job.id));
+  const costOf = job => framesLeft(job) * (timings.get(job.id)?.medianMs ?? typical);
+
   let ahead = 0;
 
-  for (const job of running) ahead += framesLeft(job) * typical;
+  for (const job of running) ahead += costOf(job);
 
   for (const job of queued) {
     waits.set(job.id, Math.round(ahead / workers));
-    ahead += framesLeft(job) * typical;
+    ahead += costOf(job);
   }
 
   return waits;
