@@ -190,6 +190,19 @@ if (valueOf('-E') === 'help') {
   process.exit(0);
 }
 
+// The device probe is a listing too: it names no scene, and the script it is
+// handed says what it is looking for.
+const probeScript = valueOf('-P');
+
+if (probeScript && fs.existsSync(probeScript)
+  && fs.readFileSync(probeScript, 'utf8').includes('RENDERNET_DEVICES')) {
+  const offered = (process.env.FAKE_BLENDER_DEVICES || '')
+    .split(',').map(name => name.trim()).filter(Boolean);
+
+  fs.writeSync(1, 'RENDERNET_DEVICES ' + JSON.stringify(offered) + '\\n');
+  process.exit(0);
+}
+
 // Each format gets its own leading bytes. Writing the same image into every
 // extension would hide a file being served or recorded as the wrong format,
 // which is the mistake worth catching.
@@ -254,6 +267,16 @@ if (process.env.RENDERNET_TILE_SPEC) {
 
   write(spec.output);
   process.exit(0);
+}
+
+// What the real Blender does when it is named a Cycles backend this build has
+// none of: it stops before it renders anything, on every frame.
+const device = args.includes('--cycles-device') ? valueOf('--cycles-device') : 'CPU';
+
+if (device !== 'CPU'
+  && !(process.env.FAKE_BLENDER_DEVICES || '').split(',').map(name => name.trim()).includes(device)) {
+  fs.writeSync(1, 'Error: Found no Cycles device of the specified type\\n');
+  process.exit(1);
 }
 
 const scene = path.basename(valueOf('-b') || '');

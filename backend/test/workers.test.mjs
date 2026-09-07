@@ -10,12 +10,14 @@ import {
   adminSession, submitJob, waitForJob, createFakeBlender, createFakeScene, waitForCondition,
   auth, getJob, sleep
 } from './helpers.mjs';
+import { chooseDevice } from '../src/utils/blender-check.js';
 
 const PORT = 5598;
 const CAPABILITY_PORT = 5610;
 const LOST_PORT = 5617;
 const UNEVEN_PORT = 5618;
 const ONDISK_PORT = 5619;
+const DEVICE_PORT = 5620;
 
 // "[worker-1] ✅ Job 17..., frame 3 rendered: ..." - the pool tags each worker's
 // output with which one it came from, so the log says who delivered what. One
@@ -210,8 +212,91 @@ export default async function run() {
   await losingAWorker(results);
   await unevenMachines(results);
   await filesOnlyHere(results);
+  await devices(results);
 
   return results;
+}
+
+// Blender exits non-zero on every frame when it is named a Cycles backend the
+// build has none of, so what a machine is set to matters as much as what it
+// has. Nobody edits a .env on the workstation, either, which is why an unset
+// device means the fastest one rather than the CPU.
+async function devices(results) {
+  const box = makeSandbox('devices');
+  const asked = process.env.CYCLES_DEVICE;
+  let server;
+
+  try {
+    console.log('\n  A machine renders with the device it actually has');
+
+    const blender = createFakeBlender(box);
+
+    const chosen = (has, wants) => {
+      process.env.FAKE_BLENDER_DEVICES = has;
+
+      if (wants === null) delete process.env.CYCLES_DEVICE;
+      else process.env.CYCLES_DEVICE = wants;
+
+      return chooseDevice(blender);
+    };
+
+    const auto = chosen('CUDA,OPTIX', null);
+    results.check('with nothing configured it takes the fastest the card offers',
+      auto.device === 'OPTIX' && auto.wanted === null, JSON.stringify(auto));
+
+    const none = chosen('', null);
+    results.check('and the CPU only when there is nothing else',
+      none.device === 'CPU' && none.wanted === null, JSON.stringify(none));
+
+    const kept = chosen('OPTIX', 'CPU');
+    results.check('a machine told to stay on the CPU stays on it',
+      kept.device === 'CPU' && kept.wanted === null, JSON.stringify(kept));
+
+    const wrong = chosen('CUDA', 'HIP');
+    results.check('one told to use a device it has not got falls back to what it has',
+      wrong.device === 'CUDA' && wrong.wanted === 'HIP', JSON.stringify(wrong));
+
+    server = await startServer({
+      port: DEVICE_PORT,
+      cwd: box,
+      env: {
+        BLENDER_PATH: blender,
+        WORKER_SLOTS: '1',
+        CYCLES_DEVICE: 'HIP',
+        FAKE_BLENDER_DEVICES: 'CUDA'
+      }
+    });
+
+    const token = await adminSession(server.base);
+
+    const job = await submitJob(server.base, token, createFakeScene(box, 'plain.blend'),
+      { frameStart: 1, frameEnd: 1, engine: 'CYCLES' });
+    const finished = await waitForJob(server.base, token, job.body.jobId, 60000);
+
+    results.check('the job renders rather than failing every frame',
+      finished.status === 'completed', finished.status);
+
+    const args = fs.readFileSync(path.join(box, 'uploads', 'last-args.txt'), 'utf8');
+    results.check('and Blender is told the device the machine really has',
+      args.includes('--cycles-device CUDA'), args);
+
+    const health = await (await fetch(`${server.base}/health`, { headers: auth(token) })).json();
+
+    results.check('the machine reports what it is rendering with',
+      health.workers.some(worker => worker.device === 'CUDA'),
+      JSON.stringify(health.workers));
+    results.check('and health says what was asked for and what it settled on',
+      health.problems.some(problem => problem.includes('HIP') && problem.includes('CUDA')),
+      JSON.stringify(health.problems));
+  } finally {
+    delete process.env.FAKE_BLENDER_DEVICES;
+
+    if (asked === undefined) delete process.env.CYCLES_DEVICE;
+    else process.env.CYCLES_DEVICE = asked;
+
+    await stopServer(server);
+    removeSandbox(box);
+  }
 }
 
 // A machine somewhere else is sent the .blend and nothing beside it, so a scene

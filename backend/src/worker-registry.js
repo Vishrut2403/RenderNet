@@ -5,7 +5,7 @@ const CURRENT_MS = 5 * 60 * 1000;
 
 const workers = new Map();
 
-export function announceWorker({ workerId, name, engines, device }) {
+export function announceWorker({ workerId, name, engines, device, deviceWanted }) {
   if (!workerId) return;
 
   workers.set(workerId, {
@@ -15,6 +15,7 @@ export function announceWorker({ workerId, name, engines, device }) {
     // refusing it work it may well be able to do would leave the farm idle.
     engines: Array.isArray(engines) && engines.length > 0 ? engines : null,
     device: device || null,
+    deviceWanted: deviceWanted || null,
     lastSeen: Date.now()
   });
 }
@@ -61,6 +62,19 @@ export function engineIsOffered(engine) {
   return known.some(worker => worker.engines === null || worker.engines.includes(engine));
 }
 
+// A machine set to render with something its Blender does not offer. It is
+// rendering anyway, on whatever it does have, so this is worth saying rather
+// than worth stopping for.
+export function devicesNotOffered() {
+  return knownWorkers()
+    .filter(worker => worker.deviceWanted)
+    .map(worker => ({
+      name: worker.name,
+      wanted: worker.deviceWanted,
+      device: worker.device
+    }));
+}
+
 // One row per machine rather than per claim: what it is, what it can render,
 // and the frame it happens to be holding.
 export function machines(claims = []) {
@@ -72,6 +86,7 @@ export function machines(claims = []) {
       name: worker.name,
       engines: worker.engines,
       device: worker.device,
+      deviceWanted: worker.deviceWanted,
       lastSeen: new Date(worker.lastSeen).toISOString(),
       jobId: claim?.jobId ?? null,
       frame: claim?.frame ?? null

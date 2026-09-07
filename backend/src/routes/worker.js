@@ -220,7 +220,8 @@ router.post('/lease', (req, res) => {
     workerId,
     name: req.machine.name,
     engines: req.body?.engines,
-    device: typeof req.body?.device === 'string' ? req.body.device : null
+    device: typeof req.body?.device === 'string' ? req.body.device : null,
+    deviceWanted: typeof req.body?.deviceWanted === 'string' ? req.body.deviceWanted : null
   });
 
   const lease = leaseNextFrame(workerId, req.machine.isLocal);

@@ -243,13 +243,18 @@ The frontend build is what lets clients get away with only a browser — the API
 PORT=5500
 SIGNUP_CODE=what-you-tell-your-team
 BLENDER_PATH=C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
-CYCLES_DEVICE=CUDA
 ```
 
 Copy `backend/.env.example`, which carries every option and its default, rather
 than typing this out. `BLENDER_PATH` is required on Windows and optional
-wherever `blender` is on `PATH`; drop `CYCLES_DEVICE` without an NVIDIA card, or
-use `OPTIX` on RTX.
+wherever `blender` is on `PATH`.
+
+Nothing needs to be said about the graphics card. Each renderer asks its Blender
+which Cycles backends it can reach and takes the fastest, so a machine with an
+RTX card renders on OPTIX without being told to. `CYCLES_DEVICE` overrides that:
+`CPU` keeps the card free for whoever is sitting at the machine, and naming a
+backend the machine has not got is reported on the dashboard and rendered on
+what it does have, rather than failing every frame the way Blender would.
 
 **Without `SIGNUP_CODE` nobody can create an account** — deliberate, since
 anyone who can reach the port could otherwise sign up, but it has to be set
@@ -356,7 +361,7 @@ tree, so it is found however the server is started.
 | `WORKER_TOKEN` | *minted at start* | Credential a worker authenticates with. Needed only on other machines; issue one under Admin. |
 | `WORKER_SECRET` | *unset* | The old farm-wide secret. Still accepted, and listed under Admin so it can be revoked once every machine has its own. |
 | `BLENDER_PATH` | auto-detected | Blender executable. Required on Windows. |
-| `CYCLES_DEVICE` | `CPU` | `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI` or `METAL` |
+| `CYCLES_DEVICE` | the fastest device Blender offers | `CPU`, `CUDA`, `OPTIX`, `HIP`, `ONEAPI` or `METAL`. Cycles only |
 | `ALLOWED_ORIGINS` | *unset* | Origins allowed to call the API from a browser, comma-separated. Unset means same-origin only. |
 | `TLS_KEY` / `TLS_CERT` | *unset* | Private key and certificate. Set both to serve HTTPS; setting one alone stops the server rather than quietly serving plain HTTP. |
 | `DATA_DIR` | the `backend/` directory | Where uploads, renders, scratch space and the database live |

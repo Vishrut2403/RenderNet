@@ -1,5 +1,6 @@
 import express from 'express';
 import { getQueueStatus, jobsNoWorkerCanRender } from '../queue.js';
+import { devicesNotOffered } from '../worker-registry.js';
 import { getJob } from '../job-views.js';
 import { freeBytes } from '../utils/file-utils.js';
 import { optionalAuth } from '../auth.js';
@@ -28,6 +29,13 @@ export function healthRouter(blenderPath) {
     for (const job of jobsNoWorkerCanRender()) {
       problems.push(`Job ${job.id} needs ${job.renderEngine} and no worker here offers it`);
     }
+
+    // Deduplicated: every renderer on a machine says the same thing about it.
+    const misconfigured = new Set(devicesNotOffered().map(machine =>
+      `${machine.name} is set to render with ${machine.wanted}, `
+      + `which its Blender does not offer, so it is using ${machine.device}`));
+
+    problems.push(...misconfigured);
 
     const body = {
       status: problems.length > 0 ? 'degraded' : 'ok',

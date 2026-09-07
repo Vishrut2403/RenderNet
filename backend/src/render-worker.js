@@ -3,7 +3,7 @@ import path from 'path';
 import fs from 'fs';
 import FormData from 'form-data';
 import fetch from 'node-fetch';
-import { findBlenderExecutable, renderableEngines } from './utils/blender-check.js';
+import { chooseDevice, findBlenderExecutable, renderableEngines } from './utils/blender-check.js';
 import { launch, terminate } from './utils/process-control.js';
 import { BlenderSession, sessionKey, DAEMON_SCRIPT, FRAME_DONE } from './blender-session.js';
 import { primaryOf, extrasOf, extensionOf } from './formats.js';
@@ -13,8 +13,6 @@ import { REFERENCED_PYTHON, SUPPLIED_PYTHON } from './scene-references.js';
 const BLENDER_PATH = process.env.BLENDER_PATH || findBlenderExecutable() || 'blender';
 const API_URL = process.env.API_URL || 'http://localhost:5500';
 const WORKER_BASE = `${API_URL}/api/worker`;
-// CPU, OPTIX, CUDA, HIP, ONEAPI or METAL. Cycles only.
-const CYCLES_DEVICE = process.env.CYCLES_DEVICE || 'CPU';
 const OUTPUT_TAIL = 4000;
 const KILL_GRACE_MS = 5000;
 const RENEW_EVERY_MS = 5000;
@@ -22,6 +20,23 @@ const RENEW_EVERY_MS = 5000;
 // claim. Zero closes it after every span, which is what a machine short of
 // memory wants.
 const IDLE_MS = Number(process.env.BLENDER_IDLE_MS ?? 60000);
+
+// Asked of Blender once, on the first launch that needs it: unset means the
+// fastest device this machine has rather than the CPU.
+let chosenDevice = null;
+
+function cyclesDevice() {
+  if (!chosenDevice) {
+    chosenDevice = chooseDevice(BLENDER_PATH);
+
+    console.log(chosenDevice.wanted
+      ? `⚠️  Cycles: this Blender offers no ${chosenDevice.wanted} device, `
+        + `rendering with ${chosenDevice.device}`
+      : `Cycles renders here on ${chosenDevice.device}`);
+  }
+
+  return chosenDevice;
+}
 
 const SCRATCH_DIR = process.env.WORKER_SCRATCH_DIR
   || path.join(os.tmpdir(), 'rendernet-worker');
@@ -187,7 +202,7 @@ function blenderCommand(blendPath, outputDir, renderEngine, overrides, output) {
     // Add-on options are only recognised after '--'; earlier, Blender treats
     // them as a file to open. Read before the script runs, so a script that
     // waits for work does not hold the device up.
-    args.push('--', '--cycles-device', CYCLES_DEVICE);
+    args.push('--', '--cycles-device', cyclesDevice().device);
   }
 
   // Passed as environment rather than script arguments: Blender hands its own
@@ -412,7 +427,8 @@ class RenderWorker {
           workerId: this.workerId,
           name: os.hostname(),
           engines: this.engines(),
-          device: CYCLES_DEVICE
+          device: cyclesDevice().device,
+          deviceWanted: cyclesDevice().wanted
         })
       });
 

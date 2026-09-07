@@ -49,6 +49,7 @@ function ActiveJob({ job, now, workers }) {
             <li key={`${worker.id}:${worker.frame}`}>
               <span>{worker.name || worker.id}</span>
               <span className="queue-pos">frame {worker.frame}</span>
+              {worker.device && <span className="device">{worker.device}</span>}
             </li>
           ))}
         </ul>

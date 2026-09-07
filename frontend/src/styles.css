@@ -538,6 +538,8 @@ button, input, select { font: inherit; color: inherit; }
 
 .holders li { display: flex; gap: 8px; font-size: 13px; color: var(--text-2); }
 
+.device { color: var(--text-3); font-size: 11px; letter-spacing: .06em; align-self: center; }
+
 /* ---------- modal ---------- */
 
 .modal-backdrop {
