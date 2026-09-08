@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import fs from 'fs';
 import {
+  recordBake,
   recordComposite,
   updateJobProgress,
   recordFrameUpload,
@@ -11,12 +12,13 @@ import {
   releaseFrameLease
 } from '../queue.js';
 import { getJob } from '../job-views.js';
-import { getLease, getCompositeLease, liveLeases } from '../db.js';
+import { getLease, getCompositeLease, getBakeLease, liveLeases, liveComposites, liveBakes } from '../db.js';
 import path from 'path';
-import { dataPath, MAX_FRAME_BYTES } from '../paths.js';
+import { dataPath, MAX_FRAME_BYTES, MAX_UPLOAD_BYTES } from '../paths.js';
 import { workerScratchDir } from '../job-store.js';
 import { startsWith } from '../utils/file-utils.js';
 import { assetsDir } from '../supplied-assets.js';
+import { bakedScenePath } from '../baking.js';
 import { parseFormats, primaryOf, extensionOf, signatureFor } from '../formats.js';
 import { isTiled } from '../tiles.js';
 import { tileName, tilesPath, compositeName } from '../tiles.js';
@@ -51,9 +53,19 @@ function heldBy(lease, machineId) {
 }
 
 function ownedLease(req) {
-  const lease = getLease(req.params.leaseId);
+  const lease = getLease(req.params.leaseId)
+    ?? getCompositeLease(req.params.leaseId)
+    ?? getBakeLease(req.params.leaseId);
 
   return lease && heldBy(lease, req.machine.id) ? lease : null;
+}
+
+// A machine is entitled to the files of the jobs it is working on and no
+// others - whether it is rendering frames of one, putting its tiles together,
+// or baking it.
+function working(req) {
+  return [...liveLeases(), ...liveComposites(), ...liveBakes()]
+    .some(claim => claim.jobId === req.jobId && heldBy(claim, req.machine.id));
 }
 
 // A worker whose claim has lapsed could otherwise upload over the frame somebody
@@ -253,14 +265,16 @@ router.post('/leases/:leaseId/release', (req, res) => {
 // For a worker on another machine. Worker-authenticated; the browser downloads
 // live under /api/download.
 router.get('/jobs/:id/blend', loadJob, (req, res) => {
-  // A machine is entitled to the scenes it is rendering and no others.
-  if (!liveLeases().some(lease => lease.jobId === req.jobId && heldBy(lease, req.machine.id))) {
+  if (!working(req)) {
     return res.status(403).json({ error: `No claim on job ${req.jobId}` });
   }
 
-  const blend = dataPath(req.job.filePath);
+  // The baked scene once there is one: it is the scene the frames render from,
+  // and the machine baking it has none yet.
+  const stored = req.job.bakedPath || req.job.filePath;
+  const blend = stored && dataPath(stored);
 
-  if (!req.job.filePath || !fs.existsSync(blend)) {
+  if (!stored || !fs.existsSync(blend)) {
     return res.status(404).json({ error: `Job ${req.jobId} has no .blend on disk` });
   }
 
@@ -271,7 +285,7 @@ router.get('/jobs/:id/blend', loadJob, (req, res) => {
 // the same terms as the scene itself: only to a machine rendering this job, and
 // only from inside that job's own folder.
 router.get('/jobs/:id/assets/:filename', loadJob, (req, res) => {
-  if (!liveLeases().some(lease => lease.jobId === req.jobId && heldBy(lease, req.machine.id))) {
+  if (!working(req)) {
     return res.status(403).json({ error: `No claim on job ${req.jobId}` });
   }
 
@@ -362,6 +376,69 @@ const composite = multer({
   }),
   limits: { fileSize: MAX_FRAME_BYTES }
 });
+
+function requireBake(req, res, next) {
+  const leaseId = req.headers['x-lease-id'];
+  const lease = typeof leaseId === 'string' ? getBakeLease(leaseId) : null;
+
+  if (!lease
+    || lease.jobId !== req.jobId
+    || !heldBy(lease, req.machine.id)
+    || new Date(lease.expiresAt) <= new Date()) {
+    return res.status(409).json({ error: `Job ${req.jobId} is not yours to bake` });
+  }
+
+  next();
+}
+
+// The whole scene comes back rather than the cache alone: the caches are inside
+// it, which is what makes the bake one file to send and one to delete.
+const baked = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => {
+      try {
+        const folder = path.dirname(dataPath(bakedScenePath(req.job)));
+        fs.mkdirSync(folder, { recursive: true });
+        cb(null, folder);
+      } catch (error) {
+        cb(error);
+      }
+    },
+    filename: (req, file, cb) => cb(null, path.basename(bakedScenePath(req.job)))
+  }),
+  limits: { fileSize: MAX_UPLOAD_BYTES }
+});
+
+router.post('/jobs/:id/baked', loadJob, requireRendering, requireBake,
+  baked.single('scene'), (req, res) => {
+    // A renderer on this machine bakes straight into the job's folder, so there
+    // is nothing to send: it says where it put it instead.
+    if (!req.file) {
+      const inPlace = req.machine.isLocal === true
+        && fs.existsSync(dataPath(bakedScenePath(req.job)));
+
+      if (!inPlace) {
+        return res.status(400).json({ error: 'No baked scene uploaded' });
+      }
+    } else if (req.file.size === 0) {
+      fs.rmSync(req.file.path, { force: true });
+      return res.status(422).json({ error: 'The baked scene was empty' });
+    }
+
+    const job = recordBake(req.jobId, null);
+
+    if (!job) {
+      return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
+    }
+
+    res.json({ success: true });
+  });
+
+router.post('/jobs/:id/baked/failed', loadJob, requireRendering, requireBake,
+  (req, res) => {
+    recordBake(req.jobId, req.body?.error || 'Unknown error');
+    res.json({ success: true });
+  });
 
 router.post('/jobs/:id/composite', loadJob, requireRendering, requireComposite,
   composite.single('composite'), (req, res) => {

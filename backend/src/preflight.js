@@ -4,15 +4,16 @@ import path from 'path';
 import { launch, terminate } from './utils/process-control.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
 import { REFERENCED_PYTHON, SUPPLIED_PYTHON } from './scene-references.js';
+import { CACHES_PYTHON } from './baking.js';
 
 const MARKER = 'RENDERNET_PREFLIGHT ';
 const TIMEOUT_MS = Number(process.env.PREFLIGHT_TIMEOUT_MS) || 120 * 1000;
-const REPORTED = 8;
 
 // Packed files are skipped because packing is the fix being asked for.
-const SCRIPT = `import bpy, os, json
+const SCRIPT = `import bpy, os, json, re
 ${REFERENCED_PYTHON}
 ${SUPPLIED_PYTHON}
+${CACHES_PYTHON}
 
 
 def described(scene):
@@ -38,22 +39,41 @@ def described(scene):
 # renders, so a frame is only right if every frame before it was rendered first,
 # in the same Blender. A farm does neither. Mantaflow fluids are left out:
 # nothing readable here says whether one has been baked.
+def named(obj, mod):
+    return '%s (%s)' % (obj.name, mod.type.replace('_', ' ').lower() if mod else 'particles')
+
+
+def why_not_here(obj):
+    # A cache on a linked object belongs to the file it was linked from and is
+    # not written into the one linking it; Blender bakes nothing at all for an
+    # object switched off in the viewport. Baking either would look like it
+    # worked and deliver frames of a simulation nobody would see at home.
+    if obj.library is not None:
+        return 'linked'
+
+    if obj.hide_viewport:
+        return 'hidden'
+
+    return None
+
+
 def unbaked():
-    for obj in bpy.data.objects:
-        for mod in obj.modifiers:
-            cache = getattr(mod, 'point_cache', None)
-
-            if mod.show_render and cache is not None and not cache.is_baked:
-                yield '%s (%s)' % (obj.name, mod.type.replace('_', ' ').lower())
-
-        for system in getattr(obj, 'particle_systems', []):
-            if not system.point_cache.is_baked:
-                yield '%s (particles)' % obj.name
+    for obj, mod, cache in point_caches():
+        if unusable(cache) and why_not_here(obj) is None:
+            yield named(obj, mod)
 
     world = bpy.context.scene.rigidbody_world
 
-    if world is not None and not world.point_cache.is_baked:
+    if world is not None and unusable(world.point_cache):
         yield 'the scene (rigid body)'
+
+
+def unbakeable():
+    for obj, mod, cache in point_caches():
+        why = why_not_here(obj)
+
+        if unusable(cache) and why is not None:
+            yield {'name': named(obj, mod), 'why': why}
 
 
 # Before anything is judged: a file already handed over is not missing, and a
@@ -89,6 +109,7 @@ print('${MARKER}' + json.dumps({
                       key=lambda item: item['resolved']),
     'unpacked': sorted(set(unpacked)),
     'unbaked': sorted(set(unbaked())),
+    'unbakeable': sorted(unbakeable(), key=lambda entry: entry['name']),
     'active': bpy.context.scene.name,
     'scenes': [described(scene) for scene in bpy.data.scenes]
 }))
@@ -139,7 +160,8 @@ export function checkScene(blendPath, supplied = null) {
     checked: report !== null,
     missing: (report?.missing ?? []).map(asDependency),
     unpacked: report?.unpacked ?? [],
-    unbaked: report?.unbaked ?? []
+    unbaked: report?.unbaked ?? [],
+    unbakeable: report?.unbakeable ?? []
   }));
 }
 
@@ -205,14 +227,3 @@ function openScene(blendPath, supplied = null) {
   });
 }
 
-export function unbakedMessage(unbaked) {
-  const shown = unbaked.slice(0, REPORTED);
-  const rest = unbaked.length - shown.length;
-
-  return `${unbaked.length} simulation${unbaked.length === 1 ? '' : 's'} in the scene `
-    + `${unbaked.length === 1 ? 'has' : 'have'} no baked cache: `
-    + `${shown.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}. `
-    + 'The farm renders frames side by side and out of order, which a simulation '
-    + 'stepped as it renders cannot survive. In Blender: bake the cache, save, '
-    + 'and upload again.';
-}

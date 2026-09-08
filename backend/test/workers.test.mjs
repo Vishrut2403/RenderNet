@@ -18,6 +18,7 @@ const LOST_PORT = 5617;
 const UNEVEN_PORT = 5618;
 const ONDISK_PORT = 5619;
 const DEVICE_PORT = 5620;
+const BAKE_PORT = 5621;
 
 // "[worker-1] ✅ Job 17..., frame 3 rendered: ..." - the pool tags each worker's
 // output with which one it came from, so the log says who delivered what. One
@@ -213,8 +214,95 @@ export default async function run() {
   await unevenMachines(results);
   await filesOnlyHere(results);
   await devices(results);
+  await bakingElsewhere(results);
 
   return results;
+}
+
+// Baking is claimed like any other work, so it can be claimed by a machine that
+// is not the server: it fetches the scene, bakes it, and sends the baked one
+// back for everyone else to render from.
+async function bakingElsewhere(results) {
+  const box = makeSandbox('bake-elsewhere');
+  const elsewhere = makeSandbox('bake-far-away');
+
+  let server;
+  let distant;
+
+  try {
+    console.log('\n  A machine somewhere else can do the baking');
+
+    server = await startServer({
+      port: BAKE_PORT,
+      cwd: box,
+      env: { BLENDER_PATH: createFakeBlender(box), WORKER_SLOTS: '0' }
+    });
+
+    distant = spawn(process.execPath, [path.join(BACKEND_ROOT, 'src', 'worker-main.js')], {
+      env: {
+        ...process.env,
+        API_URL: `http://127.0.0.1:${BAKE_PORT}`,
+        WORKER_SECRET: 'test-worker-secret',
+        BLENDER_PATH: createFakeBlender(elsewhere),
+        WORKER_SCRATCH_DIR: elsewhere,
+        WORKER_REMOTE: '1',
+        WORKER_ID: 'bake-box'
+      },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    const token = await adminSession(server.base);
+
+    const submitted = await submitJob(server.base, token,
+      createFakeScene(box, 'unbaked.blend'), { frameStart: 1, frameEnd: 3 });
+    const job = await waitForJob(server.base, token, submitted.body.jobId, 120000);
+
+    results.check('the job renders once the far machine has baked it',
+      job.status === 'completed' && job.completedFrames === 3,
+      `${job.status}, ${job.completedFrames} of 3`);
+    results.check('the bake ran there rather than on the server',
+      fs.existsSync(path.join(elsewhere, 'bakes.txt')),
+      fs.readdirSync(elsewhere).join(', '));
+
+    const folder = path.join(box, 'renders', `render_${submitted.body.jobId}`);
+    const baked = path.join(folder, 'bake', 'baked.blend');
+
+    results.check('and the baked scene was sent back to the server',
+      fs.existsSync(baked) && fs.statSync(baked).size > 0, baked);
+
+    // A machine somewhere else keeps the scenes it fetches. Baked again - here
+    // because the job's folder was swept - the scene it kept is last night's,
+    // and rendering from it would deliver frames of a bake nobody asked for.
+    const opened = () => fs.readFileSync(path.join(elsewhere, 'launches.txt'), 'utf8')
+      .split('\n').filter(line => line.startsWith('job_'));
+
+    const first = new Set(opened());
+
+    fs.rmSync(folder, { recursive: true, force: true });
+
+    const again = await fetch(`${server.base}/jobs/${submitted.body.jobId}/rerun`, {
+      method: 'POST', headers: auth(token)
+    });
+
+    results.check('a job whose frames and bake have both gone can be rerun',
+      again.status === 200, `got ${again.status}`);
+
+    const rerendered = await waitForJob(server.base, token, submitted.body.jobId, 120000);
+
+    results.check('it is baked a second time and rendered again',
+      rerendered.status === 'completed' && fs.existsSync(baked),
+      `${rerendered.status}, baked ${fs.existsSync(baked)}`);
+
+    const second = new Set(opened().filter(name => !first.has(name)));
+
+    results.check('from the scene that bake wrote, not the one that machine kept',
+      second.size > 0, [...first].join(',') + ' then ' + [...second].join(','));
+  } finally {
+    distant?.kill('SIGKILL');
+    await stopServer(server);
+    removeSandbox(box);
+    removeSandbox(elsewhere);
+  }
 }
 
 // Blender exits non-zero on every frame when it is named a Cycles backend the

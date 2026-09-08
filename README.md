@@ -142,10 +142,54 @@ would render half dressed and call itself finished.
 Files that are *here but not packed into it* are subtler: a machine somewhere
 else is sent the `.blend` and nothing beside it, so that job is kept on the
 machine that can see them rather than rendered untextured elsewhere and called
-done. And a simulation with no baked cache is refused outright — the farm hands
-frames out side by side and out of order, and every launch of Blender is a fresh
-one, which a cache stepped as it renders cannot survive. Somebody who means it
-can tick the box and skip the lot.
+done. Somebody who means it can tick the box and skip the lot.
+
+**A simulation nobody baked is baked here.** The farm hands frames out side by
+side and out of order, and every launch of Blender is a fresh one, which a cache
+stepped as it renders cannot survive — rendering frame 24 of an unbaked cloth
+sim on its own gives a picture 15% of whose pixels are wrong. So a job whose
+scene has an unbaked cloth, soft body, particle or rigid body cache is claimed
+for baking before any of it is claimed for rendering. One machine steps every
+simulation from its first frame up to the last frame the job needs, writes the
+scene out again with the caches inside it, and the frames then render from that
+copy — bit for bit what the artist would have got rendering the range in one
+Blender at home. The bake belongs to the job: it lives in the job's own folder,
+counts against its owner's quota, and is deleted with it.
+
+A cache the artist baked themselves is left alone — but only if its frames
+actually arrived. Blender can keep a baked cache in the file or in a
+`blendcache_` folder beside it, and a scene uploaded on its own leaves that
+folder behind while still reporting itself baked. The check asks how much each
+cache is holding rather than taking the flag's word for it, so a cache that says
+`0 frames on disk` is baked here like one that was never baked at all. A cache
+kept on disk is brought into the file while it is at it, since a folder beside
+the scene cannot travel with the copy the bake saves.
+
+Two simulations are sent back rather than baked, because baking them here would
+deliver a picture the artist would not get themselves. One is on an object
+*linked* from another file: its cache belongs to that file and is never written
+into the scene linking it, so the bake would report success and be gone the
+moment the scene was reopened. The other is on an object switched off in the
+viewport — Blender bakes nothing for one of those, and stepping it as the frames
+render gives a third picture, matching neither the artist's render nor a proper
+bake. Both jobs come back naming the object and the setting to change.
+
+What counts as rendering is taken from the scene's own objects together with the
+dependency graph, since neither is enough on its own: an instanced collection
+brings in simulations the scene never lists, and the dependency graph is
+evaluated for the viewport, so it leaves out an object hidden there and rendered
+anyway.
+
+One that was baked only part of the way is left alone, though. Blender holds a
+baked cache at its last baked frame rather than stepping past it, and holds it
+identically in every launch on every machine, so those frames come back from the
+farm pixel for pixel as they come out at home — carrying the bake further would
+render something the artist never saw.
+
+Baking is the farm's own work, so it is claimed like anything else: a machine
+switched off part way through one loses the claim rather than the job, and the
+bake is offered again. It is not free — the scene is saved a second time with
+its caches in it, and a heavy simulation can cost more than the render does.
 
 **An interrupted render resumes rather than restarting.** Frames are tracked
 individually, so switching the machine off mid-job costs the frame in flight,
@@ -203,8 +247,8 @@ chosen rather than on submit, so the workstation can open it in Blender while
 the rest of the form is being filled in, and answer with the frame range,
 engine, resolution, step, samples and format the scene was saved with. A field
 the artist has already set is left alone. Anything this farm cannot honour — an
-engine it does not run, a simulation nobody has baked, a scene with no camera —
-is said rather than quietly dropped. Submitting queues the file already on disk,
+engine it does not run, a scene with no camera — is said rather than quietly
+dropped. Submitting queues the file already on disk,
 so it goes up once.
 
 **A test frame can be rendered first.** The rest of the range is held back until

@@ -278,6 +278,13 @@ export function JobCard({ job, onChanged, onError }) {
         <p className="job-note">Checking the scene for files it did not bring…</p>
       )}
 
+      {job.baking?.length > 0 && (
+        <p className="job-note">
+          Baking {job.baking.length} simulation{job.baking.length === 1 ? '' : 's'}:{' '}
+          {job.baking.join(', ')}
+        </p>
+      )}
+
       {job.error && <p className="job-error">{job.error}</p>}
 
       {job.awaitingAssets?.length > 0 ? (

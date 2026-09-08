@@ -4,7 +4,7 @@ import {
 } from './db.js';
 import { jobs } from './job-store.js';
 import { frameTimings } from './estimates.js';
-import { queueWaits } from './queue.js';
+import { bakingSimulations, queueWaits } from './queue.js';
 
 export const DEFAULT_PAGE = 25;
 export const MAX_PAGE = 100;
@@ -61,6 +61,7 @@ function enrich(page, errorsByJob) {
     ...job,
     missingAssets: parseMissing(job.missingAssets),
     awaitingAssets: awaitingAssets(job),
+    baking: bakingSimulations(job),
     timing: timings.get(job.id) ?? null,
     frameErrors: errorsByJob.get(job.id) ?? [],
     startsIn: waits.get(job.id) ?? null
@@ -75,6 +76,7 @@ export function getJob(jobId) {
     ...job,
     missingAssets: parseMissing(job.missingAssets),
     awaitingAssets: awaitingAssets(job),
+    baking: bakingSimulations(job),
     frameErrors: getFailedFrames(jobId).map(asFrameError),
     timing: frameTimings([jobId]).get(jobId) ?? null,
     startsIn: queueWaits().get(jobId) ?? null

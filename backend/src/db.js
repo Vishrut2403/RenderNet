@@ -131,6 +131,12 @@ addColumnIfMissing('jobs', 'approval', 'TEXT');
 addColumnIfMissing('jobs', 'tiles', 'INTEGER');
 addColumnIfMissing('jobs', 'composite', 'TEXT');
 
+// A simulation the farm bakes before it renders anything: where that has got
+// to, the scene the bake produced, and what was found unbaked.
+addColumnIfMissing('jobs', 'bake', 'TEXT');
+addColumnIfMissing('jobs', 'bakedPath', 'TEXT');
+addColumnIfMissing('jobs', 'unbakedSims', 'TEXT');
+
 // What the scene reaches for outside itself, checked before it is queued.
 addColumnIfMissing('jobs', 'assetCheck', 'TEXT');
 addColumnIfMissing('jobs', 'missingAssets', 'TEXT');
@@ -170,7 +176,8 @@ const COLUMNS = [
   'pinnedAt', 'heldBy',
   'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality',
   'assetCheck', 'missingAssets', 'needsThisMachine',
-  'video', 'testFrame', 'approval', 'tiles', 'composite'
+  'video', 'testFrame', 'approval', 'tiles', 'composite',
+  'bake', 'bakedPath', 'unbakedSims'
 ];
 
 const upsertJob = db.prepare(`
@@ -538,15 +545,6 @@ export function releaseLeasesOf(workerId) {
   return held;
 }
 
-export function releaseCompositesOf(workerId) {
-  const held = db.prepare('SELECT jobId FROM composites WHERE leasedBy = ?')
-    .all(workerId).map(row => row.jobId);
-
-  db.prepare('DELETE FROM composites WHERE leasedBy = ?').run(workerId);
-
-  return held;
-}
-
 export function clearJobLeases(jobId) {
   return db.prepare(
     `UPDATE frames SET leaseId = NULL, leasedBy = NULL, leaseExpiresAt = NULL
@@ -608,64 +606,99 @@ export function deleteJobAssets(jobId) {
   return db.prepare('DELETE FROM job_assets WHERE jobId = ?').run(jobId).changes;
 }
 
-// Putting a tiled still back together is work the farm claims like any other,
-// so it needs a claim of its own: one per job rather than one per frame, and
-// held apart from the job row so that saving the job cannot overwrite it.
-db.exec(`
-  CREATE TABLE IF NOT EXISTS composites (
-    jobId INTEGER PRIMARY KEY,
-    leaseId TEXT,
-    leasedBy TEXT,
-    leaseExpiresAt TEXT
-  )
-`);
+// Work the farm claims a job at a time rather than a frame at a time: putting a
+// tiled still back together, and baking a scene's simulations before anything
+// renders. Held apart from the job row so that saving the job cannot overwrite
+// a claim.
+function jobClaims(table) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS ${table} (
+      jobId INTEGER PRIMARY KEY,
+      leaseId TEXT,
+      leasedBy TEXT,
+      leaseExpiresAt TEXT
+    )
+  `);
 
-export const leaseComposite = db.transaction((jobId, workerId, ttlMs) => {
-  const now = stamp();
-  const expiresAt = stamp(ttlMs);
+  const get = leaseId => {
+    const row = db.prepare(
+      `SELECT jobId, leasedBy, leaseExpiresAt AS expiresAt FROM ${table} WHERE leaseId = ?`
+    ).get(leaseId);
 
-  const taken = db.prepare(
-    `INSERT INTO composites (jobId, leaseId, leasedBy, leaseExpiresAt) VALUES (?, ?, ?, ?)
-     ON CONFLICT(jobId) DO UPDATE SET leaseId = excluded.leaseId,
-       leasedBy = excluded.leasedBy, leaseExpiresAt = excluded.leaseExpiresAt
-     WHERE composites.leaseExpiresAt IS NULL OR composites.leaseExpiresAt <= ?`
-  ).run(jobId, crypto.randomUUID(), workerId, expiresAt, now).changes === 1;
+    return row ? { ...row, leaseId } : null;
+  };
 
-  return taken ? getCompositeLease(db.prepare(
-    'SELECT leaseId FROM composites WHERE jobId = ?').get(jobId).leaseId) : null;
-});
+  return {
+    get,
 
-export function getCompositeLease(leaseId) {
-  const row = db.prepare(
-    `SELECT jobId, leasedBy, leaseExpiresAt AS expiresAt FROM composites WHERE leaseId = ?`
-  ).get(leaseId);
+    take: db.transaction((jobId, workerId, ttlMs) => {
+      const now = stamp();
+      const expiresAt = stamp(ttlMs);
 
-  return row ? { ...row, leaseId } : null;
+      const taken = db.prepare(
+        `INSERT INTO ${table} (jobId, leaseId, leasedBy, leaseExpiresAt) VALUES (?, ?, ?, ?)
+         ON CONFLICT(jobId) DO UPDATE SET leaseId = excluded.leaseId,
+           leasedBy = excluded.leasedBy, leaseExpiresAt = excluded.leaseExpiresAt
+         WHERE ${table}.leaseExpiresAt IS NULL OR ${table}.leaseExpiresAt <= ?`
+      ).run(jobId, crypto.randomUUID(), workerId, expiresAt, now).changes === 1;
+
+      return taken ? get(db.prepare(
+        `SELECT leaseId FROM ${table} WHERE jobId = ?`).get(jobId).leaseId) : null;
+    }),
+
+    renew(leaseId, ttlMs) {
+      const expiresAt = stamp(ttlMs);
+
+      const renewed = db.prepare(
+        `UPDATE ${table} SET leaseExpiresAt = ? WHERE leaseId = ? AND leaseExpiresAt > ?`
+      ).run(expiresAt, leaseId, stamp()).changes > 0;
+
+      return renewed ? expiresAt : null;
+    },
+
+    release(leaseId) {
+      return db.prepare(`DELETE FROM ${table} WHERE leaseId = ?`).run(leaseId).changes > 0;
+    },
+
+    clear(jobId) {
+      return db.prepare(`DELETE FROM ${table} WHERE jobId = ?`).run(jobId).changes;
+    },
+
+    live() {
+      return db.prepare(
+        `SELECT jobId, leasedBy, leaseExpiresAt AS expiresAt FROM ${table} WHERE leaseExpiresAt > ?`
+      ).all(stamp());
+    },
+
+    releaseOf(workerId) {
+      const held = db.prepare(`SELECT jobId FROM ${table} WHERE leasedBy = ?`)
+        .all(workerId).map(row => row.jobId);
+
+      db.prepare(`DELETE FROM ${table} WHERE leasedBy = ?`).run(workerId);
+
+      return held;
+    }
+  };
 }
 
-export function renewComposite(leaseId, ttlMs) {
-  const expiresAt = stamp(ttlMs);
+const composites = jobClaims('composites');
+const bakes = jobClaims('bakes');
 
-  const renewed = db.prepare(
-    'UPDATE composites SET leaseExpiresAt = ? WHERE leaseId = ? AND leaseExpiresAt > ?'
-  ).run(expiresAt, leaseId, stamp()).changes > 0;
+export const leaseComposite = composites.take;
+export const getCompositeLease = composites.get;
+export const renewComposite = composites.renew;
+export const releaseComposite = composites.release;
+export const clearJobComposite = composites.clear;
+export const liveComposites = composites.live;
+export const releaseCompositesOf = composites.releaseOf;
 
-  return renewed ? expiresAt : null;
-}
-
-export function releaseComposite(leaseId) {
-  return db.prepare('DELETE FROM composites WHERE leaseId = ?').run(leaseId).changes > 0;
-}
-
-export function clearJobComposite(jobId) {
-  return db.prepare('DELETE FROM composites WHERE jobId = ?').run(jobId).changes;
-}
-
-export function liveComposites() {
-  return db.prepare(
-    'SELECT jobId, leasedBy, leaseExpiresAt AS expiresAt FROM composites WHERE leaseExpiresAt > ?'
-  ).all(stamp());
-}
+export const leaseBake = bakes.take;
+export const getBakeLease = bakes.get;
+export const renewBake = bakes.renew;
+export const releaseBake = bakes.release;
+export const clearJobBake = bakes.clear;
+export const liveBakes = bakes.live;
+export const releaseBakesOf = bakes.releaseOf;
 
 export function liveLeases() {
   return db.prepare(

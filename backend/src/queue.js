@@ -11,7 +11,8 @@ import {
   recordJobAsset, jobAssets,
   holdFramesExcept, releaseHeldFrames,
   leaseComposite, renewComposite, releaseComposite, getCompositeLease,
-  liveComposites, clearJobComposite, releaseLeasesOf, releaseCompositesOf
+  liveComposites, clearJobComposite, releaseLeasesOf, releaseCompositesOf,
+  leaseBake, renewBake, releaseBake, getBakeLease, liveBakes, clearJobBake, releaseBakesOf
 } from './db.js';
 import {
   DEFAULT_EXR_CODEC, DEFAULT_EXR_DEPTH, DEFAULT_JPEG_QUALITY, primaryOf
@@ -19,7 +20,7 @@ import {
 import {
   workerCanRender, engineIsOffered, machines, workerCount, touchWorker
 } from './worker-registry.js';
-import { checkScene, unbakedMessage } from './preflight.js';
+import { checkScene } from './preflight.js';
 import { queueWaits as waitsFor, forgetTiming, machineFrameMs } from './estimates.js';
 import { stampJob, startedJob, shareOf, forgetJob, levelUp } from './fairness.js';
 import { jobs, nextJobId, workerScratchDir } from './job-store.js';
@@ -27,6 +28,7 @@ import {
   diskIsTooFull, tooFullToCarryOn, heldForDisk, deleteJobFiles, forgetUsage
 } from './storage.js';
 import { isTiled, tilesPath, compositeName } from './tiles.js';
+import { bakedScenePath } from './baking.js';
 import { assetsDir, writeManifest } from './supplied-assets.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
@@ -209,7 +211,7 @@ function startSceneCheck(job) {
   // Opened as the render will see it: a file already handed over is not
   // missing, and a linked .blend only says what it needs once it has been
   // opened, which is why supplying one can turn up more.
-  checkScene(dataPath(job.filePath), writeManifest(job, jobAssets(job.id))).then(({ checked, missing, unpacked, unbaked }) => {
+  checkScene(dataPath(job.filePath), writeManifest(job, jobAssets(job.id))).then(({ checked, missing, unpacked, unbaked, unbakeable }) => {
     const current = jobs.get(job.id);
 
     // Deleted or cancelled while Blender was reading it.
@@ -228,10 +230,26 @@ function startSceneCheck(job) {
 
     // Rendered out of order across machines, an unbaked cache gives a different
     // picture from the one the artist has locally - and says nothing about it.
-    if (checked && unbaked.length > 0) {
-      refuse(current, 'unbaked', unbakedMessage(unbaked), JSON.stringify(unbaked));
-      console.log(`Job ${current.id} has ${unbaked.length} simulation(s) nobody baked`);
+    // The farm bakes it first rather than refusing the job: this is the machine
+    // with the hours to spend on it.
+    // Simulations the farm cannot bake without delivering a picture the artist
+    // would not get themselves. Sent back with what to change rather than baked
+    // into something that only looks right.
+    if (checked && unbakeable.length > 0) {
+      const queued = renderQueue.indexOf(current.id);
+      if (queued > -1) renderQueue.splice(queued, 1);
+
+      saveJob(current);
+      failJob(current.id, cannotBake(unbakeable));
+
+      console.log(`Job ${current.id} has ${unbakeable.length} simulation(s) it cannot bake`);
       return;
+    }
+
+    if (checked && unbaked.length > 0) {
+      current.bake = 'waiting';
+      current.unbakedSims = JSON.stringify(unbaked);
+      console.log(`Job ${current.id} has ${unbaked.length} simulation(s) to bake first`);
     }
 
     // Not packed, but here. Fine on this machine and nowhere else, because a
@@ -296,14 +314,59 @@ export function supplyAsset(jobId, storedPath, { filename, bytes }) {
   return { wanted: left };
 }
 
-function refuse(job, verdict, message, detail) {
-  const queued = renderQueue.indexOf(job.id);
-  if (queued > -1) renderQueue.splice(queued, 1);
+// The scene a render opens: the bake's own copy where there was one to do, and
+// the uploaded file otherwise. The version goes with it because a machine
+// somewhere else keeps what it fetches: the store names a scene by the hash of
+// its contents, but a baked copy keeps one name however many times it is made,
+// and a job baked again would otherwise render from the copy that machine kept.
+function sceneOf(job) {
+  const at = dataPath(job.bakedPath || job.filePath);
 
-  job.assetCheck = verdict;
-  job.missingAssets = detail;
-  saveJob(job);
-  failJob(job.id, message);
+  if (!job.bakedPath) return { blendPath: at, blendVersion: null };
+
+  const made = fs.existsSync(at) ? Math.round(fs.statSync(at).mtimeMs) : 0;
+
+  return { blendPath: at, blendVersion: String(made) };
+}
+
+// What the bake has to reach: a simulation is only right at a frame if every
+// frame before it was stepped, so the cache has to cover the last one rendered.
+function lastFrameOf(job) {
+  return isTiled(job) ? job.frameStart : job.frameEnd;
+}
+
+// One sentence per reason, naming what to change in Blender: both are a setting
+// away from being ordinary jobs the farm bakes itself.
+function cannotBake(entries) {
+  const named = why => entries.filter(entry => entry.why === why).map(entry => entry.name);
+
+  const said = [];
+  const linked = named('linked');
+  const hidden = named('hidden');
+
+  if (linked.length > 0) {
+    said.push(`${linked.join(', ')} ${linked.length === 1 ? 'is' : 'are'} linked from another `
+      + 'file, and a cache cannot be baked into a scene that only links it. Bake it where it '
+      + 'lives, save that file, and upload again.');
+  }
+
+  if (hidden.length > 0) {
+    said.push(`${hidden.join(', ')} ${hidden.length === 1 ? 'is' : 'are'} switched off in the `
+      + 'viewport, and Blender bakes nothing for an object switched off there. Turn the '
+      + 'monitor icon back on, save, and upload again.');
+  }
+
+  return said.join(' ');
+}
+
+export function bakingSimulations(job) {
+  if (job.bake !== 'waiting') return [];
+
+  try {
+    return JSON.parse(job.unbakedSims || '[]');
+  } catch {
+    return [];
+  }
 }
 
 function preemptFor(job) {
@@ -369,19 +432,27 @@ export function rerunJob(jobId) {
     return { success: false, error: `Cannot rerun a ${job.status} job` };
   }
 
-  // The stored .blend is the one that was checked, so running it again can only
-  // produce the same frames with the same files missing, or the same simulation
-  // nobody has baked.
   // A scene nobody can put right by trying again: the stored .blend is the one
-  // that was looked at, so it can only fail the same way. 'missing' is only
-  // reachable on rows from before the farm started asking for the files instead
-  // of refusing the job, and is kept for exactly those.
+  // that was looked at, so it can only fail the same way. Both are only
+  // reachable on rows from before the farm started asking for the files it is
+  // missing and baking the simulations itself.
   if (job.assetCheck === 'missing' || job.assetCheck === 'unbaked') {
     return { success: false, error: job.error };
   }
 
+  // A bake is worth another go: the likeliest reason it stopped is the machine
+  // being switched off for the night part way through one.
+  if (job.bake === 'failed') job.bake = 'waiting';
+
   if (!job.filePath || !fs.existsSync(dataPath(job.filePath))) {
     return { success: false, error: 'The uploaded .blend is no longer on the workstation' };
+  }
+
+  // The frames render from the baked copy, so one that has been swept has to be
+  // made again rather than rendered without.
+  if (job.bakedPath && !fs.existsSync(dataPath(job.bakedPath))) {
+    job.bakedPath = null;
+    job.bake = 'waiting';
   }
 
   // Before resetting: a frame counted as done whose file has been swept has to
@@ -605,6 +676,7 @@ function promoteNext() {
   // unfinishable.
   clearJobLeases(jobId);
   clearJobComposite(jobId);
+  clearJobBake(jobId);
 
   job.status = 'rendering';
   job.startedAt = new Date().toISOString();
@@ -637,7 +709,8 @@ const drainTimers = new Map();
 // holding on to the job.
 function stillClaimed(jobId) {
   return liveLeases().some(lease => lease.jobId === jobId)
-    || liveComposites().some(claim => claim.jobId === jobId);
+    || liveComposites().some(claim => claim.jobId === jobId)
+    || liveBakes().some(claim => claim.jobId === jobId);
 }
 
 // A worker in another process cannot be reached from here, so a stopped job is
@@ -721,6 +794,35 @@ function spanFor(job, workerId) {
   return Math.max(1, Math.min(Math.floor(SPAN_MS / perFrame), share, MAX_SPAN));
 }
 
+// Offered before anything else this job has: the frames are not claimable until
+// it is done. Any machine may take it, whatever it can render, because a bake
+// renders nothing - but a scene whose files only this machine can see has to be
+// baked here, for the same reason it has to be rendered here.
+function bakeFromActive(workerId, local) {
+  for (const job of activeJobs()) {
+    if (job.bake !== 'waiting') continue;
+    if (job.needsThisMachine && !local) continue;
+
+    const lease = leaseBake(job.id, workerId, LEASE_TTL_MS);
+
+    if (!lease) continue;
+
+    return {
+      ...lease,
+      ttlMs: LEASE_TTL_MS,
+      blendPath: dataPath(job.filePath),
+      renderEngine: job.renderEngine,
+      bake: {
+        last: lastFrameOf(job),
+        path: dataPath(bakedScenePath(job)),
+        simulations: bakingSimulations(job)
+      }
+    };
+  }
+
+  return null;
+}
+
 // Offered before frames: it is the last thing a tiled still needs, and until it
 // is done the job holds a slot.
 function compositeFromActive(workerId) {
@@ -736,7 +838,7 @@ function compositeFromActive(workerId) {
       ...lease,
       ttlMs: LEASE_TTL_MS,
       renderEngine: job.renderEngine,
-      blendPath: dataPath(job.filePath),
+      ...sceneOf(job),
       tilesDir: dataPath(tilesPath(job.outputFolder)),
       composite: {
         tiles: job.tiles,
@@ -756,6 +858,10 @@ function leaseFromActive(workerId, local) {
     // and three failures in a row is enough to stop the job for everyone.
     if (!workerCanRender(workerId, job.renderEngine)) continue;
 
+    // Nothing of this job renders until its simulations are baked: a frame
+    // rendered before that is the wrong picture rather than a failed one.
+    if (job.bake === 'waiting') continue;
+
     // Its textures are on this machine's disk and nowhere else, so a machine
     // somewhere else would render it untextured and say nothing was wrong.
     if (job.needsThisMachine && !local) continue;
@@ -766,7 +872,7 @@ function leaseFromActive(workerId, local) {
       return {
         ...lease,
         ttlMs: LEASE_TTL_MS,
-        blendPath: dataPath(job.filePath),
+        ...sceneOf(job),
         // Files the artist handed over, named by the path the scene stores, so
         // the render can point each datablock at the copy it was given.
         assets: jobAssets(job.id).map(asset => ({
@@ -825,7 +931,9 @@ export function leaseNextFrame(workerId, local = false) {
   parkUnrenderable();
 
   for (;;) {
-    const lease = compositeFromActive(workerId) ?? leaseFromActive(workerId, local);
+    const lease = bakeFromActive(workerId, local)
+      ?? compositeFromActive(workerId)
+      ?? leaseFromActive(workerId, local);
 
     if (lease) return lease;
     if (!promoteNext()) break;
@@ -843,7 +951,7 @@ export function leaseNextFrame(workerId, local = false) {
 // Refused once the job is no longer rendering, which is how a worker learns it
 // was cancelled or preempted.
 export function renewFrameLease(leaseId) {
-  const lease = getLease(leaseId) ?? getCompositeLease(leaseId);
+  const lease = getLease(leaseId) ?? getCompositeLease(leaseId) ?? getBakeLease(leaseId);
 
   if (!lease) return { ok: false, reason: 'unknown' };
 
@@ -853,7 +961,7 @@ export function renewFrameLease(leaseId) {
 
   const expiresAt = lease.frames
     ? renewLease(leaseId, LEASE_TTL_MS)
-    : renewComposite(leaseId, LEASE_TTL_MS);
+    : renewComposite(leaseId, LEASE_TTL_MS) ?? renewBake(leaseId, LEASE_TTL_MS);
 
   if (expiresAt) touchWorker(lease.leasedBy);
 
@@ -864,7 +972,9 @@ export function renewFrameLease(leaseId) {
 // out a lease nobody is renewing: with a claim covering a span, that is up to a
 // minute of the farm sitting on work it will never receive.
 export function forgetWorker(workerId) {
-  const touched = new Set([...releaseLeasesOf(workerId), ...releaseCompositesOf(workerId)]);
+  const touched = new Set([
+    ...releaseLeasesOf(workerId), ...releaseCompositesOf(workerId), ...releaseBakesOf(workerId)
+  ]);
 
   if (touched.size === 0) return 0;
 
@@ -878,12 +988,12 @@ export function forgetWorker(workerId) {
 whenWorkerLost(forgetWorker);
 
 export function releaseFrameLease(leaseId) {
-  const lease = getLease(leaseId) ?? getCompositeLease(leaseId);
+  const lease = getLease(leaseId) ?? getCompositeLease(leaseId) ?? getBakeLease(leaseId);
 
   if (!lease) return false;
 
   if (lease.frames) releaseLease(leaseId);
-  else releaseComposite(leaseId);
+  else if (!releaseComposite(leaseId)) releaseBake(leaseId);
 
   settleJob(lease.jobId);
 
@@ -944,6 +1054,34 @@ function settleTiles(job, counts) {
   saveJob(job);
 
   console.log(`Job ${job.id}: all ${job.tiles} tiles in, waiting to be put together`);
+}
+
+// The baked scene has arrived, or a machine has said it could not bake one.
+// Until this lands the job holds a slot with nothing claimable in it, which is
+// the point: every frame of it would otherwise be the wrong picture.
+export function recordBake(jobId, error) {
+  const job = jobs.get(jobId);
+
+  if (!job || job.status !== 'rendering') return null;
+
+  clearJobBake(jobId);
+
+  if (error) {
+    job.bake = 'failed';
+    saveJob(job);
+    failJob(jobId, `The scene's simulations could not be baked: ${error}`);
+
+    return job;
+  }
+
+  job.bake = 'done';
+  job.bakedPath = bakedScenePath(job);
+  saveJob(job);
+  forgetUsage(job.owner);
+
+  console.log(`Job ${jobId}: simulations baked, ${job.totalFrames} frame(s) can go out`);
+
+  return job;
 }
 
 // The finished picture has arrived, or a machine has said it could not make one.

@@ -27,15 +27,15 @@ function framesOf(sandbox, jobId) {
   }
 }
 
-// The frames table as the last release left it. SQLite drops a column without
-// disturbing the primary key, so what is left is the real previous shape.
-function undoTheMigration(sandbox, column) {
+// A table as the last release left it. SQLite drops a column without disturbing
+// the primary key, so what is left is the real previous shape.
+function undoTheMigration(sandbox, table, columns) {
   const db = new Database(path.join(sandbox, 'test.db'));
 
   try {
-    db.exec(`ALTER TABLE frames DROP COLUMN ${column}`);
+    for (const column of columns) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
 
-    return db.prepare('PRAGMA table_info(frames)').all().map(info => info.name);
+    return db.prepare(`PRAGMA table_info(${table})`).all().map(info => info.name);
   } finally {
     db.close();
   }
@@ -79,10 +79,14 @@ export default async function run() {
     await stopServer(server);
     server = null;
 
-    const columns = undoTheMigration(sandbox, 'ordinal');
+    const columns = undoTheMigration(sandbox, 'frames', ['ordinal']);
+    const jobColumns = undoTheMigration(sandbox, 'jobs', ['bake', 'bakedPath', 'unbakedSims']);
 
     results.check('the database is back to the shape the last release left',
       !columns.includes('ordinal'), columns.join(','));
+    results.check('knowing nothing about baking a scene before it renders',
+      ['bake', 'bakedPath', 'unbakedSims'].every(name => !jobColumns.includes(name)),
+      jobColumns.join(','));
 
     console.log('\n  Starting the new release on it');
 
@@ -91,8 +95,14 @@ export default async function run() {
     const upgradedToken = await adminSession(server.base);
     const rows = framesOf(sandbox, jobId);
 
+    const carriedJob = await getJob(server.base, upgradedToken, jobId);
+
     results.check('the server starts on a database it has to migrate',
-      (await getJob(server.base, upgradedToken, jobId)).id === jobId);
+      carriedJob.id === jobId);
+    // Null rather than 'waiting': a job that was queued before the farm baked
+    // anything is not suddenly a job with a bake outstanding.
+    results.check('and a job from before has nothing to bake',
+      !carriedJob.bake, String(carriedJob.bake));
     results.check('every frame that was already there has an ordinal',
       rows.length === FRAMES && rows.every(row => Number.isInteger(row.ordinal)),
       `${rows.length} rows, ${rows.filter(row => row.ordinal === null).length} without one`);

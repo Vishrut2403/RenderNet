@@ -8,7 +8,7 @@ import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   login, auth, status, submitJob, waitForJob, getJob, adminSession, signUp, createFakeFfmpeg,
   createFakeBlender, createFakeScene, waitForCondition, stubbornIsUnkillable,
-  fakeBlenderPath
+  fakeBlenderPath, sleep
 } from './helpers.mjs';
 
 const PORT = 5593;
@@ -1371,27 +1371,138 @@ export default async function run() {
     // The farm hands frames out side by side and out of order, and every span
     // is a fresh Blender. A simulation stepped as it renders cannot survive
     // that, and would come back looking nothing like the artist's own render.
+    // So the farm bakes it first, on the machine with the hours to spend.
+    // Cleared first: the record is shared by every render in this sandbox, and
+    // what matters is which scene the frames after the bake came from.
+    fs.rmSync(path.join(assetBox, 'uploads', 'spans.txt'), { force: true });
+
     const simulated = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'unbaked.blend'),
-      { frameStart: 1, frameEnd: 40 }
+      { frameStart: 1, frameEnd: 6 }
     );
-    const simJob = await waitForJob(assetServer.base, assetToken, simulated.body.jobId, 60000);
+    const simJob = await waitForJob(assetServer.base, assetToken, simulated.body.jobId, 90000);
 
-    results.check('a scene whose simulation has no cache is refused',
-      simJob.status === 'failed' && simJob.assetCheck === 'unbaked',
-      `${simJob.status} / ${simJob.assetCheck}`);
-    results.check('without rendering a frame of it either',
-      simJob.completedFrames === 0, `${simJob.completedFrames} frames rendered`);
-    results.check('naming what to bake',
-      simJob.error?.includes('Flag (cloth)') && /bake/i.test(simJob.error ?? ''),
-      simJob.error);
+    results.check('a scene whose simulation has no cache is baked, not refused',
+      simJob.status === 'completed' && simJob.bake === 'done',
+      `${simJob.status} / ${simJob.bake}`);
 
-    const bakedInstead = await fetch(`${assetServer.base}/jobs/${simulated.body.jobId}/rerun`, {
+    const bakes = fs.readFileSync(path.join(assetBox, 'uploads', 'bakes.txt'), 'utf8');
+
+    results.check('the bake was asked to reach the last frame the job renders',
+      bakes.trim().endsWith(' 6'), bakes.trim());
+    results.check('and every frame rendered from the scene the bake wrote',
+      simJob.completedFrames === 6, `${simJob.completedFrames} of 6`);
+
+    const spans = fs.readFileSync(path.join(assetBox, 'uploads', 'spans.txt'), 'utf8')
+      .split('\n').filter(Boolean);
+
+    results.check('rather than from the one that was uploaded',
+      spans.every(span => span.startsWith('baked.blend')), spans.join(' | '));
+
+    // Baked once and kept: the second job over the same scene has its own copy
+    // rather than one job quietly rendering from another's.
+    const failing = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'unbaked-crash.blend'),
+      { frameStart: 1, frameEnd: 4 }
+    );
+    const failedBake = await waitForJob(assetServer.base, assetToken, failing.body.jobId, 90000);
+
+    results.check('a bake that fails fails the job',
+      failedBake.status === 'failed', failedBake.status);
+    results.check('saying what Blender said about it',
+      /ran out of memory/.test(failedBake.error ?? ''), failedBake.error);
+    results.check('and no frame of it was rendered',
+      failedBake.completedFrames === 0, `${failedBake.completedFrames} frames rendered`);
+
+    // Blender bakes what it can and exits nought either way, so a scene that
+    // comes back half baked is the case a return code cannot catch.
+    const partly = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'unbaked-partly.blend'),
+      { frameStart: 1, frameEnd: 4 }
+    );
+    const partlyJob = await waitForJob(assetServer.base, assetToken, partly.body.jobId, 90000);
+
+    results.check('a bake Blender only half did is a failure too',
+      partlyJob.status === 'failed' && partlyJob.completedFrames === 0,
+      `${partlyJob.status}, ${partlyJob.completedFrames} frames`);
+
+    const retried = await fetch(`${assetServer.base}/jobs/${failing.body.jobId}/rerun`, {
       method: 'POST', headers: auth(assetToken)
     });
 
-    results.check('and it cannot be rerun into rendering either',
-      bakedInstead.status === 400, `got ${bakedInstead.status}`);
+    results.check('a failed bake can be tried again, unlike a scene nothing can fix',
+      retried.status === 200, `got ${retried.status}`);
+
+    // A cache on a linked object is written into the file it was linked from,
+    // never into the one linking it, so baking it here would report success and
+    // be gone the moment the scene was opened again.
+    const borrowed = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'linked-sim.blend'),
+      { frameStart: 1, frameEnd: 3 }
+    );
+    const borrowedJob = await waitForJob(assetServer.base, assetToken, borrowed.body.jobId, 60000);
+
+    results.check('a simulation linked from another file is sent back, not baked',
+      borrowedJob.status === 'failed', borrowedJob.status);
+    results.check('naming it and where to bake it',
+      /Borrowed/.test(borrowedJob.error ?? '') && /linked/.test(borrowedJob.error ?? ''),
+      borrowedJob.error);
+
+    const attempted = fs.readFileSync(path.join(assetBox, 'uploads', 'bakes.txt'), 'utf8');
+
+    results.check('without a machine spending an hour finding that out',
+      !attempted.includes('linked-sim'), attempted.trim());
+
+    // The other one Blender will not bake: an object switched off in the
+    // viewport. The farm could step it as the frames render, but that is a
+    // third picture, matching neither the artist's nor a proper bake.
+    const tucked = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'hidden-sim.blend'),
+      { frameStart: 1, frameEnd: 3 }
+    );
+    const tuckedJob = await waitForJob(assetServer.base, assetToken, tucked.body.jobId, 60000);
+
+    results.check('a simulation switched off in the viewport is sent back too',
+      tuckedJob.status === 'failed' && /Tucked/.test(tuckedJob.error ?? ''), tuckedJob.error);
+    results.check('saying which setting to change',
+      /viewport/.test(tuckedJob.error ?? '') && /monitor/.test(tuckedJob.error ?? ''),
+      tuckedJob.error);
+
+    // A bake is a claim on the job like any other, so a job cancelled part way
+    // through one is not finished with until the machine baking it has stopped.
+    // Cancelling as though it were idle would delete the job's folder while a
+    // Blender was still writing the baked scene into it.
+    const interrupted = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'unbaked-slow.blend'),
+      { frameStart: 1, frameEnd: 2 }
+    );
+    const slowId = interrupted.body.jobId;
+    const baking = await getJob(assetServer.base, assetToken, slowId);
+
+    await waitForCondition(
+      () => fs.readFileSync(path.join(assetBox, 'uploads', 'bakes.txt'), 'utf8')
+        .includes('unbaked-slow.blend'),
+      { label: 'the bake to start' }
+    );
+
+    await fetch(`${assetServer.base}/jobs/${slowId}/cancel`, {
+      method: 'POST', headers: auth(assetToken)
+    });
+
+    const gone = await waitForCondition(
+      () => !fs.existsSync(path.join(assetBox, baking.outputFolder)),
+      { label: 'the cancelled job files to go' }
+    );
+
+    results.check('a job cancelled while it is being baked cleans up', gone);
+
+    // Long enough for the interrupted bake to have finished writing had nothing
+    // stopped it: the folder must not come back.
+    await sleep(5000);
+
+    results.check('and the bake does not put its folder back afterwards',
+      !fs.existsSync(path.join(assetBox, baking.outputFolder)),
+      path.join(assetBox, baking.outputFolder));
 
   } finally {
     await stopServer(assetServer);

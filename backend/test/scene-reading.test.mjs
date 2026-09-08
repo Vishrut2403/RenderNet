@@ -211,7 +211,14 @@ export default async function run() {
 async function whatBlenderActuallySays(results) {
   const names = ['a texture the scene did not bring is missing',
     'one it did bring but did not pack is named apart',
-    'and a simulation with no cache is named too'];
+    'and a simulation with no cache is named too',
+    'a cache baked into the file is left alone',
+    'but one baked to disk and left behind counts as unbaked',
+    'and one baked only part of the way is left alone as well',
+    'a simulation in a scene nobody renders is nobody\'s problem',
+    'and one linked from another file is named as one to bake there',
+    'so is one on an object switched off in the viewport',
+    'while one inside an instanced collection is baked like any other'];
 
   if (!blenderAvailable()) {
     for (const name of names) results.skipped(name, 'Blender not installed');
@@ -264,6 +271,164 @@ textured('Wall', r'${path.join(box, 'nowhere', 'gone.png')}', 3)
       JSON.stringify(named(report.unpacked)));
     results.check(names[2], report.unbaked.some(what => what.includes('cloth')),
       JSON.stringify(report.unbaked));
+
+    // Baked to disk, which puts the frames in a folder beside the .blend rather
+    // than inside it. Blender says the cache is baked either way, so the only
+    // thing that tells them apart is how much it says it is holding.
+    const beside = path.join(box, 'cached', 'diskcached.blend');
+
+    fs.mkdirSync(path.dirname(beside), { recursive: true });
+
+    const cached = createFixtureBlend(path.dirname(beside), {
+      name: 'diskcached.blend',
+      extra: `
+bpy.context.scene.frame_end = 4
+bpy.ops.mesh.primitive_grid_add(size=2, location=(0, 0, 2))
+grid = bpy.context.object
+grid.modifiers.new('Cloth', 'CLOTH')
+cache = grid.modifiers['Cloth'].point_cache
+
+# Saved first: a cache on disk is written beside the file, so it needs a path.
+bpy.ops.wm.save_as_mainfile(filepath=r'${beside}')
+cache.use_disk_cache = True
+cache.frame_end = 4
+
+with bpy.context.temp_override(object=grid, point_cache=cache):
+    bpy.ops.ptcache.bake(bake=True)
+`
+    });
+
+    const here = await checkScene(cached);
+
+    results.check(names[3], here.unbaked.length === 0, JSON.stringify(here.unbaked));
+
+    // Only the .blend travels: the folder of frames stays on the machine that
+    // baked it, which is what an upload of one file amounts to.
+    const alone = path.join(box, 'uploaded.blend');
+
+    fs.copyFileSync(cached, alone);
+
+    const orphaned = await checkScene(alone);
+
+    results.check(names[4], orphaned.unbaked.some(what => what.includes('cloth')),
+      JSON.stringify(orphaned.unbaked));
+
+    // Baked to frame 4 of a longer scene. Blender holds a baked cache at its
+    // last frame rather than stepping past it, and holds it in every launch on
+    // every machine, so the farm renders those frames exactly as the artist's
+    // own Blender does. Baking it further would render something they never saw.
+    const short = createFixtureBlend(box, {
+      name: 'shortbake.blend',
+      extra: `
+bpy.context.scene.frame_end = 12
+bpy.ops.mesh.primitive_grid_add(size=2, location=(0, 0, 2))
+grid = bpy.context.object
+grid.modifiers.new('Cloth', 'CLOTH')
+cache = grid.modifiers['Cloth'].point_cache
+cache.frame_end = 4
+
+with bpy.context.temp_override(object=grid, point_cache=cache):
+    bpy.ops.ptcache.bake(bake=True)
+`
+    });
+
+    const partly = await checkScene(short);
+
+    results.check(names[5], partly.unbaked.length === 0, JSON.stringify(partly.unbaked));
+
+    // Blender bakes the caches of one scene, and the one that renders is the
+    // one the form was filled in from. A sim in another scene of the same file
+    // would otherwise be asked for and never delivered.
+    const aside = createFixtureBlend(box, {
+      name: 'twoscenes.blend',
+      extra: `
+# Held on to: bpy.data.scenes is ordered by name, so the one that renders is
+# not whichever happens to be first once another has been added.
+rendered = bpy.context.scene
+elsewhere = bpy.data.scenes.new('Elsewhere')
+bpy.context.window.scene = elsewhere
+bpy.ops.mesh.primitive_grid_add(size=2, location=(0, 0, 2))
+bpy.context.object.modifiers.new('Cloth', 'CLOTH')
+bpy.context.window.scene = rendered
+`
+    });
+
+    const other = await checkScene(aside);
+
+    results.check(names[6], other.unbaked.length === 0, JSON.stringify(other.unbaked));
+
+    // A cache belongs to the file its object came from. Bake a linked one here
+    // and the frames in memory are never written into the scene that links it,
+    // so it reads as unbaked again the moment that scene is reopened.
+    const library = createFixtureBlend(box, {
+      name: 'library.blend',
+      extra: `
+bpy.ops.mesh.primitive_grid_add(size=2, location=(0, 0, 2))
+bpy.context.object.name = 'Borrowed'
+bpy.context.object.modifiers.new('Cloth', 'CLOTH')
+`
+    });
+
+    const links = createFixtureBlend(box, {
+      name: 'links.blend',
+      extra: `
+bpy.ops.wm.link(filepath=r'${library}' + '/Object/Borrowed',
+                directory=r'${library}' + '/Object/', filename='Borrowed')
+`
+    });
+
+    const linked = await checkScene(links);
+
+    results.check(names[7],
+      linked.unbakeable.some(entry => entry.name.includes('Borrowed') && entry.why === 'linked')
+        && linked.unbaked.length === 0,
+      `${JSON.stringify(linked.unbakeable)} / ${JSON.stringify(linked.unbaked)}`);
+
+    // Switched off in the viewport and rendered anyway, which is how a heavy
+    // simulation is worked with. Blender bakes nothing for it, and stepping it
+    // as the frames render gives a picture of its own, so it is sent back.
+    const tucked = createFixtureBlend(box, {
+      name: 'tucked.blend',
+      extra: `
+bpy.ops.mesh.primitive_grid_add(size=2, location=(0, 0, 2))
+grid = bpy.context.object
+grid.name = 'Tucked'
+grid.modifiers.new('Cloth', 'CLOTH')
+grid.hide_viewport = True
+`
+    });
+
+    const offscreen = await checkScene(tucked);
+
+    results.check(names[8],
+      offscreen.unbakeable.some(entry => entry.name.includes('Tucked') && entry.why === 'hidden')
+        && offscreen.unbaked.length === 0,
+      `${JSON.stringify(offscreen.unbakeable)} / ${JSON.stringify(offscreen.unbaked)}`);
+
+    // Inside a collection the scene only instances: it renders, so it counts,
+    // even though the scene's own object list names the empty and not the cloth.
+    const instanced = createFixtureBlend(box, {
+      name: 'instanced.blend',
+      extra: `
+group = bpy.data.collections.new('Flags')
+bpy.ops.mesh.primitive_grid_add(size=2, location=(0, 0, 2))
+inside = bpy.context.object
+inside.name = 'Instanced'
+inside.modifiers.new('Cloth', 'CLOTH')
+# Out of whatever collection it landed in: the startup file nests one inside
+# the scene's own, so this is not always the scene collection.
+for holding in list(inside.users_collection):
+    holding.objects.unlink(inside)
+
+group.objects.link(inside)
+bpy.ops.object.collection_instance_add(collection='Flags', location=(0, 0, 0))
+`
+    });
+
+    const brought = await checkScene(instanced);
+
+    results.check(names[9], brought.unbaked.some(what => what.includes('Instanced')),
+      JSON.stringify(brought.unbaked));
   } finally {
     removeSandbox(box);
   }

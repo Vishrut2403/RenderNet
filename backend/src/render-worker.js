@@ -9,6 +9,7 @@ import { BlenderSession, sessionKey, DAEMON_SCRIPT, FRAME_DONE } from './blender
 import { primaryOf, extrasOf, extensionOf } from './formats.js';
 import { GRID_PYTHON, COMPOSITE_SCRIPT, tileName } from './tiles.js';
 import { REFERENCED_PYTHON, SUPPLIED_PYTHON } from './scene-references.js';
+import { BAKE_SCRIPT, BAKE_MARKER, UNBAKED_MARKER } from './baking.js';
 
 const BLENDER_PATH = process.env.BLENDER_PATH || findBlenderExecutable() || 'blender';
 const API_URL = process.env.API_URL || 'http://localhost:5500';
@@ -335,12 +336,27 @@ class RenderWorker {
   // Kept under what the scene is rather than which job wanted it: the server
   // stores a scene once however many jobs render it, and this machine
   // downloads it once too. A second frame range of the same shot is free.
-  async fetchBlend(jobId, blendPath) {
-    const cached = path.join(SCRATCH_DIR, `${sceneName(blendPath) ?? `job_${jobId}`}.blend`);
+  async fetchBlend(jobId, blendPath, version = null) {
+    const held = sceneName(blendPath) ?? `job_${jobId}${version ? `_${version}` : ''}`;
+    const cached = path.join(SCRATCH_DIR, `${held}.blend`);
 
     if (fs.existsSync(cached)) return cached;
 
     fs.mkdirSync(SCRATCH_DIR, { recursive: true });
+
+    // A scene of this job under another version is the copy from before it was
+    // baked again, and nothing will ask for it now.
+    for (const stale of fs.readdirSync(SCRATCH_DIR)) {
+      if (!stale.startsWith(`job_${jobId}_`) || stale === `${held}.blend`) continue;
+
+      // Windows refuses to remove a file another slot on this machine may still
+      // have open; it is scratch, and the next fetch will pass this way again.
+      try {
+        fs.rmSync(path.join(SCRATCH_DIR, stale), { force: true });
+      } catch {
+        console.warn(`Could not clear the old scene for job ${jobId}`);
+      }
+    }
 
     const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/blend`, {
       headers: workerHeaders()
@@ -405,7 +421,8 @@ class RenderWorker {
 
     this.abandoned = false;
 
-    if (lease.composite) await this.assembleLeasedStill(lease);
+    if (lease.bake) await this.bakeLeasedScene(lease);
+    else if (lease.composite) await this.assembleLeasedStill(lease);
     else await this.renderLeasedSpan(lease);
 
     return true;
@@ -458,7 +475,7 @@ class RenderWorker {
 
     if (remote) {
       try {
-        blendPath = await this.fetchBlend(jobId, lease.blendPath);
+        blendPath = await this.fetchBlend(jobId, lease.blendPath, lease.blendVersion);
       } catch (error) {
         // Charged to the first frame only: nothing in the span was attempted.
         console.error(`Could not fetch the scene for job ${jobId}: ${error.message}`);
@@ -569,6 +586,133 @@ class RenderWorker {
     }
   }
 
+  // Stepping every simulation from its first frame and writing the result into
+  // the scene, so that the frames can then be rendered in any order on any
+  // machine. Nothing of this job renders until it is done.
+  async bakeLeasedScene(lease) {
+    const { leaseId, jobId, bake } = lease;
+    const outputDir = path.join(SCRATCH_DIR, `bake_${jobId}`);
+
+    console.log(`\n🧊 Job ${jobId}, baking ${bake.simulations.length} simulation(s) `
+      + `up to frame ${bake.last}`);
+
+    this.startRenewing(lease);
+
+    const remote = process.env.WORKER_REMOTE === '1' || !fs.existsSync(lease.blendPath);
+    // Where the server can already read it, where this machine is the server.
+    const output = remote ? path.join(outputDir, 'baked.blend') : bake.path;
+
+    fs.mkdirSync(remote ? outputDir : path.dirname(output), { recursive: true });
+
+    try {
+      const blendPath = remote ? await this.fetchBlend(jobId, lease.blendPath) : lease.blendPath;
+      const failure = await this.runBake(blendPath, outputDir, output, bake);
+
+      if (this.abandoned) return;
+
+      if (failure) await this.reportBake(jobId, leaseId, failure);
+      else if (!await this.sendBaked(jobId, leaseId, remote ? output : null)) {
+        await this.reportBake(jobId, leaseId, 'The scene was baked but could not be sent');
+      }
+    } catch (error) {
+      if (!this.abandoned) await this.reportBake(jobId, leaseId, error.message);
+    } finally {
+      this.stopRenewing();
+      await this.releaseLease(leaseId);
+      fs.rmSync(outputDir, { recursive: true, force: true });
+    }
+  }
+
+  runBake(blendPath, outputDir, output, bake) {
+    return new Promise(resolve => {
+      const script = path.join(outputDir, 'bake.py');
+
+      fs.mkdirSync(outputDir, { recursive: true });
+      fs.writeFileSync(script, BAKE_SCRIPT);
+
+      const blender = launch(BLENDER_PATH, ['-b', blendPath, '-P', script], {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          RENDERNET_BAKE_LAST: String(bake.last),
+          RENDERNET_BAKE_OUT: output
+        }
+      });
+
+      this.currentProcess = blender;
+
+      let said = '';
+      blender.stdout.on('data', chunk => { said = (said + chunk).slice(-OUTPUT_TAIL); });
+      blender.stderr.on('data', chunk => { said = (said + chunk).slice(-OUTPUT_TAIL); });
+
+      blender.on('error', error => resolve(error.message));
+
+      blender.on('close', code => {
+        this.currentProcess = null;
+
+        if (code !== 0) return resolve(lastLine(said) || `Blender exited with code ${code}`);
+
+        // Blender bakes what it can and exits nought either way, so the scene
+        // is only worth keeping when the script says every cache came back with
+        // frames in it.
+        const stuck = said.split('\n').find(line => line.includes(UNBAKED_MARKER));
+
+        if (stuck) {
+          return resolve(stuck.slice(stuck.indexOf(UNBAKED_MARKER) + UNBAKED_MARKER.length).trim());
+        }
+
+        if (!said.includes(BAKE_MARKER) || !fs.existsSync(output)) {
+          return resolve('Blender wrote no baked scene');
+        }
+
+        resolve(null);
+      });
+    });
+  }
+
+  // Sent where this machine is somewhere else; where it is the server, the file
+  // is already in the job's folder and only the news has to travel.
+  async sendBaked(jobId, leaseId, file) {
+    const url = `${WORKER_BASE}/jobs/${jobId}/baked`;
+
+    try {
+      if (!file) {
+        const said = await fetch(url, {
+          method: 'POST',
+          headers: workerHeaders({ 'Content-Type': 'application/json', 'x-lease-id': leaseId }),
+          body: JSON.stringify({ inPlace: true })
+        });
+
+        return said.ok;
+      }
+
+      const form = new FormData();
+
+      form.append('scene', fs.createReadStream(file), { filename: 'baked.blend' });
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: form.getHeaders(workerHeaders({ 'x-lease-id': leaseId })),
+        body: form
+      });
+
+      return response.ok;
+    } catch (error) {
+      console.error(`Could not hand over the baked scene: ${error.message}`);
+      return false;
+    }
+  }
+
+  async reportBake(jobId, leaseId, error) {
+    console.error(`❌ Job ${jobId}: the simulations could not be baked: ${error}`);
+
+    await fetch(`${WORKER_BASE}/jobs/${jobId}/baked/failed`, {
+      method: 'POST',
+      headers: workerHeaders({ 'Content-Type': 'application/json', 'x-lease-id': leaseId }),
+      body: JSON.stringify({ error })
+    }).catch(reason => console.error(`Could not report it: ${reason.message}`));
+  }
+
   // Every region of a still, whether they are on this machine's own disk or have
   // to be fetched. The picture is made here and handed back like a frame.
   async assembleLeasedStill(lease) {
@@ -586,7 +730,9 @@ class RenderWorker {
     const remote = process.env.WORKER_REMOTE === '1' || !fs.existsSync(lease.blendPath);
 
     try {
-      const blendPath = remote ? await this.fetchBlend(jobId, lease.blendPath) : lease.blendPath;
+      const blendPath = remote
+        ? await this.fetchBlend(jobId, lease.blendPath, lease.blendVersion)
+        : lease.blendPath;
       const tiles = await this.gatherTiles(lease, outputDir, remote);
       const output = path.join(outputDir, composite.name);
       const failure = await this.putTogether(blendPath, outputDir, tiles, output, composite);

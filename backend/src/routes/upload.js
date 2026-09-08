@@ -337,10 +337,11 @@ function offeredSettings(scene) {
 function warningsFor(scene, settings, scenes, unbaked) {
   const notes = [];
 
-  // Said here as well as refused at submit, so it is known before the file has
-  // been described rather than after.
+  // Said before the file has been described rather than after: the farm bakes
+  // it, which is time the job spends before its first frame.
   if (unbaked.length > 0) {
-    notes.push(`${unbaked.length} simulation${unbaked.length === 1 ? '' : 's'} not baked`);
+    notes.push(`${unbaked.length} simulation${unbaked.length === 1 ? '' : 's'} `
+      + 'to bake before rendering');
   }
 
   if (!settings.renderEngine) notes.push(`This farm does not run ${scene.engine}`);

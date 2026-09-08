@@ -251,6 +251,40 @@ function marked(name) {
   return fs.existsSync(path.join(records, name));
 }
 
+// Baking is a Blender launch of its own: it writes the scene out again with the
+// caches in it, and the record says which scene was baked and how far.
+if (process.env.RENDERNET_BAKE_OUT) {
+  const source = valueOf('-b');
+  const scene = path.basename(source);
+
+  record('bakes.txt', scene + ' ' + process.env.RENDERNET_BAKE_LAST + '\\n', true);
+
+  // 'slow' takes long enough over it to be interrupted part way through, the
+  // way a bake worth interrupting would be.
+  if (scene.includes('slow')) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 3500);
+  }
+
+  if (scene.includes('crash')) {
+    fs.writeSync(1, 'Error: the bake ran out of memory\\n');
+    process.exit(1);
+  }
+
+  // Blender bakes what it can and exits nought either way, which is the case
+  // worth having a stand-in for.
+  if (scene.includes('partly')) {
+    fs.writeSync(1, 'RENDERNET_STILL_UNBAKED 1 of the caches in this scene '
+      + 'came back with nothing in it\\n');
+    process.exit(0);
+  }
+
+  fs.mkdirSync(path.dirname(process.env.RENDERNET_BAKE_OUT), { recursive: true });
+  fs.copyFileSync(source, process.env.RENDERNET_BAKE_OUT);
+  fs.writeSync(1, 'RENDERNET_BAKED '
+    + fs.statSync(process.env.RENDERNET_BAKE_OUT).size + '\\n');
+  process.exit(0);
+}
+
 // Putting tiles back together is another thing the real Blender is asked to do,
 // so the stand-in answers it the same way: one file, made from the tiles it was
 // handed, and a record of what it was given.
@@ -294,6 +328,12 @@ if (args.includes('-P') && !args.includes('-o')) {
   // this machine, and nowhere else. 'unbaked' has a simulation nobody baked.
   const unpacked = scene.includes('ondisk') ? ['/data/textures/floor.png'] : [];
   const unbaked = scene.includes('unbaked') ? ['Flag (cloth)', 'the scene (rigid body)'] : [];
+  // Simulations the farm cannot bake: one on an object linked from another
+  // file, and one on an object switched off in the viewport.
+  const unbakeable = [];
+
+  if (scene.includes('linked-sim')) unbakeable.push({ name: 'Borrowed (cloth)', why: 'linked' });
+  if (scene.includes('hidden-sim')) unbakeable.push({ name: 'Tucked (cloth)', why: 'hidden' });
 
   // A line per opening, so a test can count what reading a scene twice cost.
   record('readings.txt', scene + '\\n', true);
@@ -348,6 +388,7 @@ if (args.includes('-P') && !args.includes('-o')) {
     missing: stillWanted(missing),
     unpacked: unpacked,
     unbaked: unbaked,
+    unbakeable: unbakeable,
     active: main.name,
     scenes: scenes
   }) + '\\n');
