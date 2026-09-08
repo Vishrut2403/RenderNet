@@ -39,8 +39,12 @@ def described(scene):
 # renders, so a frame is only right if every frame before it was rendered first,
 # in the same Blender. A farm does neither. Mantaflow fluids are left out:
 # nothing readable here says whether one has been baked.
-def named(obj, mod):
-    return '%s (%s)' % (obj.name, mod.type.replace('_', ' ').lower() if mod else 'particles')
+def named(obj, label):
+    return '%s (%s)' % (obj.name, label)
+
+
+LAST_FRAME = int(os.environ.get('RENDERNET_LAST_FRAME', 0))
+OPENED_ON = bpy.context.scene.frame_current
 
 
 def why_not_here(obj):
@@ -58,9 +62,17 @@ def why_not_here(obj):
 
 
 def unbaked():
-    for obj, mod, cache in point_caches():
+    for obj, label, cache in point_caches():
         if unusable(cache) and why_not_here(obj) is None:
-            yield named(obj, mod)
+            yield named(obj, label)
+
+    for obj, settings in fluid_domains():
+        if not fluid_ready(settings, LAST_FRAME, OPENED_ON) and why_not_here(obj) is None:
+            yield '%s (%s)' % (obj.name, settings.domain_type.lower())
+
+    for obj, mods in simulated_objects():
+        if why_not_here(obj) is None:
+            yield '%s (simulation nodes)' % obj.name
 
     world = bpy.context.scene.rigidbody_world
 
@@ -69,11 +81,24 @@ def unbaked():
 
 
 def unbakeable():
-    for obj, mod, cache in point_caches():
+    for obj, label, cache in point_caches():
         why = why_not_here(obj)
 
         if unusable(cache) and why is not None:
-            yield {'name': named(obj, mod), 'why': why}
+            yield {'name': named(obj, label), 'why': why}
+
+    for obj, settings in fluid_domains():
+        why = why_not_here(obj)
+
+        if not fluid_ready(settings, LAST_FRAME, OPENED_ON) and why is not None:
+            yield {'name': '%s (%s)' % (obj.name, settings.domain_type.lower()), 'why': why}
+
+
+# A fluid's frames stay in a folder beside the job rather than inside the scene,
+# so only the machine that filled it can render from it.
+def fluids_wanted():
+    return [obj.name for obj, settings in fluid_domains()
+            if not fluid_ready(settings, LAST_FRAME, OPENED_ON) and why_not_here(obj) is None]
 
 
 # Before anything is judged: a file already handed over is not missing, and a
@@ -110,6 +135,7 @@ print('${MARKER}' + json.dumps({
     'unpacked': sorted(set(unpacked)),
     'unbaked': sorted(set(unbaked())),
     'unbakeable': sorted(unbakeable(), key=lambda entry: entry['name']),
+    'fluids': sorted(fluids_wanted()),
     'active': bpy.context.scene.name,
     'scenes': [described(scene) for scene in bpy.data.scenes]
 }))
@@ -132,8 +158,8 @@ let queued = Promise.resolve();
 // One Blender at a time, whoever is asking: a burst of uploads would otherwise
 // put a Blender per job on a machine that is meant to be spending itself on
 // renders.
-function readBlend(blendPath, supplied) {
-  const next = queued.then(() => openScene(blendPath, supplied));
+function readBlend(blendPath, supplied, lastFrame) {
+  const next = queued.then(() => openScene(blendPath, supplied, lastFrame));
 
   queued = next.catch(() => {});
 
@@ -155,13 +181,14 @@ function basename(file) {
   return String(file).split(/[\\/]/).pop();
 }
 
-export function checkScene(blendPath, supplied = null) {
-  return readBlend(blendPath, supplied).then(report => ({
+export function checkScene(blendPath, supplied = null, lastFrame = 0) {
+  return readBlend(blendPath, supplied, lastFrame).then(report => ({
     checked: report !== null,
     missing: (report?.missing ?? []).map(asDependency),
     unpacked: report?.unpacked ?? [],
     unbaked: report?.unbaked ?? [],
-    unbakeable: report?.unbakeable ?? []
+    unbakeable: report?.unbakeable ?? [],
+    fluids: report?.fluids ?? []
   }));
 }
 
@@ -177,7 +204,7 @@ export function readScene(blendPath) {
     }));
 }
 
-function openScene(blendPath, supplied = null) {
+function openScene(blendPath, supplied = null, lastFrame = 0) {
   return new Promise(resolve => {
     const blender = findBlenderExecutable();
 
@@ -188,7 +215,11 @@ function openScene(blendPath, supplied = null) {
 
     const probe = launch(blender, ['-b', blendPath, '-P', scriptPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env, RENDERNET_ASSETS: supplied ?? '' }
+      env: {
+        ...process.env,
+        RENDERNET_ASSETS: supplied ?? '',
+        RENDERNET_LAST_FRAME: String(lastFrame || 0)
+      }
     });
 
     let output = '';

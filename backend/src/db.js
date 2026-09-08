@@ -283,7 +283,9 @@ export function loadJobs() {
 
 export function deleteJob(id) {
   db.prepare('DELETE FROM composites WHERE jobId = ?').run(id);
+  db.prepare('DELETE FROM bakes WHERE jobId = ?').run(id);
   db.prepare('DELETE FROM frames WHERE jobId = ?').run(id);
+  deleteJobAssets(id);
   db.prepare('DELETE FROM jobs WHERE id = ?').run(id);
 }
 

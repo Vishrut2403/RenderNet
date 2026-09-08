@@ -218,7 +218,11 @@ async function whatBlenderActuallySays(results) {
     'a simulation in a scene nobody renders is nobody\'s problem',
     'and one linked from another file is named as one to bake there',
     'so is one on an object switched off in the viewport',
-    'while one inside an instanced collection is baked like any other'];
+    'while one inside an instanced collection is baked like any other',
+    'a fluid whose frames did not come with the file is asked for',
+    'and one whose frames are here is left alone',
+    'a domain still wants the noise pass it was set up to use',
+    'and a geometry nodes simulation is baked whether or not it says it needs it'];
 
   if (!blenderAvailable()) {
     for (const name of names) results.skipped(name, 'Blender not installed');
@@ -429,6 +433,98 @@ bpy.ops.object.collection_instance_add(collection='Flags', location=(0, 0, 0))
 
     results.check(names[9], brought.unbaked.some(what => what.includes('Instanced')),
       JSON.stringify(brought.unbaked));
+
+    // Smoke keeps its frames in a folder the scene names, and that name is the
+    // artist's own machine - Blender's default is a directory under /tmp. So
+    // what counts is files on this disk for the frames being rendered, not the
+    // domain's own idea of whether it has been baked.
+    const fluidCache = path.join(box, 'smokecache');
+
+    const smoke = createFixtureBlend(box, {
+      name: 'smoke.blend',
+      extra: `
+bpy.context.scene.frame_end = 8
+bpy.ops.mesh.primitive_cube_add(size=4, location=(0, 0, 2))
+domain = bpy.context.object
+domain.name = 'Domain'
+fluid = domain.modifiers.new('Fluid', 'FLUID')
+fluid.fluid_type = 'DOMAIN'
+fluid.domain_settings.resolution_max = 16
+fluid.domain_settings.cache_directory = r'${fluidCache}'
+`
+    });
+
+    const wanted = await checkScene(smoke, null, 8);
+
+    results.check(names[10],
+      wanted.fluids.includes('Domain') && wanted.unbaked.some(what => what.includes('Domain')),
+      `${JSON.stringify(wanted.fluids)} / ${JSON.stringify(wanted.unbaked)}`);
+
+    // The frames themselves, without the minutes of simulation that would write
+    // them: what the check reads is the folder.
+    const frames = path.join(fluidCache, 'data');
+
+    fs.mkdirSync(frames, { recursive: true });
+
+    for (let number = 1; number <= 8; number++) {
+      fs.writeFileSync(path.join(frames, `fluid_data_000${number}.vdb`), 'frame');
+    }
+
+    const held = await checkScene(smoke, null, 8);
+
+    results.check(names[11], held.fluids.length === 0, JSON.stringify(held.fluids));
+
+    // A domain writes a folder per kind of frame it makes, and the render needs
+    // every one it was set up to use. Noise is a second pass over the base
+    // simulation, and a scene missing it renders the smoke without it.
+    const noisy = createFixtureBlend(box, {
+      name: 'noisy.blend',
+      extra: `
+bpy.context.scene.frame_end = 8
+bpy.ops.mesh.primitive_cube_add(size=4, location=(0, 0, 2))
+domain = bpy.context.object
+domain.name = 'Domain'
+fluid = domain.modifiers.new('Fluid', 'FLUID')
+fluid.fluid_type = 'DOMAIN'
+fluid.domain_settings.resolution_max = 16
+fluid.domain_settings.use_noise = True
+fluid.domain_settings.cache_directory = r'${fluidCache}'
+`
+    });
+
+    const withoutNoise = await checkScene(noisy, null, 8);
+
+    results.check(names[12], withoutNoise.fluids.includes('Domain'),
+      JSON.stringify(withoutNoise.fluids));
+
+    // Nothing a simulation zone exposes says whether it holds baked frames -
+    // the bake items read the same either way - so one is always baked, and a
+    // scene with one always reports it.
+    const stepping = createFixtureBlend(box, {
+      name: 'stepping.blend',
+      extra: `
+bpy.ops.mesh.primitive_cube_add(size=1)
+stepper = bpy.context.object
+stepper.name = 'Stepper'
+group = bpy.data.node_groups.new('Sim', 'GeometryNodeTree')
+group.interface.new_socket('Geometry', in_out='INPUT', socket_type='NodeSocketGeometry')
+group.interface.new_socket('Geometry', in_out='OUTPUT', socket_type='NodeSocketGeometry')
+into = group.nodes.new('NodeGroupInput')
+outof = group.nodes.new('NodeGroupOutput')
+opens = group.nodes.new('GeometryNodeSimulationInput')
+closes = group.nodes.new('GeometryNodeSimulationOutput')
+opens.pair_with_output(closes)
+group.links.new(into.outputs['Geometry'], opens.inputs['Geometry'])
+group.links.new(opens.outputs['Geometry'], closes.inputs['Geometry'])
+group.links.new(closes.outputs['Geometry'], outof.inputs['Geometry'])
+stepper.modifiers.new('GN', 'NODES').node_group = group
+`
+    });
+
+    const zoned = await checkScene(stepping, null, 20);
+
+    results.check(names[13], zoned.unbaked.some(what => what.includes('Stepper')),
+      JSON.stringify(zoned.unbaked));
   } finally {
     removeSandbox(box);
   }

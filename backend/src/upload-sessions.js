@@ -231,6 +231,3 @@ export function sweepPartials(now = Date.now()) {
   return removed;
 }
 
-export function openSessionCount() {
-  return sessions.size;
-}

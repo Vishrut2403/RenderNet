@@ -278,8 +278,28 @@ if (process.env.RENDERNET_BAKE_OUT) {
     process.exit(0);
   }
 
-  fs.mkdirSync(path.dirname(process.env.RENDERNET_BAKE_OUT), { recursive: true });
-  fs.copyFileSync(source, process.env.RENDERNET_BAKE_OUT);
+  const filling = process.env.RENDERNET_BAKE_STAGE === 'fill';
+
+  // A scene with a fluid is written out pointing at the job's folder and opened
+  // again to be filled, so the stand-in asks for that second opening too.
+  if (scene.includes('fluid') && !filling) {
+    fs.mkdirSync(path.dirname(process.env.RENDERNET_BAKE_OUT), { recursive: true });
+    fs.copyFileSync(source, process.env.RENDERNET_BAKE_OUT);
+    fs.writeSync(1, 'RENDERNET_BAKE_AGAIN\\n');
+    process.exit(0);
+  }
+
+  if (filling) {
+    // The frames land beside the scene, not in it.
+    const frames = path.join(process.env.RENDERNET_BAKE_CACHE, 'Domain', 'data');
+
+    fs.mkdirSync(frames, { recursive: true });
+    fs.writeFileSync(path.join(frames, 'fluid_data_0001.vdb'), 'frames');
+  } else {
+    fs.mkdirSync(path.dirname(process.env.RENDERNET_BAKE_OUT), { recursive: true });
+    fs.copyFileSync(source, process.env.RENDERNET_BAKE_OUT);
+  }
+
   fs.writeSync(1, 'RENDERNET_BAKED '
     + fs.statSync(process.env.RENDERNET_BAKE_OUT).size + '\\n');
   process.exit(0);
@@ -328,6 +348,16 @@ if (args.includes('-P') && !args.includes('-o')) {
   // this machine, and nowhere else. 'unbaked' has a simulation nobody baked.
   const unpacked = scene.includes('ondisk') ? ['/data/textures/floor.png'] : [];
   const unbaked = scene.includes('unbaked') ? ['Flag (cloth)', 'the scene (rigid body)'] : [];
+
+  // A smoke or liquid domain keeps its frames in a folder the scene only names,
+  // so an uploaded one almost never brings them.
+  const fluids = scene.includes('fluid') ? ['Domain'] : [];
+
+  if (fluids.length > 0) unbaked.push('Domain (gas)');
+
+  // A geometry nodes simulation zone: nothing says whether it has been baked,
+  // so a scene with one is always baked.
+  if (scene.includes('nodesim')) unbaked.push('Stepper (simulation nodes)');
   // Simulations the farm cannot bake: one on an object linked from another
   // file, and one on an object switched off in the viewport.
   const unbakeable = [];
@@ -389,6 +419,7 @@ if (args.includes('-P') && !args.includes('-o')) {
     unpacked: unpacked,
     unbaked: unbaked,
     unbakeable: unbakeable,
+    fluids: fluids,
     active: main.name,
     scenes: scenes
   }) + '\\n');

@@ -28,7 +28,7 @@ import {
   diskIsTooFull, tooFullToCarryOn, heldForDisk, deleteJobFiles, forgetUsage
 } from './storage.js';
 import { isTiled, tilesPath, compositeName } from './tiles.js';
-import { bakedScenePath } from './baking.js';
+import { bakedScenePath, fluidCachePath } from './baking.js';
 import { assetsDir, writeManifest } from './supplied-assets.js';
 
 const MAX_FRAME_ATTEMPTS = 3;
@@ -211,7 +211,7 @@ function startSceneCheck(job) {
   // Opened as the render will see it: a file already handed over is not
   // missing, and a linked .blend only says what it needs once it has been
   // opened, which is why supplying one can turn up more.
-  checkScene(dataPath(job.filePath), writeManifest(job, jobAssets(job.id))).then(({ checked, missing, unpacked, unbaked, unbakeable }) => {
+  checkScene(dataPath(job.filePath), writeManifest(job, jobAssets(job.id)), lastFrameOf(job)).then(({ checked, missing, unpacked, unbaked, unbakeable, fluids }) => {
     const current = jobs.get(job.id);
 
     // Deleted or cancelled while Blender was reading it.
@@ -252,9 +252,18 @@ function startSceneCheck(job) {
       console.log(`Job ${current.id} has ${unbaked.length} simulation(s) to bake first`);
     }
 
+    // A fluid's frames stay in a folder the scene points at rather than inside
+    // it, so the job renders where that folder is and nowhere else.
+    if (checked && fluids.length > 0) {
+      current.needsThisMachine = 1;
+      console.log(`Job ${current.id} keeps ${fluids.length} fluid cache(s) on this machine`);
+    }
+
     // Not packed, but here. Fine on this machine and nowhere else, because a
     // machine somewhere else is sent the .blend and nothing beside it.
-    current.needsThisMachine = checked && unpacked.length > 0 ? 1 : 0;
+    if (!current.needsThisMachine) {
+      current.needsThisMachine = checked && unpacked.length > 0 ? 1 : 0;
+    }
     current.assetCheck = checked ? 'ok' : 'skipped';
     saveJob(current);
 
@@ -815,6 +824,7 @@ function bakeFromActive(workerId, local) {
       bake: {
         last: lastFrameOf(job),
         path: dataPath(bakedScenePath(job)),
+        caches: dataPath(fluidCachePath(job)),
         simulations: bakingSimulations(job)
       }
     };

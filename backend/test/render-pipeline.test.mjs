@@ -1311,6 +1311,30 @@ export default async function run() {
       supplied.status === 'completed' && supplied.completedFrames === 40,
       `${supplied.status}, ${supplied.completedFrames} of 40`);
 
+    // The files handed over belong to this job, so deleting it takes the record
+    // of them with it rather than leaving rows nothing will ever read again.
+    const rowsAbout = jobId => {
+      const db = new Database(path.join(assetBox, 'test.db'), { readonly: true });
+
+      try {
+        return ['frames', 'composites', 'bakes', 'job_assets'].map(table =>
+          `${table}:${db.prepare(`SELECT COUNT(*) AS held FROM ${table} WHERE jobId = ?`)
+            .get(jobId).held}`);
+      } finally {
+        db.close();
+      }
+    };
+
+    results.check('the files it was given are recorded against it',
+      rowsAbout(wantingId).includes('job_assets:2'), rowsAbout(wantingId).join(' '));
+
+    await fetch(`${assetServer.base}/jobs/${wantingId}`, {
+      method: 'DELETE', headers: auth(assetToken)
+    });
+
+    results.check('and deleting the job leaves no rows behind in any table',
+      rowsAbout(wantingId).every(count => count.endsWith(':0')), rowsAbout(wantingId).join(' '));
+
     console.log('\n  A file that brings its own needs with it');
 
     // A linked .blend cannot be packed into the scene that links it, and until
@@ -1467,6 +1491,42 @@ export default async function run() {
     results.check('saying which setting to change',
       /viewport/.test(tuckedJob.error ?? '') && /monitor/.test(tuckedJob.error ?? ''),
       tuckedJob.error);
+
+    // Smoke, fire and liquid keep their frames in a folder the scene points at
+    // rather than inside it. The farm fills that folder itself and then keeps
+    // the job on the machine holding it.
+    const smoke = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'fluid.blend'),
+      { frameStart: 1, frameEnd: 3 }
+    );
+    const smokeJob = await waitForJob(assetServer.base, assetToken, smoke.body.jobId, 90000);
+
+    results.check('a scene whose fluid cache did not come with it is filled here',
+      smokeJob.status === 'completed' && smokeJob.bake === 'done',
+      `${smokeJob.status} / ${smokeJob.bake}`);
+
+    const frames = path.join(assetBox, 'renders', `render_${smoke.body.jobId}`,
+      'bake', 'fluid', 'Domain', 'data');
+
+    results.check('into the job\'s own folder, beside the baked scene',
+      fs.existsSync(frames) && fs.readdirSync(frames).length > 0, frames);
+    results.check('and the job is kept on the machine that holds it',
+      smokeJob.needsThisMachine === 1, String(smokeJob.needsThisMachine));
+
+    // A geometry nodes simulation zone steps frame to frame like cloth does, and
+    // renders the state it starts in when a frame is asked for on its own.
+    const stepped = await submitJob(
+      assetServer.base, assetToken, createFakeScene(assetBox, 'nodesim.blend'),
+      { frameStart: 1, frameEnd: 3 }
+    );
+    const steppedJob = await waitForJob(assetServer.base, assetToken, stepped.body.jobId, 90000);
+
+    results.check('a simulation zone is baked before the frames go out',
+      steppedJob.status === 'completed' && steppedJob.bake === 'done'
+        && steppedJob.completedFrames === 3,
+      `${steppedJob.status} / ${steppedJob.bake} / ${steppedJob.completedFrames}`);
+    results.check('and it stays on any machine, having nothing beside the scene',
+      steppedJob.needsThisMachine === 0, String(steppedJob.needsThisMachine));
 
     // A bake is a claim on the job like any other, so a job cancelled part way
     // through one is not finished with until the machine baking it has stopped.

@@ -8,16 +8,6 @@ import { primaryOf, extensionOf } from './formats.js';
 export const MAX_TILES = 16;
 export const TILES_DIR = 'tiles';
 
-// As square as the count allows: a 4-tile job is 2x2 rather than 4x1, because a
-// region the full width of the frame saves less of the work than a compact one.
-export function gridFor(count) {
-  let columns = Math.round(Math.sqrt(count));
-
-  while (columns > 1 && count % columns !== 0) columns--;
-
-  return { columns, rows: count / columns };
-}
-
 export function tileName(index) {
   return `tile_${String(index).padStart(4, '0')}`;
 }

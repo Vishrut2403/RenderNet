@@ -144,7 +144,7 @@ else is sent the `.blend` and nothing beside it, so that job is kept on the
 machine that can see them rather than rendered untextured elsewhere and called
 done. Somebody who means it can tick the box and skip the lot.
 
-**A simulation nobody baked is baked here.** The farm hands frames out side by
+**A simulation nobody baked is dealt with here.** The farm hands frames out side by
 side and out of order, and every launch of Blender is a fresh one, which a cache
 stepped as it renders cannot survive — rendering frame 24 of an unbaked cloth
 sim on its own gives a picture 15% of whose pixels are wrong. So a job whose
@@ -174,6 +174,49 @@ viewport — Blender bakes nothing for one of those, and stepping it as the fram
 render gives a third picture, matching neither the artist's render nor a proper
 bake. Both jobs come back naming the object and the setting to change.
 
+**Smoke, fire and liquid are the same story with none of the same mechanics.**
+A Mantaflow cache is a folder of files the scene merely points at, and the path
+it points at is the artist's own machine — Blender's default is a directory
+under `/tmp`. So an uploaded scene almost never brings its fluid with it, and
+nothing in the file says so: the domain's "baked" flags describe whether
+somebody pressed Bake, not whether the frames are here, and a cache filled by
+playing the timeline has frames and no flag. What the check reads is the folder,
+for the frames this job renders.
+
+A domain writes a folder per kind of frame it makes — the base simulation, the
+noise pass over it, the mesh a liquid renders as, its spray and foam, any
+guiding — and the render needs every one the domain was set up to use, so all of
+them are checked. Which ones count depends on what the domain *is*: a smoke
+domain reports `use_mesh` as readily as a liquid does, and a folder for it never
+appears.
+
+Filling one is its own trick, twice over. Stepping through the frames fills the
+cache and gives a simulation a little ahead of the artist's; what matches, to
+the pixel, is *rendering* the range — so the farm renders it at 5% of the
+resolution in Workbench, which costs nothing beside the simulation itself. And a
+cache repointed in a session that has already evaluated the scene simulates
+something slightly its own, so the scene is saved pointing at the job's folder
+and opened a second time to be filled. With both, the frames come back bit for
+bit what the artist's own render produced. They land in the job's folder beside
+the baked scene, and because a fluid's frames cannot live inside the `.blend`,
+that job then renders only on the machine holding them.
+
+A geometry nodes simulation zone steps frame to frame the way cloth does, and
+renders the state it starts in when a frame is asked for on its own. Nothing it
+exposes says whether it has been baked — the bake items read the same before and
+after, and packing, unpacking and jumping to the last frame all fail to tell the
+two apart — so a scene with one is baked whether or not it needed it, into the
+file rather than a folder beside it.
+
+Dynamic paint needs none of this, which is worth writing down because it looks
+like it should. Asked for a frame it has no cache for, it simulates the history
+up to that frame and gets the same answer every time — measured bit for bit
+against a sequential render, for an end frame and a middle one, rendered
+concurrently by four machines and backwards inside one. It costs a re-simulation
+per Blender launch and nothing else, so the farm leaves it alone. Neither does
+the ocean modifier, which is a function of its own time input rather than of the
+frame before.
+
 What counts as rendering is taken from the scene's own objects together with the
 dependency graph, since neither is enough on its own: an instanced collection
 brings in simulations the scene never lists, and the dependency graph is
@@ -185,6 +228,19 @@ baked cache at its last baked frame rather than stepping past it, and holds it
 identically in every launch on every machine, so those frames come back from the
 farm pixel for pixel as they come out at home — carrying the bake further would
 render something the artist never saw.
+
+Hair is the exception among these: its dynamics hold what a render put there and
+read it back frame for frame, and baking one gives a simulation of its own — a
+quarter of a percent out, and eleven percent out if the cache range is shortened
+to the job. So hair is filled by rendering the range rather than baked, the way
+a fluid is.
+
+`node tools/simulations/check.mjs` is how all of this is known to hold: it builds
+one scene per kind of simulation, renders each the way the artist would and the
+way the farm does, and reports the difference. It wants Blender and several
+minutes, so it is not part of the test suite — run it when the workstation's
+Blender is upgraded, since most of what it covers is behaviour Blender never
+promised.
 
 Baking is the farm's own work, so it is claimed like anything else: a machine
 switched off part way through one loses the claim rather than the job, and the

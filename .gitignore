@@ -54,3 +54,5 @@ temp/
 # Blender cache
 *.blend1
 *.blend2
+# Blender drops this beside whatever it was run from when it bakes fluid noise.
+waveletNoiseTile.bin

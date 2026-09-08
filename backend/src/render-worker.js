@@ -9,7 +9,7 @@ import { BlenderSession, sessionKey, DAEMON_SCRIPT, FRAME_DONE } from './blender
 import { primaryOf, extrasOf, extensionOf } from './formats.js';
 import { GRID_PYTHON, COMPOSITE_SCRIPT, tileName } from './tiles.js';
 import { REFERENCED_PYTHON, SUPPLIED_PYTHON } from './scene-references.js';
-import { BAKE_SCRIPT, BAKE_MARKER, UNBAKED_MARKER } from './baking.js';
+import { BAKE_SCRIPT, BAKE_MARKER, UNBAKED_MARKER, AGAIN_MARKER } from './baking.js';
 
 const BLENDER_PATH = process.env.BLENDER_PATH || findBlenderExecutable() || 'blender';
 const API_URL = process.env.API_URL || 'http://localhost:5500';
@@ -606,7 +606,23 @@ class RenderWorker {
 
     try {
       const blendPath = remote ? await this.fetchBlend(jobId, lease.blendPath) : lease.blendPath;
-      const failure = await this.runBake(blendPath, outputDir, output, bake);
+
+      let attempt = await this.runBake(blendPath, outputDir, output, bake, remote);
+
+      // A scene with a fluid in it is written out pointing at the job's folder
+      // and opened again to be filled: one repointed mid-session simulates
+      // something slightly its own.
+      if (!attempt.failure && attempt.again) {
+        // Emptied before the second opening: writing the scene out put the
+        // frame it was on into the folder, and a fill that reads that frame
+        // back rather than simulating it comes out a little different.
+        fs.rmSync(remote ? path.join(outputDir, 'fluid') : bake.caches,
+          { recursive: true, force: true });
+
+        attempt = await this.runBake(output, outputDir, output, bake, remote, 'fill');
+      }
+
+      const failure = attempt.failure;
 
       if (this.abandoned) return;
 
@@ -623,7 +639,7 @@ class RenderWorker {
     }
   }
 
-  runBake(blendPath, outputDir, output, bake) {
+  runBake(blendPath, outputDir, output, bake, remote, stage = null) {
     return new Promise(resolve => {
       const script = path.join(outputDir, 'bake.py');
 
@@ -632,10 +648,17 @@ class RenderWorker {
 
       const blender = launch(BLENDER_PATH, ['-b', blendPath, '-P', script], {
         stdio: ['ignore', 'pipe', 'pipe'],
+        // Baking a fluid's noise drops a 24MB tile file in the working
+        // directory, which is the install directory unless it is told otherwise.
+        cwd: outputDir,
         env: {
           ...process.env,
           RENDERNET_BAKE_LAST: String(bake.last),
-          RENDERNET_BAKE_OUT: output
+          RENDERNET_BAKE_OUT: output,
+          // Where a fluid's frames go. Beside the scene where this machine is
+          // the server, in its own scratch where it is not.
+          RENDERNET_BAKE_CACHE: remote ? path.join(outputDir, 'fluid') : bake.caches,
+          RENDERNET_BAKE_STAGE: stage ?? ''
         }
       });
 
@@ -645,12 +668,14 @@ class RenderWorker {
       blender.stdout.on('data', chunk => { said = (said + chunk).slice(-OUTPUT_TAIL); });
       blender.stderr.on('data', chunk => { said = (said + chunk).slice(-OUTPUT_TAIL); });
 
-      blender.on('error', error => resolve(error.message));
+      const answer = (failure, again = false) => resolve({ failure, again });
+
+      blender.on('error', error => answer(error.message));
 
       blender.on('close', code => {
         this.currentProcess = null;
 
-        if (code !== 0) return resolve(lastLine(said) || `Blender exited with code ${code}`);
+        if (code !== 0) return answer(lastLine(said) || `Blender exited with code ${code}`);
 
         // Blender bakes what it can and exits nought either way, so the scene
         // is only worth keeping when the script says every cache came back with
@@ -658,14 +683,16 @@ class RenderWorker {
         const stuck = said.split('\n').find(line => line.includes(UNBAKED_MARKER));
 
         if (stuck) {
-          return resolve(stuck.slice(stuck.indexOf(UNBAKED_MARKER) + UNBAKED_MARKER.length).trim());
+          return answer(stuck.slice(stuck.indexOf(UNBAKED_MARKER) + UNBAKED_MARKER.length).trim());
         }
+
+        if (said.includes(AGAIN_MARKER)) return answer(null, true);
 
         if (!said.includes(BAKE_MARKER) || !fs.existsSync(output)) {
-          return resolve('Blender wrote no baked scene');
+          return answer('Blender wrote no baked scene');
         }
 
-        resolve(null);
+        answer(null);
       });
     });
   }
