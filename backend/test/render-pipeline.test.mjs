@@ -1863,7 +1863,11 @@ export default async function run() {
       cwd: logBox,
       // Small enough that the server's own startup output overflows it, so
       // rotation happens without having to manufacture megabytes.
-      env: { BLENDER_PATH: createFakeBlender(logBox), MAX_LOG_BYTES: '400' }
+      env: {
+        BLENDER_PATH: createFakeBlender(logBox),
+        MAX_LOG_BYTES: '400',
+        WORKER_SECRET: 'test-worker-secret'
+      }
     });
 
     const logToken = await adminSession(logServer.base);
@@ -1937,11 +1941,18 @@ export default async function run() {
 
     // Counted rather than measured by file size: the queue logs on a timer of
     // its own, and a byte comparison would catch that instead.
-    const polls = () => (logged().match(/(GET \/api\/jobs|GET \/api\/jobs\/queue\/status) 200/g) ?? []).length;
+    const polls = () => (logged()
+      .match(/(GET \/api\/jobs|GET \/api\/jobs\/summary|GET \/api\/jobs\/queue\/status) 200/g) ?? []).length;
+
+    const leasePolls = () => (logged().match(/POST \/api\/worker\/lease 204/g) ?? []).length;
 
     for (let poll = 0; poll < 5; poll++) {
       await fetch(`${logServer.base}/jobs`, { headers: auth(logToken) });
+      await fetch(`${logServer.base}/jobs/summary`, { headers: auth(logToken) });
       await fetch(`${logServer.base}/jobs/queue/status`, { headers: auth(logToken) });
+      await fetch(`${logServer.base}/worker/lease`, {
+        method: 'POST', headers: { 'x-worker-token': 'test-worker-secret' }
+      });
     }
 
     // Issued after the polls and recorded, so seeing it means the server has
@@ -1952,6 +1963,9 @@ export default async function run() {
 
     results.check('the dashboard polling the job list writes nothing',
       polls() === 0, `${polls()} polling lines recorded`);
+
+    results.check('and neither does a worker asking for work there is none of',
+      leasePolls() === 0, `${leasePolls()} lease lines recorded`);
 
     // Download URLs authenticate by query string. Whatever is in one, writing
     // it down would put a credential in a file an admin can fetch over HTTP.

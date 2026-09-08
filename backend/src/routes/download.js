@@ -251,6 +251,13 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
     
     archive.pipe(res);
 
+    // Browsers ask for a download twice often enough - a speculative fetch, a
+    // click that supersedes it - and without this the abandoned one goes on
+    // compressing every frame to a socket that has already gone.
+    res.on('close', () => {
+      if (!res.writableFinished) archive.abort();
+    });
+
     // The files the listing offers and nothing else: a tiled still keeps its
     // regions in a folder beside the picture, and handing those back would be
     // handing back the pieces of what was asked for.

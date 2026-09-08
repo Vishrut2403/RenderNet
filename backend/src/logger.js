@@ -90,21 +90,28 @@ export function listLogs() {
   }
 }
 
-// The dashboard polls these every couple of seconds for every person watching
-// it, which at that rate would be the whole file. Anything else is logged, so a
-// new route is recorded until someone decides otherwise.
-const POLLED = [
-  /^\/api\/health$/,
-  /^\/api\/jobs$/,
-  /^\/api\/jobs\/\d+$/,
-  /^\/api\/jobs\/queue\/status$/
+// Two kinds of line that say nothing. Polls: asked for again every couple of
+// seconds by every browser watching the farm and every worker waiting for work.
+// Bookkeeping: a worker reporting a frame it has already announced itself, in a
+// request that authenticates by machine token and so is recorded against nobody.
+// Between them they were half of what a render printed. Anything else is
+// logged, so a new route is recorded until someone decides otherwise.
+const ROUTINE = [
+  ['GET', /^\/api\/health$/],
+  ['GET', /^\/api\/jobs$/],
+  ['GET', /^\/api\/jobs\/\d+$/],
+  ['GET', /^\/api\/jobs\/summary$/],
+  ['GET', /^\/api\/jobs\/queue\/status$/],
+  ['POST', /^\/api\/worker\/lease$/],
+  ['POST', /^\/api\/worker\/leases\/[^/]+\/(renew|release)$/],
+  ['POST', /^\/api\/worker\/jobs\/\d+\/progress$/],
+  ['POST', /^\/api\/worker\/jobs\/\d+\/frames\/\d+(\/at)?$/]
 ];
 
 function worthRecording(method, requestPath, status) {
   if (status >= 400) return true;
-  if (method !== 'GET') return true;
 
-  return !POLLED.some(pattern => pattern.test(requestPath));
+  return !ROUTINE.some(([verb, pattern]) => verb === method && pattern.test(requestPath));
 }
 
 // One machine is shared, and people can cancel and reprioritise each other's
