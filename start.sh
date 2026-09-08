@@ -11,17 +11,18 @@ PORT="${PORT:-5500}"
 say() { printf '\033[36m%s\033[0m\n' "$*"; }
 warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 
-# better-sqlite3 is compiled against one Node major and refuses to load under any
-# other, so this wants the exact version .node-version names rather than merely a
-# new enough one. The shell default is whatever the shell says.
+node_major() { node -v 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/'; }
+
+# That version or newer. Older will not do: better-sqlite3 ships no prebuilt
+# binary before it and would try to compile itself.
 use_supported_node() {
   local want current shown bin
   want="$(cat "$ROOT/.node-version" 2>/dev/null || echo 22)"
-  current="$(node -v 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/')"
+  current="$(node_major)"
   shown="${current:+v$current}"
   shown="${shown:-none}"
 
-  [ "${current:-0}" = "$want" ] && return 0
+  [ -n "$current" ] && [ "$current" -ge "$want" ] 2>/dev/null && return 0
 
   for root in "${FNM_DIR:-}" "$HOME/.local/share/fnm" "$HOME/.fnm" "${XDG_DATA_HOME:-}/fnm"; do
     bin="$root/node-versions"
@@ -38,14 +39,35 @@ use_supported_node() {
   done
 
   cat >&2 <<MESSAGE
-This needs Node $want, and the node on PATH is $shown.
-better-sqlite3 is compiled per Node major and will not load under another.
+This needs Node $want or newer, and the node on PATH is $shown.
 
-Install it, then run this again:
+Install one, then run this again:
 
   fnm install $want   (or nvm install $want, or from nodejs.org)
 MESSAGE
   exit 1
+}
+
+# The database module is a compiled thing, built for whichever Node installed
+# it. Switching Node majors between runs leaves the wrong binary in place, which
+# is a rebuild rather than anything to think about.
+rebuild_if_wrong_node() {
+  # Opened, not merely required: the compiled part is not loaded until a
+  # database is, so requiring it says nothing about whether it will work.
+  (cd "$ROOT/backend" \
+    && node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1) && return 0
+
+  say "Rebuilding the database module for Node $(node_major)…"
+
+  if ! (cd "$ROOT/backend" && npm rebuild better-sqlite3 >/dev/null 2>&1); then
+    cat >&2 <<MESSAGE
+The database module could not be built for Node $(node_major).
+
+On macOS that usually means the compiler is missing:  xcode-select --install
+Or run this under Node $(cat "$ROOT/.node-version" 2>/dev/null || echo 22), which has a prebuilt binary.
+MESSAGE
+    exit 1
+  fi
 }
 
 answering() {
@@ -105,6 +127,7 @@ command -v blender >/dev/null 2>&1 || [ -n "${BLENDER_PATH:-}" ] \
 
 install_if_missing backend
 install_if_missing frontend
+rebuild_if_wrong_node
 build_if_stale
 
 log="$(mktemp -t rendernet-start.XXXXXX)"
