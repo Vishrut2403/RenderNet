@@ -391,15 +391,11 @@ export const api = {
   // cannot carry the session.
   downloadToken: id => request(`/download/${id}/token`, { method: 'POST' }),
 
-  // Built here because only the browser knows which API origin it is talking to.
-  async jobFiles(id, token) {
-    const result = await request(`/download/${id}/files`);
+  jobFiles: id => request(`/download/${id}/files`),
 
-    return {
-      ...result,
-      files: result.files.map(file => ({ ...file, url: downloadUrl(file.path, token) }))
-    };
-  },
+  // Built when the link is drawn rather than when the listing arrived: a token
+  // renewed since then has to reach the frames already on screen.
+  fileUrl: (path, token) => downloadUrl(path, token),
 
   zipUrl: (id, token) => downloadUrl(`/download/${id}/zip`, token),
 

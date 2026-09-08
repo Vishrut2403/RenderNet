@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { api, getStoredUser } from '../api/client';
 import { useDownloadToken } from '../hooks/useDownloadToken';
 import { StatusBadge, ProgressBar, Button, Metrics, relativeTime, formatDuration, useNow } from './ui';
@@ -10,6 +10,7 @@ export function JobCard({ job, onChanged, onError }) {
   const [frames, setFrames] = useState(null);
   const [showErrors, setShowErrors] = useState(false);
   const [previewFailedAt, setPreviewFailedAt] = useState(null);
+  const askedAgainFor = useRef(null);
 
   const active = job.status === 'rendering';
   const done = job.status === 'completed';
@@ -19,7 +20,7 @@ export function JobCard({ job, onChanged, onError }) {
   const inTheRunning = (job.status === 'pending' || active) && job.approval !== 'waiting';
   const isAdmin = getStoredUser()?.role === 'admin';
 
-  const downloadToken = useDownloadToken(job.id, job.completedFrames > 0);
+  const { token: downloadToken, fresh: freshToken } = useDownloadToken(job.id, job.completedFrames > 0);
 
   const now = useNow(active);
   const started = job.startedAt ? new Date(job.startedAt).getTime() : null;
@@ -174,12 +175,26 @@ export function JobCard({ job, onChanged, onError }) {
     }
   }
 
+  // The href is left in place for a right-click, but a click goes through a
+  // token minted now rather than whenever this was drawn.
+  function download(urlFor) {
+    return async event => {
+      event.preventDefault();
+
+      try {
+        window.location.assign(urlFor(await freshToken()));
+      } catch (err) {
+        onError?.(err.message);
+      }
+    };
+  }
+
   async function toggleFrames() {
     if (frames) return setFrames(null);
 
     setBusy(true);
     try {
-      const result = await api.jobFiles(job.id, downloadToken);
+      const result = await api.jobFiles(job.id);
       setFrames(result.files);
     } catch (err) {
       onError?.(err.message);
@@ -245,7 +260,17 @@ export function JobCard({ job, onChanged, onError }) {
             <img
               src={previewSrc}
               alt={`Most recent frame rendered for job ${job.id}`}
-              onError={() => setPreviewFailedAt(job.completedFrames)}
+              // A picture that will not load is usually a token that ran out
+              // while the tab was in the background. Worth one go with a new
+              // one; a second failure on the same token is something else.
+              onError={() => {
+                if (askedAgainFor.current === downloadToken) {
+                  return setPreviewFailedAt(job.completedFrames);
+                }
+
+                askedAgainFor.current = downloadToken;
+                freshToken().catch(() => setPreviewFailedAt(job.completedFrames));
+              }}
             />
           </a>
           <figcaption>
@@ -333,10 +358,16 @@ export function JobCard({ job, onChanged, onError }) {
       {frames && (
         <div className="frame-grid">
           {frames.map(file => (
-            <a key={file.filename} href={file.url} target="_blank" rel="noreferrer" title={file.filename}>
+            <a
+              key={file.filename}
+              href={api.fileUrl(file.path, downloadToken)}
+              target="_blank"
+              rel="noreferrer"
+              title={file.filename}
+            >
               {/* An EXR has nothing a browser can draw, so it is offered by name. */}
               {file.previewable
-                ? <img src={file.url} alt={file.filename} loading="lazy" />
+                ? <img src={api.fileUrl(file.path, downloadToken)} alt={file.filename} loading="lazy" />
                 : <span className="frame-file">{file.filename.split('.').pop().toUpperCase()}</span>}
             </a>
           ))}
@@ -346,7 +377,11 @@ export function JobCard({ job, onChanged, onError }) {
       <footer className="job-actions">
         {(done || partial) && downloadToken && (
           <>
-            <a className="btn btn-primary" href={api.zipUrl(job.id, downloadToken)}>
+            <a
+              className="btn btn-primary"
+              href={api.zipUrl(job.id, downloadToken)}
+              onClick={download(token => api.zipUrl(job.id, token))}
+            >
               {partial
                 ? `Download ${job.completedFrames} finished frame${job.completedFrames === 1 ? '' : 's'}`
                 : 'Download ZIP'}
@@ -355,7 +390,15 @@ export function JobCard({ job, onChanged, onError }) {
               {frames ? 'Hide frames' : 'View frames'}
             </Button>
             {job.video === 'ready'
-              ? <a className="btn" href={api.videoUrl(job.id, downloadToken)}>Download video</a>
+              ? (
+                <a
+                  className="btn"
+                  href={api.videoUrl(job.id, downloadToken)}
+                  onClick={download(token => api.videoUrl(job.id, token))}
+                >
+                  Download video
+                </a>
+              )
               : (
                 <Button busy={busy || job.video === 'encoding'} onClick={makeVideo}>
                   {job.video === 'encoding' && 'Making video'}

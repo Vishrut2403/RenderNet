@@ -69,6 +69,30 @@ export default async function run() {
     results.check('and somebody else cannot mint one',
       (await mint(base, jobId, onlooker)).status === 403);
 
+    // The page renews its token before this runs out, so it has to be told
+    // when that is: a link drawn from a token nobody renewed is a 401 at the
+    // moment somebody finally clicks it.
+    const minted = (await mint(base, jobId, admin)).body;
+
+    results.check('a minted token says when it stops working',
+      Number(minted.expiresAt) > Date.now(), JSON.stringify(minted.expiresAt));
+
+    const { mintDownloadToken, readDownloadToken } =
+      await import('../src/download-tokens.js');
+    const held = mintDownloadToken(jobId, 'admin');
+    const realNow = Date.now;
+
+    results.check('it opens the job while it lasts', !!readDownloadToken(held.token));
+
+    try {
+      Date.now = () => realNow() + (held.expiresAt - realNow()) + 1000;
+
+      results.check('and opens nothing once it has run out',
+        readDownloadToken(held.token) === null);
+    } finally {
+      Date.now = realNow;
+    }
+
     console.log('\n  What a link in the address bar may carry');
 
     // A URL is copied, bookmarked and kept in history, so the one thing it must
