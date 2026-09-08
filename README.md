@@ -327,11 +327,35 @@ that dies carries on from that byte.
 
 Needs **Node.js 22 or newer** and **Blender**. Not 20, even though it is still LTS: `better-sqlite3` publishes no prebuilt binary for Node 20, so installing it compiles from source and needs a C++ toolchain — on Windows that means Visual Studio with the Desktop C++ workload. On 22 and 24 the binary is downloaded and nothing is built.
 
+```bash
+git clone https://github.com/Vishrut2403/RenderNet.git
+cd RenderNet && ./start.sh
+```
+
+That is the whole of it. The script installs what is missing, builds the page
+the browser gets, starts the farm, and then prints the two things anybody else
+needs:
+
+```
+The farm is up. On the other machine, open one of these:
+
+    http://rendernet.local:5500
+    http://192.168.0.150:5500      (if that name does not resolve)
+
+  Create account, then type this code:   4bby-rjv6
+
+  Nothing to install over there. A browser is the whole client.
+```
+
+Run it again whenever you want the farm up; the installing and building only
+happen when something is missing or stale. Ctrl+C stops it.
+
+### Or by hand
+
 **1. Build it**
 
 ```bash
-git clone https://github.com/Vishrut2403/RenderNet.git
-cd RenderNet/backend && npm install
+cd backend && npm install
 cd ../frontend && npm install && npm run build
 ```
 

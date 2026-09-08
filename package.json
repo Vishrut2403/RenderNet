@@ -4,6 +4,7 @@
   "type": "module",
   "description": "Lint configuration for both packages. Neither ships this.",
   "scripts": {
+    "start": "./start.sh",
     "lint": "eslint .",
     "demo": "tools/demo/demo.sh start",
     "demo:seed": "tools/demo/demo.sh seed",
