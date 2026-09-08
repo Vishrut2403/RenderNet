@@ -196,6 +196,26 @@ export function saveJob(job) {
   upsertJob.run(row);
 }
 
+// What this installation settled on for itself rather than being told: kept
+// here so it survives a restart and travels with the database backups.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS settings (
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )
+`);
+
+export function readSetting(name) {
+  return db.prepare('SELECT value FROM settings WHERE name = ?').get(name)?.value ?? null;
+}
+
+export function writeSetting(name, value) {
+  db.prepare(
+    `INSERT INTO settings (name, value) VALUES (?, ?)
+     ON CONFLICT(name) DO UPDATE SET value = excluded.value`
+  ).run(name, value);
+}
+
 db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner, id DESC)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id DESC)');
 

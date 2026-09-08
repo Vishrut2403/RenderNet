@@ -328,6 +328,10 @@ export const api = {
     return request(`/jobs/${id}/assets`, { method: 'POST', body: form });
   },
 
+  signupCode: () => request('/auth/signup-code'),
+
+  newSignupCode: () => request('/auth/signup-code', { method: 'POST' }),
+
   machines: () => request('/machines'),
 
   addMachine: name => request('/machines', { method: 'POST', body: { name } }),

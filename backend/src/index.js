@@ -9,7 +9,8 @@ import { ensureDir } from './utils/file-utils.js';
 import { findBlenderExecutable } from './utils/blender-check.js';
 import { cleanupOldFiles } from './cleanup.js';
 import authRouter from './routes/auth.js'
-import { requireAuth, requireAdmin } from './auth.js';
+import { requireAuth, requireAdmin, ensureSignupCode } from './auth.js';
+import { announceOnNetwork } from './announce.js';
 import uploadRouter from './routes/upload.js';
 import jobsRouter from './routes/jobs.js';
 import { resumeInterruptedJobs, stopWorkers } from './queue.js';
@@ -135,9 +136,12 @@ app.use((error, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong' });
 });
 
+let stopAnnouncing = () => {};
+
 // Workers are separate processes and outlive this one unless asked to stop.
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
+    stopAnnouncing();
     stopWorkers();
     process.exit(0);
   });
@@ -161,11 +165,20 @@ try {
 const scheme = tls ? 'https' : 'http';
 const server = tls ? https.createServer(tls, app) : app;
 
+// Made before the first request rather than asked of whoever installed this:
+// the farm tells its admin what the code is, and they pass it on.
+const signup = ensureSignupCode();
+
 server.listen(PORT, () => {
   console.log(`Render Farm started.
     Port: ${PORT}  , BlenderPath: ${blenderPath ? 'Found': 'Not Found'}
     Data:  ${DATA_DIR}
     UI:    ${fs.existsSync(FRONTEND_DIST) ? `${scheme}://localhost:${PORT}` : 'not built'}`);
+
+  stopAnnouncing = announceOnNetwork(PORT);
+
+  console.log(`    Code:  ${signup.code}${signup.fixed ? ' (from SIGNUP_CODE)' : ''}`
+    + '  - what somebody types to create an account');
 
   if (!tls) {
     console.warn('Serving plain HTTP: passwords, session tokens and scenes cross the network in clear.');

@@ -54,6 +54,48 @@ export function ChangePasswordModal({ onClose, notify, forced = false, onChanged
   );
 }
 
+// The one thing somebody joining the farm has to be told. Shown here because a
+// terminal scrolls away and nobody should have to restart the server to read it.
+function SignupCode({ notify }) {
+  const [held, setHeld] = useState(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api.signupCode().then(setHeld).catch(err => setError(err.message));
+  }, []);
+
+  async function replace() {
+    setError('');
+
+    try {
+      setHeld(await api.newSignupCode());
+      notify('Anyone with the old code can no longer sign up', 'success');
+    } catch (err) {
+      setError(err.message);
+    }
+  }
+
+  return (
+    <>
+      <h3 className="modal-section">Signup code</h3>
+
+      {error && <p className="form-error">{error}</p>}
+
+      {held === null ? <p className="idle">Loading…</p> : (
+        <>
+          <div className="log-tail token">{held.code}</div>
+          <p className="user-meta">
+            {held.fixed
+              ? 'Set by SIGNUP_CODE on this machine'
+              : 'Tell this to whoever is joining; they type it when they create an account'}
+          </p>
+          {!held.fixed && <button className="linkish" onClick={replace}>new code</button>}
+        </>
+      )}
+    </>
+  );
+}
+
 function Machines({ notify }) {
   const [machines, setMachines] = useState(null);
   const [name, setName] = useState('');
@@ -184,6 +226,8 @@ export function AdminModal({ onClose, notify }) {
 
   return (
     <Modal title="Admin" onClose={onClose}>
+      <SignupCode notify={notify} />
+
       <Machines notify={notify} />
 
       <h3 className="modal-section">Users</h3>

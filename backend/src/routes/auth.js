@@ -2,7 +2,7 @@ import express from 'express';
 import { route } from '../utils/async-route.js';
 import {
   login, signup, changePassword, logout, requireAuth, requireSession,
-  requireAdmin, adminResetPassword, listUsers
+  requireAdmin, adminResetPassword, listUsers, signupCodeNow, newSignupCode
 } from '../auth.js';
 
 const router = express.Router();
@@ -90,6 +90,24 @@ router.get('/verify', requireSession, (req, res) => {
 
 router.get('/users', requireAuth, requireAdmin, (req, res) => {
   res.json({ users: listUsers() });
+});
+
+// Shown rather than set: whoever runs the farm reads it off this page and tells
+// their team, the way a wireless password is passed on.
+router.get('/signup-code', requireAuth, requireAdmin, (req, res) => {
+  res.json(signupCodeNow());
+});
+
+router.post('/signup-code', requireAuth, requireAdmin, (req, res) => {
+  // Set in the environment, so this farm was configured by hand and a new code
+  // made here would be ignored the moment it was asked for.
+  if (signupCodeNow().fixed) {
+    return res.status(409).json({
+      error: 'This farm takes its signup code from SIGNUP_CODE. Change it there and restart.'
+    });
+  }
+
+  res.json({ code: newSignupCode(), fixed: false });
 });
 
 router.post('/admin/reset-password', requireAuth, requireAdmin, route(async (req, res) => {

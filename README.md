@@ -337,17 +337,34 @@ cd ../frontend && npm install && npm run build
 
 The frontend build is what lets clients get away with only a browser — the API serves `frontend/dist` itself. Rebuild after changing frontend code.
 
-**2. Write `backend/.env`**
+**2. Start it** with `npm start` from `backend/`. There is nothing to configure
+first: it finds Blender, names itself on the network, and makes a signup code,
+all of which it prints.
+
+```
+Render Farm started.
+    Port: 5500  , BlenderPath: Found
+    Data:  /home/you/RenderNet/backend
+    UI:    http://localhost:5500
+    Name:  http://rendernet.local:5500
+    Code:  avqs-22fw  - what somebody types to create an account
+```
+
+`Name` is how everyone else reaches it — the farm answers to that name on the
+local network, so nobody has to be told an address that changes when the router
+hands out a new lease. `Code` is the one thing to pass on; it is also under
+Admin, where it can be replaced, so a terminal that has scrolled away costs
+nothing.
+
+**On Windows**, `backend/.env` needs one line, because Blender is not on `PATH`:
 
 ```env
-PORT=5500
-SIGNUP_CODE=what-you-tell-your-team
 BLENDER_PATH=C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ```
 
-Copy `backend/.env.example`, which carries every option and its default, rather
-than typing this out. `BLENDER_PATH` is required on Windows and optional
-wherever `blender` is on `PATH`.
+`backend/.env.example` carries every other option and its default; all of them
+are optional. Setting `SIGNUP_CODE` there chooses the code yourself rather than
+taking the one the farm made.
 
 Nothing needs to be said about the graphics card. Each renderer asks its Blender
 which Cycles backends it can reach and takes the fastest, so a machine with an
@@ -356,14 +373,7 @@ RTX card renders on OPTIX without being told to. `CYCLES_DEVICE` overrides that:
 backend the machine has not got is reported on the dashboard and rendered on
 what it does have, rather than failing every frame the way Blender would.
 
-**Without `SIGNUP_CODE` nobody can create an account** — deliberate, since
-anyone who can reach the port could otherwise sign up, but it has to be set
-before your team can register.
-
-**3. Start it** with `npm start` from `backend/`. The output tells you whether
-step 2 worked — it names the Blender it found, the data directory and the URL.
-
-**4. Take the admin account.** Sign in as `admin` / `admin123`. It immediately
+**3. Take the admin account.** Sign in as `admin` / `admin123`. It immediately
 requires a new password and refuses everything else until one is set — that is
 the intended path, not a fault, and the same applies to anyone whose password an
 admin resets later. Five wrong passwords lock a username out for fifteen
@@ -386,8 +396,8 @@ powercfg /change standby-timeout-ac 0
 powercfg /change hibernate-timeout-ac 0
 ```
 
-**Rename the PC** to something like `RENDERNET`, so people can use
-`http://rendernet:5500` rather than chasing a DHCP address.
+**Nothing to rename.** The farm answers to `rendernet.local` on the network
+whatever the machine is called, so nobody chases a DHCP address.
 
 **Start on boot** — Task Scheduler, Create Task:
 
@@ -417,9 +427,14 @@ menu, or over the API at `GET /api/logs`.
 
 Nothing to install.
 
-1. Open `http://rendernet:5500`
-2. **Create account** — username, password, and the signup code
+1. Open `http://rendernet.local:5500`
+2. **Create account** — username, password, and the signup code the workstation
+   printed
 3. Sign in and upload a `.blend`
+
+The name works from anything on the same network that speaks mDNS, which is
+macOS, Windows 10 and later, and most Linux desktops. Where it does not, the
+workstation's address still does.
 
 ![The upload form: frame range, engine, formats, tiling and the test frame](docs/upload.png)
 
@@ -432,14 +447,14 @@ the network, so on anything but a trusted wire give the server a certificate:
 ```
 openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
   -keyout tls-key.pem -out tls-cert.pem \
-  -subj "/CN=rendernet" -addext "subjectAltName=DNS:rendernet"
+  -subj "/CN=rendernet.local" -addext "subjectAltName=DNS:rendernet.local"
 ```
 
 Point `TLS_KEY` and `TLS_CERT` at the two files and the same port serves HTTPS.
 A self-signed certificate means each browser is warned once; a worker on another
 machine needs `NODE_EXTRA_CA_CERTS=/path/to/tls-cert.pem` to trust it.
 
-To confirm the workstation is reachable, open `http://rendernet:5500/api/health`
+To confirm the workstation is reachable, open `http://rendernet.local:5500/api/health`
 from a *different* machine: `{"status":"ok","blenderAvailable":true}` means the
 firewall rule and the name both work, and `degraded` means Blender is missing or
 the disk is too full to render. Signed in it also carries the queue depth, free
@@ -457,7 +472,8 @@ tree, so it is found however the server is started.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `PORT` | `5500` | API and UI listen port |
-| `SIGNUP_CODE` | *unset* | Code required to create an account. While unset, account creation is refused rather than left open. |
+| `SIGNUP_CODE` | *made at first start* | Code required to create an account. Made and kept by the farm unless set here; either way it is shown under Admin. |
+| `FARM_NAME` | `rendernet` | The name it answers to on the local network, as `<name>.local` |
 | `WORKER_TOKEN` | *minted at start* | Credential a worker authenticates with. Needed only on other machines; issue one under Admin. |
 | `WORKER_SECRET` | *unset* | The old farm-wide secret. Still accepted, and listed under Admin so it can be revoked once every machine has its own. |
 | `BLENDER_PATH` | auto-detected | Blender executable. Required on Windows. |

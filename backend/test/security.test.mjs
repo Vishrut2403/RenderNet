@@ -3,13 +3,14 @@
 import fs from 'fs';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, signUp, SIGNUP_CODE,
-  createCertificate, httpsGet, status
+  createCertificate, httpsGet, status, adminSession, auth
 } from './helpers.mjs';
 
 const PORT = 5596;
 const CORS_PORT = 5597;
 const TLS_PORT = 5611;
 const PROXY_PORT = 5615;
+const CODE_PORT = 5622;
 const ALLOWED = 'http://studio.local:8080';
 
 async function headersOf(url, options = {}) {
@@ -141,6 +142,69 @@ async function behindAProxy(results) {
       await guess('203.0.113.5', 'proxied6', 'not-the-code') === 429);
     results.check('and everybody else behind the same proxy is not',
       await guess('203.0.113.9', 'innocent', SIGNUP_CODE) === 200);
+  } finally {
+    await stopServer(server);
+    removeSandbox(box);
+  }
+
+  await theCodeItMakesForItself(results);
+}
+
+// Nobody should have to edit a file before their team can join, and nobody
+// should have to think of a shared secret either. Told none, the farm makes one
+// and shows it to whoever runs it.
+async function theCodeItMakesForItself(results) {
+  const box = makeSandbox('signup-code');
+  let server;
+
+  try {
+    console.log('\n  The signup code a farm nobody configured makes for itself');
+
+    // Empty rather than absent: the helper always sets one, and an empty value
+    // is what a machine with nothing in .env has.
+    server = await startServer({ port: CODE_PORT, cwd: box, env: { SIGNUP_CODE: '' } });
+
+    const token = await adminSession(server.base);
+    const shown = await (await fetch(`${server.base}/auth/signup-code`, {
+      headers: auth(token)
+    })).json();
+
+    results.check('one is made without being asked for',
+      /^[a-z0-9]{4}-[a-z0-9]{4}$/.test(shown.code ?? ''), JSON.stringify(shown));
+    results.check('and it is not passed off as one somebody chose',
+      shown.fixed === false, JSON.stringify(shown));
+    results.check('somebody told it can create an account',
+      await signUp(server.base, 'joiner', 'a-real-password', shown.code) === 200);
+
+    const replaced = await (await fetch(`${server.base}/auth/signup-code`, {
+      method: 'POST', headers: auth(token)
+    })).json();
+
+    results.check('a new one can be made from the admin page',
+      replaced.code !== shown.code && /^[a-z0-9]{4}-[a-z0-9]{4}$/.test(replaced.code ?? ''),
+      JSON.stringify(replaced));
+    results.check('after which the old one is no use',
+      await signUp(server.base, 'straggler', 'a-real-password', shown.code) === 400);
+    results.check('and the new one works',
+      await signUp(server.base, 'straggler', 'a-real-password', replaced.code) === 200);
+
+    await stopServer(server);
+
+    // The farm the README describes, configured by hand: what it was told wins,
+    // and making a new one here would be a lie the next signup would expose.
+    server = await startServer({ port: CODE_PORT, cwd: box });
+
+    const fixedToken = await adminSession(server.base);
+    const fixed = await (await fetch(`${server.base}/auth/signup-code`, {
+      headers: auth(fixedToken)
+    })).json();
+
+    results.check('a code set in the environment is the one shown',
+      fixed.code === SIGNUP_CODE && fixed.fixed === true, JSON.stringify(fixed));
+    results.check('and it refuses to pretend it can be replaced',
+      await status(`${server.base}/auth/signup-code`, {
+        method: 'POST', headers: auth(fixedToken)
+      }) === 409);
   } finally {
     await stopServer(server);
     removeSandbox(box);

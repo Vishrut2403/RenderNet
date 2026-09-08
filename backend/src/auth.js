@@ -3,7 +3,7 @@ import fs from 'fs';
 import bcrypt from 'bcrypt';
 import {
   saveSession, loadSessions, deleteSession, deleteSessionsFor,
-  saveUser, getUser, getAllUsers, countUsers
+  saveUser, getUser, getAllUsers, countUsers, readSetting, writeSetting
 } from './db.js';
 import { USERS_FILE } from './paths.js';
 
@@ -61,9 +61,53 @@ const failedLogins = attemptLimiter();
 // and guessing it is the only way in that does not need an account already.
 const failedSignups = attemptLimiter();
 
+// Told apart by ear as often as by eye - somebody reads this one out - so no
+// character that could be heard or seen as another.
+const CODE_LETTERS = 'abcdefghjkmnpqrstuvwxyz23456789';
+const CODE_SETTING = 'signupCode';
+
+function madeUpCode() {
+  const letters = Array.from({ length: 8 },
+    () => CODE_LETTERS[crypto.randomInt(CODE_LETTERS.length)]);
+
+  return `${letters.slice(0, 4).join('')}-${letters.slice(4).join('')}`;
+}
+
 // Read lazily: index.js loads .env before this module, but tests set it per run.
+// A code in the environment wins, so a farm that was configured by hand keeps
+// the code its team already knows.
 function signupCode() {
-  return process.env.SIGNUP_CODE;
+  return process.env.SIGNUP_CODE || readSetting(CODE_SETTING);
+}
+
+// What a signup would be checked against now, and whether this farm was told it
+// rather than choosing for itself.
+export function signupCodeNow() {
+  return { code: signupCode(), fixed: !!process.env.SIGNUP_CODE };
+}
+
+// Made once and kept, so the code somebody was told on Monday still works on
+// Tuesday. Nobody has to think of one, which is the point.
+export function ensureSignupCode() {
+  if (process.env.SIGNUP_CODE) return { code: process.env.SIGNUP_CODE, fixed: true };
+
+  let stored = readSetting(CODE_SETTING);
+
+  if (!stored) {
+    stored = madeUpCode();
+    writeSetting(CODE_SETTING, stored);
+  }
+
+  return { code: stored, fixed: false };
+}
+
+// Whoever knew the old one can no longer sign up with it.
+export function newSignupCode() {
+  const made = madeUpCode();
+
+  writeSetting(CODE_SETTING, made);
+
+  return made;
 }
 
 function matchesSecret(provided, expected) {
