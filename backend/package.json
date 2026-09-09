@@ -17,7 +17,7 @@
     "dotenv": "^16.4.5",
     "express": "^4.19.2",
     "form-data": "^4.0.5",
-    "multer": "^2.2.0",
+    "multer": "^2.3.0",
     "multicast-dns": "^7.2.5",
     "node-fetch": "^3.3.2"
   },
