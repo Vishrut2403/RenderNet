@@ -39,6 +39,13 @@ creating an account. Run it again whenever you want the farm up; Ctrl+C stops it
 Everybody else opens that address, creates an account with that code, and uploads
 a scene. A browser is the whole client.
 
+To make another machine render as well, clone this there and point it at the
+farm. It needs Blender too, and an admin to issue it a credential when it asks:
+
+```bash
+./join.sh http://rendernet.local:5500
+```
+
 ![The upload form: frame range, engine, formats, tiling and the test frame](docs/upload.png)
 
 ![The dashboard, naming each machine and the frame it is holding](docs/dashboard.png)

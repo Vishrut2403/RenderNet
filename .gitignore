@@ -56,3 +56,6 @@ temp/
 *.blend2
 # Blender drops this beside whatever it was run from when it bakes fluid noise.
 waveletNoiseTile.bin
+
+# The credential a machine that only renders is issued
+.worker-env
