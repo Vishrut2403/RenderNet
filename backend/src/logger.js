@@ -102,14 +102,17 @@ const ROUTINE = [
   ['GET', /^\/api\/jobs\/\d+$/],
   ['GET', /^\/api\/jobs\/summary$/],
   ['GET', /^\/api\/jobs\/queue\/status$/],
+  ['GET', /^\/api\/download\/\d+\/preview$/],
   ['POST', /^\/api\/worker\/lease$/],
   ['POST', /^\/api\/worker\/leases\/[^/]+\/(renew|release)$/],
   ['POST', /^\/api\/worker\/jobs\/\d+\/progress$/],
   ['POST', /^\/api\/worker\/jobs\/\d+\/frames\/\d+(\/at)?$/]
 ];
 
+const EVERY_REQUEST = process.env.LOG_REQUESTS === 'all';
+
 function worthRecording(method, requestPath, status) {
-  if (status >= 400) return true;
+  if (EVERY_REQUEST || status >= 400) return true;
 
   return !ROUTINE.some(([verb, pattern]) => verb === method && pattern.test(requestPath));
 }

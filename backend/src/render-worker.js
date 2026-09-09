@@ -26,14 +26,23 @@ const IDLE_MS = Number(process.env.BLENDER_IDLE_MS ?? 60000);
 // fastest device this machine has rather than the CPU.
 let chosenDevice = null;
 
+const SLOT = process.env.WORKER_ID || '';
+
+async function progressFrom(response) {
+  return (await response.json().catch(() => ({}))).progress ?? null;
+}
+
 function cyclesDevice() {
   if (!chosenDevice) {
     chosenDevice = chooseDevice(BLENDER_PATH);
 
-    console.log(chosenDevice.wanted
-      ? `⚠️  Cycles: this Blender offers no ${chosenDevice.wanted} device, `
-        + `rendering with ${chosenDevice.device}`
-      : `Cycles renders here on ${chosenDevice.device}`);
+    if (chosenDevice.wanted) {
+      console.log(`⚠️  Cycles: this Blender offers no ${chosenDevice.wanted} device, `
+        + `rendering with ${chosenDevice.device}`);
+    } else if (!SLOT || SLOT.endsWith('-0')) {
+      // Every worker here probes the same Blender and would say the same thing.
+      console.log(`Cycles renders here on ${chosenDevice.device}`);
+    }
   }
 
   return chosenDevice;
@@ -894,13 +903,17 @@ class RenderWorker {
 
     if (produced === null) return false;
 
-    console.log(`✅ Job ${jobId}, frame ${frame} rendered: ${produced.join(', ')}`);
-
     let delivered = true;
+    let progress = null;
 
     // Every format has to arrive or the ZIP is missing one for this frame alone.
     for (const file of produced) {
-      if (await this.handOverFrame(jobId, frame, file, leaseId, remote)) continue;
+      const handed = await this.handOverFrame(jobId, frame, file, leaseId, remote);
+
+      if (handed.ok) {
+        progress = handed.progress ?? progress;
+        continue;
+      }
 
       delivered = false;
       break;
@@ -908,8 +921,16 @@ class RenderWorker {
 
     for (const file of produced) fs.rmSync(file, { force: true });
 
-    if (delivered) await this.reportProgress(jobId, frame);
-    else await this.reportFrameFailure(jobId, frame, 'Frame rendered but upload failed', leaseId);
+    if (delivered) {
+      const names = produced.map(file => path.basename(file)).join(', ');
+
+      console.log(`✅ Job ${jobId}, frame ${frame} rendered`
+        + `${progress === null ? '' : ` (${progress}%)`}: ${names}`);
+
+      await this.reportProgress(jobId, frame);
+    } else {
+      await this.reportFrameFailure(jobId, frame, 'Frame rendered but upload failed', leaseId);
+    }
 
     return true;
   }
@@ -991,7 +1012,7 @@ class RenderWorker {
         body: JSON.stringify({ path: framePath })
       });
 
-      if (response.ok) return true;
+      if (response.ok) return { ok: true, progress: await progressFrom(response) };
     } catch {
       // Fall through and send it.
     }
@@ -1017,14 +1038,14 @@ class RenderWorker {
       if (!response.ok) {
         const error = await response.text();
         console.error(`Upload failed: ${error}`);
-        return false;
+        return { ok: false };
       }
-      
-      return true;
-      
+
+      return { ok: true, progress: await progressFrom(response) };
+
     } catch (error) {
       console.error(`Upload error: ${error.message}`);
-      return false;
+      return { ok: false };
     }
   }
 

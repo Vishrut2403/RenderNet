@@ -40,8 +40,6 @@ export function cleanupOldFiles() {
   // A backstop for files nobody came back for; the per-user quota is the limit.
   const cutoff = now - (RETENTION_DAYS * 24 * 60 * 60 * 1000);
 
-  console.log('Starting cleanup process...');
-
   try {
     // A job can sit queued for longer than the cutoff, and deleting by age alone
     // would take its .blend before it renders.
@@ -59,7 +57,6 @@ export function cleanupOldFiles() {
         try {
           fs.rmSync(filePath, { recursive: true, force: true });
           deletedUploads++;
-          console.log(`   🗑️ Deleted old upload: ${file}`);
         } catch (error) {
           console.warn(`   Could not delete ${file}: ${error.message}`);
         }
@@ -82,7 +79,6 @@ export function cleanupOldFiles() {
         try {
           fs.rmSync(folderPath, { recursive: true, force: true });
           deleted++;
-          console.log(`   🗑️ Deleted old folder: ${folderPath}`);
         } catch (error) {
           console.warn(`   Could not delete ${folderPath}: ${error.message}`);
         }
@@ -109,8 +105,6 @@ export function cleanupOldFiles() {
     if (prunedPartials) {
       console.log(`Removed ${prunedPartials} abandoned part-upload(s)`);
     }
-
-    console.log('Cleanup complete!');
 
   } catch (error) {
     console.error('Cleanup error:', error.message);

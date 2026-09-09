@@ -524,8 +524,6 @@ router.post('/jobs/:id/frames/:frame/at', loadJob, requireRendering, validFrame,
       return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
     }
 
-    if (isPrimary) console.log(`Frame ${frame} taken for job ${req.jobId} (${job.progress}%)`);
-
     res.json({ success: true, frame, stored: filename, progress: job.progress });
   });
 

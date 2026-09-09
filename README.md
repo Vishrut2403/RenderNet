@@ -441,9 +441,10 @@ tree. The database is snapshotted to `backups/` on every start, keeping seven.
 
 Nothing reads that window, so everything printed also goes to a dated file in
 `logs/` under the data directory, kept for a month, with a line per request
-recording who did what. The job list the dashboard polls is left out, or it
-would be the whole file. An admin reads them from the Logs entry in the account
-menu, or over the API at `GET /api/logs`.
+recording who did what. Polling and the workers' own bookkeeping are left out,
+or they would be the whole file; `LOG_REQUESTS=all` puts every request back.
+Anything that failed is always kept. An admin reads them from the Logs entry in
+the account menu, or over the API at `GET /api/logs`.
 
 ---
 
@@ -512,6 +513,7 @@ tree, so it is found however the server is started.
 | `RETENTION_DAYS` | `14` | Backstop sweep for files nobody came back for |
 | `MIN_FREE_BYTES` | `5368709120` (5 GB) | Disk kept spare; below it uploads are refused and the queue holds |
 | `DB_BACKUPS_KEPT` | `7` | Database snapshots kept in `backups/`, one taken per start |
+| `LOG_REQUESTS` | unset | `all` logs every request, including polling |
 | `LOG_RETENTION_DAYS` | `30` | How long dated logs in `logs/` are kept |
 | `MAX_LOG_BYTES` | `8388608` (8 MB) | Size at which the day's log rotates to a new file |
 | `DB_PATH` | `rendernet.db` inside `DATA_DIR` | SQLite database file |

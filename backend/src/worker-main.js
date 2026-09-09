@@ -9,10 +9,13 @@ const worker = new RenderWorker(workerId);
 
 let running = true;
 
+// An IPC channel means the server's pool started this and speaks for it.
+const alone = !process.send;
+
 function shutDown(signal) {
   if (!running) return;
 
-  console.log(`Worker ${workerId}: ${signal}, letting go of the frame in hand`);
+  if (alone) console.log(`Worker ${workerId}: ${signal}, letting go of the frame in hand`);
   running = false;
   worker.stop();
 }
@@ -21,11 +24,13 @@ process.on('SIGTERM', () => shutDown('SIGTERM'));
 process.on('SIGINT', () => shutDown('SIGINT'));
 
 // Closes the moment the server goes, however it went.
-if (process.send) {
+if (!alone) {
   process.on('disconnect', () => shutDown('the server that started it has gone'));
 }
 
-console.log(`Worker ${workerId} started against ${process.env.API_URL || 'http://localhost:5500'}`);
+if (alone) {
+  console.log(`Worker ${workerId} started against ${process.env.API_URL || 'http://localhost:5500'}`);
+}
 
 while (running) {
   const busy = await worker.claimAndRender();
@@ -35,4 +40,4 @@ while (running) {
   }
 }
 
-console.log(`Worker ${workerId} stopped`);
+if (alone) console.log(`Worker ${workerId} stopped`);
