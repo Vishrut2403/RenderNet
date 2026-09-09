@@ -128,7 +128,7 @@ function uploadSettings({
 
   if (formats?.includes('JPEG')) settings.jpegQuality = String(jpegQuality);
   if (skipAssetCheck) settings.skipAssetCheck = '1';
-  if (testFrame) settings.testFrame = String(testFrame);
+  if (testFrame != null) settings.testFrame = String(testFrame);
   if (tiles) settings.tiles = String(tiles);
 
   return settings;

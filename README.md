@@ -307,10 +307,10 @@ engine it does not run, a scene with no camera — is said rather than quietly
 dropped. Submitting queues the file already on disk,
 so it goes up once.
 
-**A test frame can be rendered first.** The rest of the range is held back until
-its owner has looked at that frame and approved it, so a wrong camera or a
-missing material costs one frame rather than five hundred. The farm renders
-whatever is queued behind it while it waits.
+**A test frame can be rendered first.** Any frame of the range will do, and the
+rest is held back until its owner has looked at it and approved it, so a wrong
+camera or a missing material costs one frame rather than five hundred. The farm
+renders whatever is queued behind it while it waits.
 
 ![A job holding 47 frames back until its first is approved](docs/approval.png)
 

@@ -155,6 +155,17 @@ export default async function run() {
     results.check('and a one-frame job has nothing to hold back',
       single.status === 400, JSON.stringify(single.body));
 
+    const zero = await submitJob(base, admin, createFakeScene(sandbox, 'zero.blend'),
+      { frameStart: 0, frameEnd: 3, testFrame: 0, skipAssetCheck: true });
+
+    results.check('frame zero is a frame like any other',
+      await waitingFor(base, admin, zero.body.jobId), 'never got there');
+
+    const fromZero = await getJob(base, admin, zero.body.jobId);
+
+    results.check('and the rest of the range waits on it',
+      fromZero.completedFrames === 1, `${fromZero.completedFrames} frames rendered`);
+
     console.log('\n  Waiting through a restart');
 
     const across = await submitJob(base, admin, createFakeScene(sandbox, 'restart.blend'),

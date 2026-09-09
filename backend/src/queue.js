@@ -177,7 +177,7 @@ export function addToQueue(jobData) {
     exrDepth: jobData.exrDepth || DEFAULT_EXR_DEPTH,
     jpegQuality: jobData.jpegQuality ?? DEFAULT_JPEG_QUALITY,
     testFrame: jobData.testFrame ?? null,
-    approval: jobData.testFrame ? 'testing' : null,
+    approval: jobData.testFrame == null ? null : 'testing',
     tiles: jobData.tiles ?? null,
     composite: null,
     needsThisMachine: 0
@@ -192,7 +192,7 @@ export function addToQueue(jobData) {
   // tiles rather than the one frame they all belong to.
   if (isTiled(job)) createFrames(jobId, 1, job.tiles);
   else createFrames(jobId, job.frameStart, job.frameEnd, job.frameStep);
-  if (job.testFrame) holdFramesExcept(jobId, job.testFrame);
+  if (job.testFrame != null) holdFramesExcept(jobId, job.testFrame);
   saveJob(job);
   forgetUsage(job.owner);
   enqueue(jobId);

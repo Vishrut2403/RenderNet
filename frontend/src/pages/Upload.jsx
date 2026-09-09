@@ -25,6 +25,8 @@ export function Upload({ onSubmitted, notify }) {
   const [urgent, setUrgent] = useState(false);
   const [skipAssetCheck, setSkipAssetCheck] = useState(false);
   const [testFirst, setTestFirst] = useState(false);
+  // Blank follows the start frame, wherever that ends up.
+  const [testFrame, setTestFrame] = useState('');
   const [tiles, setTiles] = useState(0);
   const [progress, setProgress] = useState(null);
   const [submitting, setSubmitting] = useState(false);
@@ -44,6 +46,11 @@ export function Upload({ onSubmitted, notify }) {
     ? 0
     : Math.floor((Number(frameEnd) - Number(frameStart)) / Math.max(1, Number(frameStep))) + 1;
   const single = frameCount === 1;
+
+  const testAt = testFrame === '' ? Number(frameStart) : Number(testFrame);
+  const testable = Number.isInteger(testAt)
+    && testAt >= Number(frameStart) && testAt <= Number(frameEnd)
+    && (testAt - Number(frameStart)) % Math.max(1, Number(frameStep)) === 0;
   const busy = progress !== null || submitting;
 
   useEffect(() => {
@@ -156,10 +163,15 @@ export function Upload({ onSubmitted, notify }) {
     if (frameCount < 1) return setError('End frame must not precede start frame');
     if (chosen.length === 0) return setError('Choose at least one output format');
 
+    if (testFirst && !testable) {
+      return setError(`The frame to render first must be one of the frames from ${frameStart} `
+        + `to ${frameEnd}`);
+    }
+
     const settings = {
       frameStart, frameEnd, frameStep, renderEngine: engine, priority: urgent,
       resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality,
-      skipAssetCheck, testFrame: testFirst ? frameStart : null,
+      skipAssetCheck, testFrame: testFirst ? testAt : null,
       tiles: single ? tiles : 0
     };
 
@@ -400,8 +412,21 @@ export function Upload({ onSubmitted, notify }) {
             disabled={frameCount < 2}
             onChange={e => setTestFirst(e.target.checked)}
           />
-          <span>Render frame {frameStart} first and wait</span>
+          <span>Render one frame first and wait</span>
         </label>
+
+        {testFirst && (
+          <Field
+            label="Frame to render first"
+            type="number"
+            min={frameStart}
+            max={frameEnd}
+            step={frameStep}
+            placeholder={frameStart}
+            value={testFrame}
+            onChange={e => setTestFrame(e.target.value)}
+          />
+        )}
 
         <label className="check">
           <input
