@@ -20,6 +20,46 @@ export function getToken() {
   return localStorage.getItem('rendernet.token');
 }
 
+// Read as a stream rather than through EventSource, which cannot carry a
+// header: the session token belongs in one and never in a URL. Calls back on
+// every message until the signal is aborted or the connection ends.
+export async function streamEvents(signal, onMessage) {
+  const token = getToken();
+
+  if (!token) throw new Error('No session');
+
+  const response = await fetch(`${BASE}/events`, {
+    signal,
+    headers: { Authorization: `Bearer ${token}`, Accept: 'text/event-stream' }
+  });
+
+  if (!response.ok || !response.body) {
+    throw new Error(`Events unavailable (${response.status})`);
+  }
+
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = '';
+
+  for (;;) {
+    const { value, done } = await reader.read();
+
+    if (done) return;
+
+    buffered += value;
+
+    // Messages are separated by a blank line, and one read can carry a
+    // fragment of the next.
+    const parts = buffered.split('\n\n');
+
+    buffered = parts.pop();
+
+    // Heartbeats are comments, which carry no data line and mean nothing here.
+    for (const part of parts) {
+      if (part.split('\n').some(line => line.startsWith('data:'))) onMessage();
+    }
+  }
+}
+
 export function setSession({ token, username, role, mustChangePassword }) {
   localStorage.setItem('rendernet.token', token);
   localStorage.setItem('rendernet.user', JSON.stringify({ username, role, mustChangePassword }));

@@ -15,6 +15,10 @@ const CHANNEL = 'rendernet';
 // waiting asks the queue, which is the only thing that decides who gets it.
 export const WORK = 'work';
 
+// Something about a job moved. Like WORK it carries nothing: a browser is told
+// to look again, and what it may see is decided when it asks, not here.
+export const CHANGED = 'changed';
+
 const local = new EventEmitter();
 // Every waiting worker adds one, and a busy farm can hold a lot of them.
 local.setMaxListeners(0);
@@ -111,6 +115,22 @@ export function announce(name, detail = null) {
   // Not through Redis for this process: its own subscriber would deliver it a
   // moment later, and a worker held here should not wait for the round trip.
   return local.emit(name, detail);
+}
+
+// A job record is written every time a frame lands, which on a fast render is
+// several a second. Browsers only need to know that something moved, so these
+// are gathered up and sent as one.
+let gathering = null;
+
+export function announceChanged() {
+  if (gathering) return;
+
+  gathering = setTimeout(() => {
+    gathering = null;
+    announce(CHANGED);
+  }, 200);
+
+  gathering.unref?.();
 }
 
 export function whenAnnounced(name, handler) {

@@ -18,6 +18,7 @@ import { startBus, stopBus } from './bus.js';
 import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
 import logsRouter from './routes/logs.js';
+import eventsRouter from './routes/events.js';
 import machinesRouter from './routes/machines.js';
 import { importSharedSecret } from './worker-tokens.js';
 import { healthRouter } from './routes/health.js';
@@ -76,6 +77,7 @@ if (!blenderPath) {
 app.use('/api/auth', authRouter);
 app.use('/api/upload', requireAuth, uploadRouter);
 app.use('/api/jobs', requireAuth, jobsRouter);
+app.use('/api/events', requireAuth, eventsRouter);
 // Both authenticate inside their own routers.
 app.use('/api/download', downloadRouter);
 app.use('/api/worker', workerRouter);

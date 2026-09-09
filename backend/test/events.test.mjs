@@ -6,7 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
-  adminSession, createFakeBlender, createFakeScene, submitJob, waitForCondition, getJob
+  adminSession, auth, createFakeBlender, createFakeScene, submitJob, waitForCondition, getJob
 } from './helpers.mjs';
 
 const PORT = 5622;
@@ -117,6 +117,67 @@ export default async function run() {
       answered.status === 200, `${answered.status} after ${answered.ms}ms`);
     results.check('and does it in well under a poll',
       answered.ms < 1500, `took ${answered.ms}ms`);
+
+    console.log('\n  Telling a browser to look again');
+
+    // Read as a stream: the point is what arrives while the request is open.
+    const stream = await fetch(`${base}/events`, { headers: auth(token) });
+
+    results.check('the stream needs a session',
+      (await fetch(`${base}/events`)).status === 401);
+    results.check('and is served as an event stream',
+      stream.status === 200
+      && (stream.headers.get('content-type') || '').includes('text/event-stream'),
+      `${stream.status} ${stream.headers.get('content-type')}`);
+
+    const reader = stream.body.pipeThrough(new TextDecoderStream()).getReader();
+    const messages = [];
+    let heard = () => {};
+
+    (async () => {
+      for (;;) {
+        const { value, done } = await reader.read();
+
+        if (done) return;
+
+        messages.push(value);
+        heard();
+      }
+    })().catch(() => {});
+
+    const nextMessage = () => new Promise(resolve => {
+      const before = messages.length;
+
+      heard = () => {
+        if (messages.length > before) resolve();
+      };
+
+      setTimeout(resolve, 8000);
+    });
+
+    await nextMessage();
+
+    results.check('a page is caught up the moment it connects',
+      messages.join('').includes('data: changed'), JSON.stringify(messages));
+
+    const seenSoFar = messages.length;
+
+    await submitJob(base, token, createFakeScene(sandbox, 'watched.blend'),
+      { frameStart: 1, frameEnd: 2, skipAssetCheck: true });
+
+    await nextMessage();
+
+    results.check('and told again when a job moves',
+      messages.length > seenSoFar, `${messages.length} messages`);
+
+    // Who may see which job is decided by the request the page makes next, so
+    // nothing about one belongs in a stream every signed-in viewer shares.
+    const everything = messages.join('');
+
+    results.check('the stream carries no job data',
+      !/watched\.blend|jobId|"id"/.test(everything), JSON.stringify(everything));
+
+    await reader.cancel().catch(() => {});
 
     console.log('\n  A farm with no Redis still renders');
 
@@ -232,6 +293,36 @@ export default async function run() {
 
     results.check('a farm on Redis answers a held request the same way',
       answered.status === 200 && answered.ms < 1500, `${answered.status} after ${answered.ms}ms`);
+
+    // The whole case for Redis, from the browser's side: the page is connected
+    // here, the thing that changed happened somewhere else entirely.
+    const watching = await fetch(`${onRedis.base}/events`, { headers: auth(redisToken) });
+    const reader = watching.body.pipeThrough(new TextDecoderStream()).getReader();
+
+    // The greeting every connection gets, read first so what follows can only
+    // be the announcement from the other process.
+    await reader.read();
+
+    const elsewhere = busProcess(`
+      import { startBus, announceChanged, stopBus } from ${JSON.stringify(path.join(SRC, 'bus.js'))};
+      await startBus();
+      console.log('ready');
+      announceChanged();
+      await new Promise(resolve => setTimeout(resolve, 600));
+      await stopBus();
+    `);
+
+    await elsewhere.ended;
+
+    const told = await Promise.race([
+      reader.read().then(({ value }) => value ?? ''),
+      new Promise(resolve => setTimeout(() => resolve('nothing arrived'), 8000))
+    ]);
+
+    results.check('a change in another process reaches a browser connected here',
+      told.includes('data: changed'), JSON.stringify(told));
+
+    await reader.cancel().catch(() => {});
   } finally {
     if (onRedis) await stopServer(onRedis);
     removeSandbox(redisSandbox);

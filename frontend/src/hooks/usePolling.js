@@ -83,7 +83,11 @@ export function usePolling(fetcher, intervalFor, deps = []) {
 }
 
 // A job actively rendering is worth watching closely; anything else is not.
-export function jobsInterval(jobs) {
+// Being told when something moves makes all of it a backstop rather than the
+// way the page finds out, so it drops to a slow check for anything missed.
+export function jobsInterval(jobs, live) {
+  if (live) return 30000;
+
   const active = (jobs || []).some(job => job.status === 'rendering');
   return active ? 2000 : 10000;
 }

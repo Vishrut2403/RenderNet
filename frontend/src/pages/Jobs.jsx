@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../api/client';
 import { usePolling, jobsInterval } from '../hooks/usePolling';
+import { useLiveUpdates } from '../hooks/useLiveUpdates';
 import { useJobFinished } from '../hooks/useJobFinished';
 import { JobCard } from '../components/JobCard';
 import { Alert, EmptyState } from '../components/ui';
@@ -16,11 +17,14 @@ export function Jobs({ notify }) {
 
   const newest = useCallback(() => api.jobs({ status: filter, limit: PAGE }), [filter]);
 
+  const live = useRef(false);
   const { data, error, loading, refresh } = usePolling(
     newest,
-    result => jobsInterval(result?.jobs),
+    result => jobsInterval(result?.jobs, live.current),
     [filter]
   );
+
+  useLiveUpdates(live, refresh);
 
   useEffect(() => {
     setOlder([]);

@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { announceChanged } from './bus.js';
 import path from 'path';
 import crypto from 'crypto';
 import Database from 'better-sqlite3';
@@ -194,6 +195,9 @@ export function saveJob(job) {
   }
 
   upsertJob.run(row);
+  // The one place every change to a job goes through, which is what makes it
+  // the place to say so.
+  announceChanged();
 }
 
 // What this installation settled on for itself rather than being told: kept

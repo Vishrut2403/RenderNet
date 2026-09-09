@@ -1,6 +1,7 @@
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import { api } from '../api/client';
 import { usePolling, jobsInterval } from '../hooks/usePolling';
+import { useLiveUpdates } from '../hooks/useLiveUpdates';
 import { useJobFinished } from '../hooks/useJobFinished';
 import { JobCard } from '../components/JobCard';
 import { EmptyState, ProgressBar, StatusBadge, Metrics, formatDuration, formatBytes, useNow } from '../components/ui';
@@ -61,9 +62,17 @@ function ActiveJob({ job, now, workers }) {
 export function Dashboard({ notify }) {
   // One request for what this page shows rather than every job the user has:
   // the totals are counted server-side, so the payload does not grow with them.
-  const summaryPoll = usePolling(api.jobsSummary, result => jobsInterval(result?.rendering));
-  const queuePoll = usePolling(api.queueStatus, result => (result?.isRendering ? 2000 : 10000));
+  const live = useRef(false);
+  const summaryPoll = usePolling(api.jobsSummary,
+    result => jobsInterval(result?.rendering, live.current));
+  const queuePoll = usePolling(api.queueStatus,
+    result => (live.current ? 30000 : (result?.isRendering ? 2000 : 10000)));
   const healthPoll = usePolling(api.health, () => 15000);
+
+  useLiveUpdates(live, () => {
+    summaryPoll.refresh();
+    queuePoll.refresh();
+  });
 
   const summary = summaryPoll.data;
   const queue = queuePoll.data;
