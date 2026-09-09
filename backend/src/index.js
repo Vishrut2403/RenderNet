@@ -14,6 +14,7 @@ import { announceOnNetwork } from './announce.js';
 import uploadRouter from './routes/upload.js';
 import jobsRouter from './routes/jobs.js';
 import { resumeInterruptedJobs, stopWorkers } from './queue.js';
+import { startBus, stopBus } from './bus.js';
 import downloadRouter from './routes/download.js';
 import workerRouter from './routes/worker.js';
 import logsRouter from './routes/logs.js';
@@ -143,7 +144,7 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
     stopAnnouncing();
     stopWorkers();
-    process.exit(0);
+    stopBus().finally(() => process.exit(0));
   });
 }
 
@@ -176,6 +177,7 @@ server.listen(PORT, () => {
     UI:    ${fs.existsSync(FRONTEND_DIST) ? `${scheme}://localhost:${PORT}` : 'not built'}`);
 
   stopAnnouncing = announceOnNetwork(PORT);
+  startBus();
 
   console.log(`    Code:  ${signup.code}${signup.fixed ? ' (from SIGNUP_CODE)' : ''}`
     + '  - what somebody types to create an account');

@@ -17,6 +17,7 @@ import spans from './spans.test.mjs';
 import frameOrder from './frame-order.test.mjs';
 import upgrading from './upgrading.test.mjs';
 import sceneStore from './scene-store.test.mjs';
+import events from './events.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -37,7 +38,8 @@ const suites = [
   ['Frame spans', spans],
   ['The order frames are claimed in', frameOrder],
   ['Upgrading over an existing database', upgrading],
-  ['Storing scenes by content', sceneStore]
+  ['Storing scenes by content', sceneStore],
+  ['Being told there is work', events]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

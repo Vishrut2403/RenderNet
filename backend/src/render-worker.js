@@ -27,6 +27,9 @@ const IDLE_MS = Number(process.env.BLENDER_IDLE_MS ?? 60000);
 let chosenDevice = null;
 
 const SLOT = process.env.WORKER_ID || '';
+// Zero asks the server to answer at once, which is how a farm without the
+// event bus behaves and what the idle loop is still there for.
+const WAIT_SECONDS = Number(process.env.WORKER_WAIT_SECONDS ?? 25);
 
 async function progressFrom(response) {
   return (await response.json().catch(() => ({}))).progress ?? null;
@@ -275,6 +278,9 @@ class RenderWorker {
 
   stop() {
     this.stopping = true;
+    // Held requests are what a worker spends its idle life in: without this a
+    // shutdown or a cancellation waits out however long it asked to be held.
+    this.waiting?.abort();
     this.cancel();
     this.dropSession();
   }
@@ -445,16 +451,21 @@ class RenderWorker {
   }
 
   async requestLease() {
+    this.waiting = new AbortController();
+
     try {
       const response = await fetch(`${WORKER_BASE}/lease`, {
         method: 'POST',
+        signal: this.waiting.signal,
         headers: workerHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({
           workerId: this.workerId,
           name: os.hostname(),
           engines: this.engines(),
           device: cyclesDevice().device,
-          deviceWanted: cyclesDevice().wanted
+          deviceWanted: cyclesDevice().wanted,
+          // Held there until there is something rather than asked again here.
+          wait: WAIT_SECONDS
         })
       });
 
@@ -463,7 +474,8 @@ class RenderWorker {
 
       return (await response.json()).lease;
     } catch (error) {
-      console.error(`Could not ask for a frame: ${error.message}`);
+      if (!this.stopping) console.error(`Could not ask for a frame: ${error.message}`);
+
       return null;
     }
   }

@@ -3,6 +3,7 @@ import { ensureWorkers, stopWorkers, whenWorkerLost } from './worker-pool.js';
 import path from 'path';
 import { ensureDir } from './utils/file-utils.js';
 import { dataPath } from './paths.js';
+import { announce, WORK } from './bus.js';
 import {
   saveJob, deleteJob,
   createFrames, getFrames, countFramesByStatus,
@@ -272,6 +273,11 @@ function startSceneCheck(job) {
     }
 
     if (!preemptFor(current)) processQueue();
+
+    // Checked, so claimable at last. Whoever is holding on for work is the one
+    // that starts it: processQueue leaves a second job alone while a first is
+    // still going, and it is a worker asking that promotes it.
+    announce(WORK);
   });
 }
 
@@ -416,6 +422,7 @@ export function approveJob(jobId) {
   }
 
   releaseHeldFrames(jobId);
+  announce(WORK);
 
   job.approval = 'approved';
   job.error = null;
@@ -615,6 +622,7 @@ function enqueue(jobId) {
   if (job) stampJob(job);
 
   renderQueue.push(jobId);
+  announce(WORK);
 }
 
 // A pin an admin placed, then urgency, then whose turn it is, then the order
@@ -696,6 +704,7 @@ function promoteNext() {
 
   console.log(`Job ${jobId} is now being rendered`);
   ensureWorkers();
+  announce(WORK);
 
   return job;
 }
@@ -1006,6 +1015,7 @@ export function releaseFrameLease(leaseId) {
   else if (!releaseComposite(leaseId)) releaseBake(leaseId);
 
   settleJob(lease.jobId);
+  announce(WORK);
 
   return true;
 }
@@ -1260,6 +1270,10 @@ export function recordFrameFailure(jobId, frameNumber, error) {
   saveJob(job);
 
   settleJob(jobId);
+
+  // A frame with attempts left went back to pending without passing through the
+  // queue, so nothing else says it can be claimed again.
+  if (frame?.status === 'pending') announce(WORK);
 
   return { job, frame };
 }

@@ -24,6 +24,7 @@ import { isTiled } from '../tiles.js';
 import { tileName, tilesPath, compositeName } from '../tiles.js';
 import { announceWorker } from '../worker-registry.js';
 import { machineFor } from '../worker-tokens.js';
+import { waitFor, WORK } from '../bus.js';
 
 const router = express.Router();
 
@@ -223,7 +224,19 @@ function validFrame(req, res, next) {
 
 router.use(requireWorker);
 
-router.post('/lease', (req, res) => {
+// How long a worker may be left holding on before being told there is nothing.
+// Capped rather than trusted: a request held open is a socket the server keeps.
+const MAX_WAIT_MS = 60 * 1000;
+
+function waitAsked(body) {
+  const seconds = Number(body?.wait);
+
+  if (!Number.isFinite(seconds) || seconds <= 0) return 0;
+
+  return Math.min(seconds * 1000, MAX_WAIT_MS);
+}
+
+router.post('/lease', async (req, res) => {
   const workerId = identityOf(req);
 
   // Said again with every request rather than registered once: a worker that
@@ -236,12 +249,43 @@ router.post('/lease', (req, res) => {
     deviceWanted: typeof req.body?.deviceWanted === 'string' ? req.body.deviceWanted : null
   });
 
-  const lease = leaseNextFrame(workerId, req.machine.isLocal);
+  const deadline = Date.now() + waitAsked(req.body);
+  const giveUp = new AbortController();
+  let gone = false;
+
+  res.on('close', () => {
+    gone = true;
+    giveUp.abort();
+  });
+
+  // Asked again after every announcement rather than trusting it: the queue
+  // decides who may have what, and the announcement only says to go and ask.
+  // A worker this machine cannot give work to waits out its deadline here.
+  for (;;) {
+    const left = deadline - Date.now();
+
+    // Listened for before asking, never after. Asking is itself what starts the
+    // next job when the current one has no frames left to give, so the
+    // announcement that says so lands while this call is still running - and a
+    // listener attached afterwards would have missed it and waited out the
+    // whole deadline with work sitting there.
+    const told = left > 0 && !gone ? waitFor(WORK, left, giveUp.signal) : null;
+    const lease = leaseNextFrame(workerId, req.machine.isLocal);
+
+    if (lease) {
+      giveUp.abort();
+      return res.json({ lease });
+    }
+
+    if (!told) break;
+
+    await told;
+
+    if (gone || Date.now() >= deadline) break;
+  }
 
   // 204 rather than an error: having no work is the ordinary answer.
-  if (!lease) return res.status(204).end();
-
-  res.json({ lease });
+  if (!gone) res.status(204).end();
 });
 
 router.post('/leases/:leaseId/renew', (req, res) => {
