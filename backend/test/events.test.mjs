@@ -2,6 +2,7 @@
 // lease request that waits, and the bus that ends the wait. Runs with and
 // without Redis, since a farm on one machine is expected to have neither.
 import { spawn } from 'child_process';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
@@ -59,10 +60,16 @@ function busProcess(script) {
   return { ready, ended };
 }
 
+// Bounded, because a client left to itself retries the first connection for
+// ever: on a machine with no Redis - which is most of them, CI included - an
+// unbounded ask here would hang the suite rather than skip the checks below.
 async function redisIsThere() {
   try {
     const { createClient } = await import('redis');
-    const client = createClient({ url: REDIS_URL });
+    const client = createClient({
+      url: REDIS_URL,
+      socket: { connectTimeout: 1000, reconnectStrategy: false }
+    });
 
     client.on('error', () => {});
     await client.connect();
@@ -222,6 +229,16 @@ export default async function run() {
       { label: 'a job to finish with Redis unreachable', timeoutMs: 60000 });
 
     results.check('the farm starts and renders anyway', true);
+
+    // Asserted rather than assumed: the farm surviving proves only that nothing
+    // waits on the bus at startup. This line is what proves the attempt was
+    // given up on, which a client left retrying for ever never would.
+    const said = fs.readdirSync(path.join(brokenSandbox, 'logs'))
+      .map(name => fs.readFileSync(path.join(brokenSandbox, 'logs', name), 'utf8'))
+      .join('');
+
+    results.check('and says once that Redis could not be reached',
+      said.includes('Carrying on without it'), said.slice(-200));
   } catch (error) {
     results.check('the farm starts and renders anyway', false, error.message);
   } finally {

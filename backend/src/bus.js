@@ -45,8 +45,21 @@ function trouble(what, error) {
     + 'workers wait out their poll instead of being told.');
 }
 
+// Bounded on purpose. Left to itself the client retries the first connection
+// for ever, which turns "Redis is not there" from a warning into a farm that
+// hangs waiting for one - and the farm works perfectly well without it.
+const CONNECT_MS = 2000;
+const ATTEMPTS = 3;
+
 async function connect(role) {
-  const client = createClient({ url: url() });
+  const client = createClient({
+    url: url(),
+    socket: {
+      connectTimeout: CONNECT_MS,
+      reconnectStrategy: attempts =>
+        (attempts > ATTEMPTS ? false : Math.min(attempts * 200, CONNECT_MS))
+    }
+  });
 
   client.on('error', error => trouble(`${role} connection failed`, error));
   await client.connect();
