@@ -24,6 +24,7 @@ export function Upload({ onSubmitted, notify }) {
   const [samples, setSamples] = useState('');
   const [urgent, setUrgent] = useState(false);
   const [skipAssetCheck, setSkipAssetCheck] = useState(false);
+  const [allowScripts, setAllowScripts] = useState(false);
   const [testFirst, setTestFirst] = useState(false);
   // Blank follows the start frame, wherever that ends up.
   const [testFrame, setTestFrame] = useState('');
@@ -171,7 +172,7 @@ export function Upload({ onSubmitted, notify }) {
     const settings = {
       frameStart, frameEnd, frameStep, renderEngine: engine, priority: urgent,
       resolutionPercent, samples, formats: chosen, exrCodec, exrDepth, jpegQuality,
-      skipAssetCheck, testFrame: testFirst ? testAt : null,
+      skipAssetCheck, allowScripts, testFrame: testFirst ? testAt : null,
       tiles: single ? tiles : 0
     };
 
@@ -427,6 +428,15 @@ export function Upload({ onSubmitted, notify }) {
             onChange={e => setTestFrame(e.target.value)}
           />
         )}
+
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={allowScripts}
+            onChange={e => setAllowScripts(e.target.checked)}
+          />
+          <span>Run this file's own scripts</span>
+        </label>
 
         <label className="check">
           <input

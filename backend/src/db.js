@@ -125,6 +125,7 @@ addColumnIfMissing('jobs', 'video', 'TEXT');
 // The frame rendered on its own first, and where its owner's answer has got to:
 // 'testing', 'waiting' for them, or 'approved'.
 addColumnIfMissing('jobs', 'testFrame', 'INTEGER');
+addColumnIfMissing('jobs', 'allowScripts', 'INTEGER');
 addColumnIfMissing('jobs', 'approval', 'TEXT');
 
 // A still cut into regions rendered separately, and how putting them back
@@ -177,7 +178,7 @@ const COLUMNS = [
   'pinnedAt', 'heldBy',
   'resolutionPercent', 'samples', 'formats', 'exrCodec', 'exrDepth', 'jpegQuality',
   'assetCheck', 'missingAssets', 'needsThisMachine',
-  'video', 'testFrame', 'approval', 'tiles', 'composite',
+  'video', 'testFrame', 'allowScripts', 'approval', 'tiles', 'composite',
   'bake', 'bakedPath', 'unbakedSims'
 ];
 

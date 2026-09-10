@@ -18,6 +18,7 @@ import frameOrder from './frame-order.test.mjs';
 import upgrading from './upgrading.test.mjs';
 import sceneStore from './scene-store.test.mjs';
 import events from './events.test.mjs';
+import untrustedScenes from './untrusted-scenes.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -39,7 +40,8 @@ const suites = [
   ['The order frames are claimed in', frameOrder],
   ['Upgrading over an existing database', upgrading],
   ['Storing scenes by content', sceneStore],
-  ['Being told there is work', events]
+  ['Being told there is work', events],
+  ['Scenes from somebody else', untrustedScenes]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

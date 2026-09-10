@@ -231,6 +231,7 @@ function checkSettings(body, owner, size) {
       exrDepth,
       jpegQuality: jpegQuality.value ?? DEFAULT_JPEG_QUALITY,
       skipAssetCheck: body.skipAssetCheck === '1',
+      allowScripts: body.allowScripts === '1',
       testFrame,
       tiles
     }
@@ -334,8 +335,13 @@ function offeredSettings(scene) {
 }
 
 // What the form cannot carry across from the scene.
-function warningsFor(scene, settings, scenes, unbaked) {
+function warningsFor(scene, settings, scenes, unbaked, scriptedDrivers) {
   const notes = [];
+
+  if (scriptedDrivers.length > 0) {
+    notes.push(`${scriptedDrivers.length} driver${scriptedDrivers.length === 1 ? '' : 's'} `
+      + 'need this file\'s own scripts');
+  }
 
   // Said before the file has been described rather than after: the farm bakes
   // it, which is time the job spends before its first frame.
@@ -355,7 +361,9 @@ function warningsFor(scene, settings, scenes, unbaked) {
 function readingOf(report) {
   const active = report.scenes.find(scene => scene.name === report.active) ?? report.scenes[0];
 
-  if (!active) return { read: false, scenes: [], active: null, settings: null, warnings: [] };
+  if (!active) {
+    return { read: false, scenes: [], active: null, settings: null, warnings: [], scriptedDrivers: [] };
+  }
 
   const settings = offeredSettings(active);
 
@@ -364,7 +372,9 @@ function readingOf(report) {
     scenes: report.scenes.map(scene => scene.name),
     active: active.name,
     settings,
-    warnings: warningsFor(active, settings, report.scenes, report.unbaked ?? [])
+    scriptedDrivers: report.scriptedDrivers ?? [],
+    warnings: warningsFor(active, settings, report.scenes, report.unbaked ?? [],
+      report.scriptedDrivers ?? [])
   };
 }
 

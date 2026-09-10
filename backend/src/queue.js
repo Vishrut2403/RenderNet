@@ -178,6 +178,7 @@ export function addToQueue(jobData) {
     exrDepth: jobData.exrDepth || DEFAULT_EXR_DEPTH,
     jpegQuality: jobData.jpegQuality ?? DEFAULT_JPEG_QUALITY,
     testFrame: jobData.testFrame ?? null,
+    allowScripts: jobData.allowScripts ? 1 : 0,
     approval: jobData.testFrame == null ? null : 'testing',
     tiles: jobData.tiles ?? null,
     composite: null,
@@ -198,6 +199,11 @@ export function addToQueue(jobData) {
   forgetUsage(job.owner);
   enqueue(jobId);
 
+  if (job.allowScripts) {
+    console.warn(`Job ${jobId} will run the scripts inside ${job.originalFilename}, `
+      + `as ${job.owner} asked`);
+  }
+
   console.log(`Job ${jobId} added to queue. Queue length: ${renderQueue.length}`);
 
   if (job.assetCheck === 'checking') startSceneCheck(job);
@@ -212,7 +218,8 @@ function startSceneCheck(job) {
   // Opened as the render will see it: a file already handed over is not
   // missing, and a linked .blend only says what it needs once it has been
   // opened, which is why supplying one can turn up more.
-  checkScene(dataPath(job.filePath), writeManifest(job, jobAssets(job.id)), lastFrameOf(job)).then(({ checked, missing, unpacked, unbaked, unbakeable, fluids }) => {
+  checkScene(dataPath(job.filePath), writeManifest(job, jobAssets(job.id)), lastFrameOf(job))
+    .then(({ checked, missing, unpacked, unbaked, unbakeable, fluids, scriptedDrivers }) => {
     const current = jobs.get(job.id);
 
     // Deleted or cancelled while Blender was reading it.
@@ -236,6 +243,18 @@ function startSceneCheck(job) {
     // Simulations the farm cannot bake without delivering a picture the artist
     // would not get themselves. Sent back with what to change rather than baked
     // into something that only looks right.
+    // A driver Blender cannot work out for itself needs the Python this file
+    // brought, and without it the driver reads zero and the frame is quietly
+    // wrong. Refused rather than rendered, the way an unbakeable cache is.
+    if (checked && scriptedDrivers.length > 0 && !current.allowScripts) {
+      const queued = renderQueue.indexOf(current.id);
+      if (queued > -1) renderQueue.splice(queued, 1);
+
+      saveJob(current);
+      failJob(current.id, needsItsScripts(scriptedDrivers));
+      return;
+    }
+
     if (checked && unbakeable.length > 0) {
       const queued = renderQueue.indexOf(current.id);
       if (queued > -1) renderQueue.splice(queued, 1);
@@ -352,6 +371,15 @@ function lastFrameOf(job) {
 
 // One sentence per reason, naming what to change in Blender: both are a setting
 // away from being ordinary jobs the farm bakes itself.
+function needsItsScripts(drivers) {
+  const shown = drivers.slice(0, 3).join(', ');
+  const rest = drivers.length > 3 ? `, and ${drivers.length - 3} more` : '';
+
+  return `${drivers.length} driver(s) in this scene are worked out by Python the file `
+    + `carries, and the farm does not run a file's own scripts unless it is told to `
+    + `(${shown}${rest}). Upload it again with "Run this file's own scripts" ticked.`;
+}
+
 function cannotBake(entries) {
   const named = why => entries.filter(entry => entry.why === why).map(entry => entry.name);
 
@@ -831,6 +859,7 @@ function bakeFromActive(workerId, local) {
       blendPath: dataPath(job.filePath),
       renderEngine: job.renderEngine,
       bake: {
+        allowScripts: job.allowScripts,
         last: lastFrameOf(job),
         path: dataPath(bakedScenePath(job)),
         caches: dataPath(fluidCachePath(job)),
@@ -860,6 +889,7 @@ function compositeFromActive(workerId) {
       ...sceneOf(job),
       tilesDir: dataPath(tilesPath(job.outputFolder)),
       composite: {
+        allowScripts: job.allowScripts,
         tiles: job.tiles,
         format: primaryOf(job.formats),
         resolutionPercent: job.resolutionPercent,
@@ -901,6 +931,7 @@ function leaseFromActive(workerId, local) {
         })),
         outputDir: workerScratchDir(job.id),
         renderEngine: job.renderEngine,
+      allowScripts: job.allowScripts,
         formats: job.formats,
         resolutionPercent: job.resolutionPercent,
         samples: job.samples,

@@ -129,7 +129,27 @@ for block in referenced():
         # repoint later, and the resolved one is what says where it looked.
         missing.append({'stored': stored, 'resolved': resolved})
 
+def scripted_drivers():
+    # Blender decides this, not us: a driver it can work out on its own is
+    # simple, and anything else wants Python that this file brought with it.
+    wanted = set()
+
+    for holder in list(bpy.data.objects) + list(bpy.data.scenes) \
+            + list(bpy.data.materials) + list(bpy.data.node_groups) \
+            + list(bpy.data.shape_keys):
+        animation = getattr(holder, 'animation_data', None)
+
+        for channel in getattr(animation, 'drivers', []) or []:
+            driver = channel.driver
+
+            if driver.type == 'SCRIPTED' and not driver.is_simple_expression:
+                wanted.add('%s: %s' % (holder.name, driver.expression))
+
+    return wanted
+
+
 print('${MARKER}' + json.dumps({
+    'scriptedDrivers': sorted(scripted_drivers()),
     'missing': sorted({item['stored']: item for item in missing}.values(),
                       key=lambda item: item['resolved']),
     'unpacked': sorted(set(unpacked)),
@@ -188,19 +208,21 @@ export function checkScene(blendPath, supplied = null, lastFrame = 0) {
     unpacked: report?.unpacked ?? [],
     unbaked: report?.unbaked ?? [],
     unbakeable: report?.unbakeable ?? [],
-    fluids: report?.fluids ?? []
+    fluids: report?.fluids ?? [],
+    scriptedDrivers: report?.scriptedDrivers ?? []
   }));
 }
 
 // What the scene already says about itself.
 export function readScene(blendPath) {
   return readBlend(blendPath).then(report => (report === null
-    ? { read: false, active: null, scenes: [], unbaked: [] }
+    ? { read: false, active: null, scenes: [], unbaked: [], scriptedDrivers: [] }
     : {
       read: true,
       active: report.active ?? null,
       scenes: report.scenes ?? [],
-      unbaked: report.unbaked ?? []
+      unbaked: report.unbaked ?? [],
+      scriptedDrivers: report.scriptedDrivers ?? []
     }));
 }
 
@@ -213,7 +235,7 @@ function openScene(blendPath, supplied = null, lastFrame = 0) {
     const scriptPath = path.join(os.tmpdir(), `rendernet-preflight-${process.pid}.py`);
     fs.writeFileSync(scriptPath, SCRIPT);
 
-    const probe = launch(blender, ['-b', blendPath, '-P', scriptPath], {
+    const probe = launch(blender, ['-b', blendPath, '--disable-autoexec', '-P', scriptPath], {
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,

@@ -27,6 +27,13 @@ const IDLE_MS = Number(process.env.BLENDER_IDLE_MS ?? 60000);
 let chosenDevice = null;
 
 const SLOT = process.env.WORKER_ID || '';
+
+// A .blend can carry Python that Blender runs as it opens the file, so it is
+// refused unless whoever uploaded this one said to allow it. Scripts of ours
+// still run either way: -P is explicit rather than something the file asked for.
+function scriptsIn(allowed) {
+  return allowed ? [] : ['--disable-autoexec'];
+}
 // Zero asks the server to answer at once, which is how a farm without the
 // event bus behaves and what the idle loop is still there for.
 const WAIT_SECONDS = Number(process.env.WORKER_WAIT_SECONDS ?? 25);
@@ -193,9 +200,14 @@ function blenderCommand(blendPath, outputDir, renderEngine, overrides, output) {
   // '####' pads the frame number to four digits; a single '#' does not pad at
   // all, so the written and expected names never agree.
   const { primary = 'PNG', extras = [], outputScript, prefix = 'frame_' } = output;
+  // Part of the command rather than of the session it runs in, so a resident
+  // Blender opened for a job that allows scripts is never handed one that does
+  // not: the flag is in the arguments the session is keyed by.
+  const { allowScripts } = overrides;
 
   const args = [
     '-b', blendPath,
+    ...scriptsIn(allowScripts),
     '-E', renderEngine,
     // Forced so the extension is predictable whatever the .blend specifies.
     '-F', primary,
@@ -572,7 +584,11 @@ class RenderWorker {
     try {
       await this.renderFrames(
         blendPath, sceneFrames, outputDir, renderEngine,
-        { resolutionPercent: lease.resolutionPercent, samples: lease.samples },
+        {
+          resolutionPercent: lease.resolutionPercent,
+          samples: lease.samples,
+          allowScripts: lease.allowScripts
+        },
         {
           primary,
           extras,
@@ -667,7 +683,8 @@ class RenderWorker {
       fs.mkdirSync(outputDir, { recursive: true });
       fs.writeFileSync(script, BAKE_SCRIPT);
 
-      const blender = launch(BLENDER_PATH, ['-b', blendPath, '-P', script], {
+      const blender = launch(BLENDER_PATH,
+        ['-b', blendPath, ...scriptsIn(bake.allowScripts), '-P', script], {
         stdio: ['ignore', 'pipe', 'pipe'],
         // Baking a fluid's noise drops a 24MB tile file in the working
         // directory, which is the install directory unless it is told otherwise.
@@ -846,6 +863,7 @@ class RenderWorker {
 
       const blender = launch(BLENDER_PATH, [
         '-b', blendPath,
+        ...scriptsIn(composite.allowScripts),
         '--factory-startup',
         '-noaudio',
         '-P', script

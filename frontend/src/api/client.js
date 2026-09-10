@@ -147,7 +147,7 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true, 
 // a JSON body the same way.
 function uploadSettings({
   frameStart, frameEnd, frameStep, renderEngine, priority, resolutionPercent, samples, formats,
-  exrCodec, exrDepth, jpegQuality, skipAssetCheck, testFrame, tiles
+  exrCodec, exrDepth, jpegQuality, skipAssetCheck, allowScripts, testFrame, tiles
 }) {
   const settings = {
     frameStart: String(frameStart),
@@ -168,6 +168,7 @@ function uploadSettings({
 
   if (formats?.includes('JPEG')) settings.jpegQuality = String(jpegQuality);
   if (skipAssetCheck) settings.skipAssetCheck = '1';
+  if (allowScripts) settings.allowScripts = '1';
   if (testFrame != null) settings.testFrame = String(testFrame);
   if (tiles) settings.tiles = String(tiles);
 
