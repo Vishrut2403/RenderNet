@@ -1,0 +1,25 @@
+# Redis, and nothing else. The farm stays on the host because it needs the GPU
+# and a Blender beside it, which is not a thing worth putting in an image.
+#
+#   docker compose up -d
+#   REDIS_URL=redis://127.0.0.1:6379 ./start.sh
+#
+# Without this the farm runs exactly as it did: the bus falls back to one that
+# reaches this process only, which is all a single machine needs.
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: rendernet-redis
+    restart: unless-stopped
+    # This machine only. Redis asks for no password, and the farm talking to it
+    # is on the same host; published wider it would be open to the network.
+    ports:
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
+    # Saving turned off deliberately. What crosses the bus is meaningless a
+    # second later, and SQLite remains the record of what is true.
+    command: redis-server --save "" --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3

@@ -46,6 +46,10 @@ farm. It needs Blender too, and an admin to issue it a credential when it asks:
 ./join.sh http://rendernet.local:5500
 ```
 
+Several server processes would need Redis to hear each other; one does not, so it
+is optional and off. To run it anyway, `docker compose up -d` and start the farm
+with `REDIS_URL=redis://127.0.0.1:6379 ./start.sh`.
+
 ![The upload form: frame range, engine, formats, tiling and the test frame](docs/upload.png)
 
 ![The dashboard, naming each machine and the frame it is holding](docs/dashboard.png)
