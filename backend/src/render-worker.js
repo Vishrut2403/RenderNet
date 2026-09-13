@@ -32,7 +32,9 @@ const SLOT = process.env.WORKER_ID || '';
 // refused unless whoever uploaded this one said to allow it. Scripts of ours
 // still run either way: -P is explicit rather than something the file asked for.
 function scriptsIn(allowed) {
-  return allowed ? [] : ['--disable-autoexec'];
+  // Said both ways: leaving the flag off would hand the decision back to the
+  // workstation's own preference, which is exactly what this is here to stop.
+  return allowed ? ['--enable-autoexec'] : ['--disable-autoexec'];
 }
 // Zero asks the server to answer at once, which is how a farm without the
 // event bus behaves and what the idle loop is still there for.

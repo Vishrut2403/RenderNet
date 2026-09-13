@@ -101,7 +101,8 @@ export default async function run() {
     'while the frame itself still arrives',
     'and it runs them when the artist says to',
     'a scene whose drivers need it is refused rather than rendered wrong',
-    'and once allowed, its frame is the one Blender renders by hand'
+    'and once allowed, its frame is the one Blender renders by hand',
+    'where the driver really did move something'
   ];
 
   if (!blenderAvailable()) {
@@ -186,7 +187,8 @@ export default async function run() {
 
     await new Promise((resolve, reject) => {
       const blender = spawn(process.env.BLENDER_PATH || 'blender',
-        ['-b', driven, '-o', path.join(box, 'byhand_####'), '-f', '24'], { stdio: 'ignore' });
+        ['-b', driven, '--enable-autoexec', '-o', path.join(box, 'byhand_####'), '-f', '24'],
+        { stdio: 'ignore' });
 
       blender.on('exit', code => (code === 0 ? resolve() : reject(new Error(`blender ${code}`))));
       blender.on('error', reject);
@@ -201,6 +203,24 @@ export default async function run() {
     results.check('and once allowed, its frame is the one Blender renders by hand',
       rendered.status === 'completed' && apart === 0,
       `${rendered.status}, ${apart}% of pixels differ`);
+
+    const withoutScripts = path.join(box, 'noscripts_0024.png');
+
+    await new Promise((resolve, reject) => {
+      const blender = spawn(process.env.BLENDER_PATH || 'blender',
+        ['-b', driven, '--disable-autoexec', '-o', path.join(box, 'noscripts_####'), '-f', '24'],
+        { stdio: 'ignore' });
+
+      blender.on('exit', code => (code === 0 ? resolve() : reject(new Error(`blender ${code}`))));
+      blender.on('error', reject);
+    });
+
+    // Two renders with the driver dead would also match each other. This is what
+    // says the match above was made with the driver actually working.
+    const moved = differing(byHand, withoutScripts);
+
+    results.check('where the driver really did move something',
+      moved > 0, `${moved}% of pixels differ from the same frame without scripts`);
   } finally {
     if (server) await stopServer(server);
     removeSandbox(box);
