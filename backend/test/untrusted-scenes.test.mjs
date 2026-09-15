@@ -7,7 +7,7 @@ import path from 'path';
 import { spawn, spawnSync } from 'child_process';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
-  adminSession, submitJob, waitForCondition, waitForJob, getJob,
+  adminSession, auth, submitJob, waitForCondition, waitForJob, getJob,
   createFixtureBlend, blenderAvailable
 } from './helpers.mjs';
 
@@ -97,10 +97,13 @@ export default async function run() {
   const names = [
     'reading a scene does not run what it carries',
     'and it still reports what the scene contains',
+    'a driver is found wherever it sits, not only on objects',
+    'while one Blender works out by itself is left alone',
     'rendering one does not run it either',
     'while the frame itself still arrives',
     'and it runs them when the artist says to',
     'a scene whose drivers need it is refused rather than rendered wrong',
+    'and rerunning it says why instead of hanging',
     'and once allowed, its frame is the one Blender renders by hand',
     'where the driver really did move something'
   ];
@@ -128,6 +131,54 @@ export default async function run() {
       !fs.existsSync(readMarker), 'the scene wrote its marker while being read');
     results.check('and it still reports what the scene contains',
       read && typeof read === 'object', JSON.stringify(read));
+
+    console.log('\n  Finding every driver that needs Python');
+
+    // A driver sits wherever there is animation data, and one the check misses
+    // renders wrong without a word.
+    const everywhere = createFixtureBlend(box, {
+      name: 'everywhere.blend',
+      extra: `
+def scripted(owner, path, expression, index=None):
+    curve = owner.driver_add(path, index) if index is not None else owner.driver_add(path)
+    curve.driver.type = 'SCRIPTED'
+    curve.driver.expression = expression
+
+bpy.ops.mesh.primitive_cube_add()
+cube = bpy.context.object
+scripted(cube, 'location', 'on_object(frame)', 2)
+scripted(cube, 'rotation_euler', 'frame / 24.0', 0)
+
+material = bpy.data.materials.new('Glow')
+material.use_nodes = True
+scripted(material.node_tree.nodes['Principled BSDF'].inputs['Emission Strength'],
+         'default_value', 'on_material(frame)')
+cube.data.materials.append(material)
+
+world = bpy.data.worlds.new('Sky')
+world.use_nodes = True
+s.world = world
+scripted(world.node_tree.nodes['Background'].inputs[1], 'default_value', 'on_world(frame)')
+
+lamp = bpy.data.lights.new('Lamp', 'POINT')
+scripted(lamp, 'energy', 'on_light(frame)')
+s.collection.objects.link(bpy.data.objects.new('LampObject', lamp))
+
+lens = bpy.data.cameras.new('Lens')
+scripted(lens, 'lens', 'on_camera(frame)')
+s.collection.objects.link(bpy.data.objects.new('CameraObject', lens))
+`
+    });
+
+    const { readScene } = await import('../src/preflight.js');
+    const reported = ((await readScene(everywhere)).scriptedDrivers ?? []).join(' | ');
+    const missed = ['on_object', 'on_material', 'on_world', 'on_light', 'on_camera']
+      .filter(place => !reported.includes(place));
+
+    results.check('a driver is found wherever it sits, not only on objects',
+      missed.length === 0, `missed ${missed.join(', ')}; reported ${reported}`);
+    results.check('while one Blender works out by itself is left alone',
+      !reported.includes('frame / 24.0'), reported);
 
     const renderMarker = path.join(box, 'RENDER_RAN.txt');
     const forRender = hostileScene(box, renderMarker);
@@ -176,6 +227,19 @@ export default async function run() {
     results.check('a scene whose drivers need it is refused rather than rendered wrong',
       stopped.status === 'failed' && /drivers?/i.test(stopped.error || ''),
       `${stopped.status}: ${stopped.error || ''}`);
+
+    // The same file and the same choice would fail the same way, so a rerun has
+    // to say so rather than leave the job waiting on a check nobody restarts.
+    const rerun = await fetch(`${server.base}/jobs/${refused.body.jobId}/rerun`,
+      { method: 'POST', headers: auth(token) });
+
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    const afterRerun = await getJob(server.base, token, refused.body.jobId);
+
+    results.check('and rerunning it says why instead of hanging',
+      rerun.status >= 400 && afterRerun.status === 'failed' && afterRerun.assetCheck !== 'checking',
+      `rerun answered ${rerun.status}; job is ${afterRerun.status}, check ${afterRerun.assetCheck}`);
 
     // The farm's frame against one rendered here by hand from the same file:
     // the only standard that says the drivers really worked.

@@ -250,6 +250,7 @@ function startSceneCheck(job) {
       const queued = renderQueue.indexOf(current.id);
       if (queued > -1) renderQueue.splice(queued, 1);
 
+      current.assetCheck = 'refused';
       saveJob(current);
       failJob(current.id, needsItsScripts(scriptedDrivers));
       return;
@@ -259,6 +260,7 @@ function startSceneCheck(job) {
       const queued = renderQueue.indexOf(current.id);
       if (queued > -1) renderQueue.splice(queued, 1);
 
+      current.assetCheck = 'refused';
       saveJob(current);
       failJob(current.id, cannotBake(unbakeable));
 
@@ -477,10 +479,10 @@ export function rerunJob(jobId) {
   }
 
   // A scene nobody can put right by trying again: the stored .blend is the one
-  // that was looked at, so it can only fail the same way. Both are only
-  // reachable on rows from before the farm started asking for the files it is
-  // missing and baking the simulations itself.
-  if (job.assetCheck === 'missing' || job.assetCheck === 'unbaked') {
+  // that was looked at, so it can only fail the same way. 'missing' and
+  // 'unbaked' are only reachable on rows from before the farm started asking
+  // for the files it is missing and baking the simulations itself.
+  if (['missing', 'unbaked', 'refused'].includes(job.assetCheck)) {
     return { success: false, error: job.error };
   }
 
@@ -536,6 +538,10 @@ export function rerunJob(jobId) {
 
   enqueue(jobId);
   console.log(`Job ${jobId} queued again for ${retried} frame(s)`);
+
+  // Refused by a build that left the check marked as running: nothing starts
+  // it again otherwise, and the queue never promotes a job still being checked.
+  if (job.assetCheck === 'checking') startSceneCheck(job);
 
   processQueue();
 

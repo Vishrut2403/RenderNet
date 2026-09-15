@@ -35,13 +35,14 @@ SERVER="${SERVER%/}"
 node_major() { node -v 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/'; }
 
 check_node() {
-  local want current
+  local want current shown
   want="$(cat "$ROOT/.node-version" 2>/dev/null || echo 22)"
   current="$(node_major)"
+  shown="${current:+v$current}"
 
   [ -n "$current" ] && [ "$current" -ge "$want" ] 2>/dev/null && return 0
 
-  die "This needs Node $want or newer, and the node on PATH is ${current:+v}${current:-none}$current.
+  die "This needs Node $want or newer, and the node on PATH is ${shown:-none}.
 
 Install one, then run this again:
 
@@ -79,7 +80,13 @@ MESSAGE
 
   [ -n "$token" ] || die "The farm did not accept that username and password."
 
-  answer="$(curl -sf -m 15 -X POST "$SERVER/api/machines" \
+  if json_true "$answer" mustChangePassword; then
+    die "That account still has the password the farm started with.
+
+Sign in at $SERVER in a browser, choose a new one, then run this again."
+  fi
+
+  answer="$(curl -s -m 15 -X POST "$SERVER/api/machines" \
     -H "Authorization: Bearer $token" \
     -H 'Content-Type: application/json' \
     --data-binary "$(printf '{"name":%s}' "$(json_string "$name")")" || true)"
@@ -87,7 +94,7 @@ MESSAGE
   WORKER_TOKEN="$(json_field "$answer" token)"
 
   [ -n "$WORKER_TOKEN" ] \
-    || die "That account cannot issue machine credentials. An admin has to run this."
+    || die "The farm would not issue a credential: $(json_field "$answer" error)"
 
   umask 077
   printf 'WORKER_TOKEN=%s\n' "$WORKER_TOKEN" > "$CREDENTIAL"
@@ -99,6 +106,23 @@ MESSAGE
 # contain a quote or a backslash.
 json_string() {
   node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"
+}
+
+json_true() {
+  node -e '
+    try {
+      process.exit(JSON.parse(process.argv[1] || "{}")[process.argv[2]] === true ? 0 : 1);
+    } catch {
+      process.exit(1);
+    }
+  ' "$1" "$2"
+}
+
+# A job that cannot exist, so all this answers is whether the farm still accepts
+# the credential: 404 when it does, 401 once it has been revoked.
+credential_status() {
+  curl -s -o /dev/null -w '%{http_code}' -m 5 \
+    -H "x-worker-token: $WORKER_TOKEN" "$SERVER/api/worker/jobs/0/blend" || true
 }
 
 json_field() {
@@ -127,6 +151,13 @@ command -v blender >/dev/null 2>&1 || [ -n "${BLENDER_PATH:-}" ] \
 if [ -f "$CREDENTIAL" ]; then
   # shellcheck disable=SC1090
   . "$CREDENTIAL"
+
+  if [ "$(credential_status)" = "401" ]; then
+    warn "The credential saved here has been revoked. Asking for a new one."
+    rm -f "$CREDENTIAL"
+    WORKER_TOKEN=""
+    ask_for_credential
+  fi
 else
   ask_for_credential
 fi

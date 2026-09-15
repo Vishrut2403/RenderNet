@@ -50,19 +50,34 @@ function trouble(what, error) {
 // hangs waiting for one - and the farm works perfectly well without it.
 const CONNECT_MS = 2000;
 const ATTEMPTS = 3;
+const LONGEST_RETRY_MS = 5000;
 
 async function connect(role) {
+  let connected = false;
+
   const client = createClient({
     url: url(),
     socket: {
       connectTimeout: CONNECT_MS,
-      reconnectStrategy: attempts =>
-        (attempts > ATTEMPTS ? false : Math.min(attempts * 200, CONNECT_MS))
+      // Given up on only before it has ever worked. A Redis that answered once
+      // and then went away is being restarted, and is worth waiting for.
+      reconnectStrategy: attempts => (!connected && attempts > ATTEMPTS
+        ? false
+        : Math.min(attempts * 200, LONGEST_RETRY_MS))
     }
   });
 
   client.on('error', error => trouble(`${role} connection failed`, error));
+
+  client.on('ready', () => {
+    if (!connected || !complained) return;
+
+    complained = false;
+    console.log('Redis is back: workers are told when there is work again');
+  });
+
   await client.connect();
+  connected = true;
 
   return client;
 }

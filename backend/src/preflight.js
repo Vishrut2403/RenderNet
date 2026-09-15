@@ -134,16 +134,36 @@ def scripted_drivers():
     # simple, and anything else wants Python that this file brought with it.
     wanted = set()
 
-    for holder in list(bpy.data.objects) + list(bpy.data.scenes) \
-            + list(bpy.data.materials) + list(bpy.data.node_groups) \
-            + list(bpy.data.shape_keys):
+    def look(holder, name):
         animation = getattr(holder, 'animation_data', None)
 
-        for channel in getattr(animation, 'drivers', []) or []:
+        for channel in getattr(animation, 'drivers', None) or []:
             driver = channel.driver
 
             if driver.type == 'SCRIPTED' and not driver.is_simple_expression:
-                wanted.add('%s: %s' % (holder.name, driver.expression))
+                wanted.add('%s: %s' % (name, driver.expression))
+
+    # Every kind of datablock rather than a list of the likely ones: a driver can
+    # sit on a light, a camera, a mesh, a particle system - anything with
+    # animation data - and one missed renders wrong without a word.
+    for attribute in dir(bpy.data):
+        try:
+            collection = getattr(bpy.data, attribute)
+        except Exception:
+            continue
+
+        if not isinstance(collection, bpy.types.bpy_prop_collection):
+            continue
+
+        for block in collection:
+            if not isinstance(block, bpy.types.ID):
+                continue
+
+            look(block, block.name)
+
+            # A material's, world's or light's own nodes are not a node group,
+            # so the drivers on their inputs live on a tree only they can reach.
+            look(getattr(block, 'node_tree', None), block.name)
 
     return wanted
 
