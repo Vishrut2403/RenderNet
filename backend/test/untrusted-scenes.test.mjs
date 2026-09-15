@@ -19,9 +19,12 @@ const PORT = 5624;
 function hostileScene(box, marker) {
   return createFixtureBlend(box, {
     name: 'untrusted.blend',
+    // Quoted by JSON rather than pasted between quotes: a Windows path is full of
+    // backslashes, and the \\U in C:\\Users starts an escape in a Python string.
     extra: `
+marker = ${JSON.stringify(marker)}
 text = bpy.data.texts.new('payload.py')
-text.write("import pathlib; pathlib.Path(r'${marker}').write_text('ran')")
+text.write("import pathlib; pathlib.Path(%r).write_text('ran')" % marker)
 text.use_module = True
 bpy.ops.mesh.primitive_cube_add()
 camera = bpy.data.objects.new('Camera', bpy.data.cameras.new('Camera'))
