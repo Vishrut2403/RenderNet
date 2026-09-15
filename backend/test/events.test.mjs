@@ -1,7 +1,7 @@
 // Being told there is work rather than asking every couple of seconds: the
 // lease request that waits, and the bus that ends the wait. Runs with and
 // without Redis, since a farm on one machine is expected to have neither.
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -29,10 +29,10 @@ function lease(base, wait) {
 // is worth a dependency at all. Nothing is published until the other side says
 // it is listening, because a subscription that is not up yet misses the message
 // entirely - pub/sub keeps nothing for a subscriber who was not there.
-function busProcess(script) {
+function busProcess(script, { input = false } = {}) {
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
     env: { ...process.env, REDIS_URL },
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: [input ? 'pipe' : 'ignore', 'pipe', 'pipe']
   });
 
   let out = '';
@@ -57,26 +57,56 @@ function busProcess(script) {
 
   ended.catch(() => sayReady());
 
-  return { ready, ended };
+  // Waits on what the process says rather than on it exiting, so a child slow
+  // to close its connections cannot pass for one that never heard anything.
+  const said = pattern => new Promise(resolve => {
+    const look = () => {
+      if (!pattern.test(out)) return;
+
+      child.stdout.off('data', look);
+      resolve(out.trim());
+    };
+
+    child.stdout.on('data', look);
+    look();
+  });
+
+  return { ready, ended, child, said, output: () => out.trim() };
 }
 
-// Bounded, because a client left to itself retries the first connection for
-// ever: on a machine with no Redis - which is most of them, CI included - an
-// unbounded ask here would hang the suite rather than skip the checks below.
+// Every wait in here has a limit, so something stuck fails the check by name
+// rather than hanging a CI job until its own timeout.
+function within(promise, ms, what) {
+  return Promise.race([promise, new Promise((resolve, reject) => {
+    setTimeout(() => reject(new Error(`${what} took longer than ${ms / 1000}s`)), ms).unref?.();
+  })]);
+}
+
+// Bounded twice over: a client left to itself retries the first connection for
+// ever, and one caught mid-restart can stall even with that turned off.
 async function redisIsThere() {
+  let client;
+
   try {
     const { createClient } = await import('redis');
-    const client = createClient({
+
+    client = createClient({
       url: REDIS_URL,
       socket: { connectTimeout: 1000, reconnectStrategy: false }
     });
 
     client.on('error', () => {});
-    await client.connect();
-    await client.quit();
+    await within(client.connect(), 3000, 'connecting to Redis');
+    await within(client.quit(), 3000, 'leaving Redis');
 
     return true;
   } catch {
+    try {
+      client?.destroy();
+    } catch {
+      // Never opened, which is the same outcome.
+    }
+
     return false;
   }
 }
@@ -246,8 +276,18 @@ export default async function run() {
     removeSandbox(brokenSandbox);
   }
 
+  // Recorded as skips rather than passed over, so a run promised a Redis
+  // (REQUIRE_TOOLS=redis) fails when it cannot reach one instead of passing.
   if (!await redisIsThere()) {
-    console.log(`\n  Skipping the Redis checks: nothing answering at ${REDIS_URL}`);
+    for (const name of [
+      'an announcement in one process reaches a wait in another',
+      'a farm on Redis answers a held request the same way',
+      'a change in another process reaches a browser connected here',
+      'announcements still cross processes after Redis restarts'
+    ]) {
+      results.skipped(name, `Redis not answering at ${REDIS_URL}`);
+    }
+
     return results;
   }
 
@@ -343,6 +383,73 @@ export default async function run() {
   } finally {
     if (onRedis) await stopServer(onRedis);
     removeSandbox(redisSandbox);
+  }
+
+  console.log('\n  When Redis restarts underneath a running farm');
+
+  const container = process.env.TEST_REDIS_CONTAINER;
+
+  if (!container) {
+    results.skipped('announcements still cross processes after Redis restarts',
+      'no Redis container named in TEST_REDIS_CONTAINER to restart');
+    return results;
+  }
+
+  const bus = JSON.stringify(path.join(SRC, 'bus.js'));
+
+  // Both connected before the outage and told to carry on only after it, so
+  // what is tested is two clients that lived through a restart.
+  const listener = busProcess(`
+    import { startBus, waitFor, WORK, stopBus } from ${bus};
+    await startBus();
+    console.log('ready');
+    await new Promise(resolve => process.stdin.once('data', resolve));
+    console.log('going');
+    const heard = await waitFor(WORK, 30000);
+    console.log(heard ? 'heard' : 'silence');
+    await stopBus();
+  `, { input: true });
+
+  const teller = busProcess(`
+    import { startBus, announce, WORK, stopBus } from ${bus};
+    await startBus();
+    console.log('ready');
+    await new Promise(resolve => process.stdin.once('data', resolve));
+    // Said repeatedly: a subscriber still reconnecting misses a single message,
+    // and pub/sub keeps nothing for it.
+    for (let said = 0; said < 40; said++) {
+      announce(WORK);
+      await new Promise(resolve => setTimeout(resolve, 500));
+    }
+    await stopBus();
+  `, { input: true });
+
+  try {
+    await within(Promise.all([listener.ready, teller.ready]), 20000, 'starting both bus processes');
+
+    spawnSync('docker', ['stop', container]);
+    // Longer than a client used to wait before giving up for good.
+    await new Promise(resolve => setTimeout(resolve, 5000));
+    spawnSync('docker', ['start', container]);
+
+    if (!await waitForCondition(redisIsThere, { label: 'Redis to come back', timeoutMs: 30000 })) {
+      throw new Error('Redis did not come back after docker start');
+    }
+
+    listener.child.stdin.write('go\n');
+    teller.child.stdin.write('go\n');
+
+    const verdict = await within(listener.said(/heard|silence/), 45000,
+      'the listener saying whether it heard anything');
+
+    results.check('announcements still cross processes after Redis restarts',
+      verdict.includes('heard'), JSON.stringify(verdict));
+  } catch (error) {
+    results.check('announcements still cross processes after Redis restarts', false,
+      `${error.message}; the listener said ${JSON.stringify(listener.output())}`);
+  } finally {
+    listener.child.kill();
+    teller.child.kill();
   }
 
   return results;

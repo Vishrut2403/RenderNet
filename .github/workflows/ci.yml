@@ -75,11 +75,22 @@ jobs:
         working-directory: frontend
         run: npm test
 
+      # Only a Linux runner can run a container. Started from the project's own
+      # compose file, so that file is exercised here too.
+      - name: Start Redis
+        if: runner.os == 'Linux'
+        run: docker compose up -d --wait
+
       # Blender is absent here, so render-dependent checks skip themselves and
       # the rest runs. The Windows runner is the point: it is the only place
-      # this project is tested on the platform it actually ships to.
+      # this project is tested on the platform it actually ships to. On Linux
+      # Redis is there, so a Redis check that skips itself fails the run.
       - name: Test
         working-directory: backend
+        env:
+          TEST_REDIS_URL: ${{ runner.os == 'Linux' && 'redis://127.0.0.1:6379' || '' }}
+          TEST_REDIS_CONTAINER: ${{ runner.os == 'Linux' && 'rendernet-redis' || '' }}
+          REQUIRE_TOOLS: ${{ runner.os == 'Linux' && 'redis' || '' }}
         run: npm test
 
   render:

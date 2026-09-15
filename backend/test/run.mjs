@@ -19,6 +19,7 @@ import upgrading from './upgrading.test.mjs';
 import sceneStore from './scene-store.test.mjs';
 import events from './events.test.mjs';
 import untrustedScenes from './untrusted-scenes.test.mjs';
+import joining from './joining.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -41,7 +42,8 @@ const suites = [
   ['Upgrading over an existing database', upgrading],
   ['Storing scenes by content', sceneStore],
   ['Being told there is work', events],
-  ['Scenes from somebody else', untrustedScenes]
+  ['Scenes from somebody else', untrustedScenes],
+  ['Adding a machine that renders', joining]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };
