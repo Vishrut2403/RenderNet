@@ -20,6 +20,7 @@ import sceneStore from './scene-store.test.mjs';
 import events from './events.test.mjs';
 import untrustedScenes from './untrusted-scenes.test.mjs';
 import joining from './joining.test.mjs';
+import queueEdges from './queue-edges.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -43,7 +44,8 @@ const suites = [
   ['Storing scenes by content', sceneStore],
   ['Being told there is work', events],
   ['Scenes from somebody else', untrustedScenes],
-  ['Adding a machine that renders', joining]
+  ['Adding a machine that renders', joining],
+  ['The queue at its edges', queueEdges]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

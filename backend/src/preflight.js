@@ -253,7 +253,14 @@ function openScene(blendPath, supplied = null, lastFrame = 0) {
     if (!blender) return resolve(null);
 
     const scriptPath = path.join(os.tmpdir(), `rendernet-preflight-${process.pid}.py`);
-    fs.writeFileSync(scriptPath, SCRIPT);
+
+    // Nowhere to put the script is a check that cannot run, not a scene that is
+    // wrong: answered the way an unreadable scene is, which lets the job through.
+    try {
+      fs.writeFileSync(scriptPath, SCRIPT);
+    } catch {
+      return resolve(null);
+    }
 
     const probe = launch(blender, ['-b', blendPath, '--disable-autoexec', '-P', scriptPath], {
       stdio: ['ignore', 'pipe', 'pipe'],

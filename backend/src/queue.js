@@ -299,6 +299,21 @@ function startSceneCheck(job) {
     // that starts it: processQueue leaves a second job alone while a first is
     // still going, and it is a worker asking that promotes it.
     announce(WORK);
+  }).catch(error => {
+    // A check that could not run found nothing, and lets the job through like
+    // one that could not read the scene - rather than leaving it marked as still
+    // being checked, which the queue never starts.
+    console.error(`Job ${job.id}: the scene check failed (${error.message}); rendering anyway`);
+
+    const current = jobs.get(job.id);
+
+    if (current?.status !== 'pending' || current.assetCheck !== 'checking') return;
+
+    current.assetCheck = 'skipped';
+    saveJob(current);
+
+    if (!preemptFor(current)) processQueue();
+    announce(WORK);
   });
 }
 
@@ -415,6 +430,8 @@ export function bakingSimulations(job) {
 }
 
 function preemptFor(job) {
+  if (!readyToStart(job)) return false;
+
   const displaceable = activeJobs().filter(running => displaces(job, running));
 
   if (displaceable.length === 0) return false;
@@ -449,6 +466,12 @@ export function approveJob(jobId) {
 
   if (job.approval !== 'waiting') {
     return { success: false, error: `Job ${jobId} is not waiting on a test frame` };
+  }
+
+  // Cancelling leaves the approval as it was, and approving that would put a job
+  // whose files are gone back into the queue.
+  if (job.status !== 'pending') {
+    return { success: false, error: `Job ${jobId} is ${job.status}` };
   }
 
   releaseHeldFrames(jobId);
@@ -577,6 +600,19 @@ function describe(job) {
   return job.approval === 'waiting' ? 'job waiting on its owner' : `${job.status} job`;
 }
 
+// One answer for both starting a job and pausing another to make room for it: a
+// job that cannot run yet is no reason to stop one that can, and one still
+// winding down from a pause must not be started over the top of itself.
+function readyToStart(job) {
+  return job?.status === 'pending'
+    && renderQueue.includes(job.id)
+    && !active.has(job.id)
+    && job.assetCheck !== 'checking'
+    && job.assetCheck !== 'waiting'
+    && !job.heldBy
+    && engineIsOffered(job.renderEngine);
+}
+
 // An admin taking the machine back. A held job keeps its place and its finished
 // frames; it simply is not started again until the same person lets it go.
 export function holdJob(jobId, by) {
@@ -604,6 +640,7 @@ export function releaseJob(jobId) {
   const job = jobs.get(jobId);
 
   if (!job) return { success: false, error: 'Job not found' };
+  if (!inTheRunning(job)) return { success: false, error: `Cannot release a ${describe(job)}` };
   if (!job.heldBy) return { success: false, error: 'Job is not held' };
 
   job.heldBy = null;
@@ -705,13 +742,7 @@ function promoteNext() {
   // A job still being looked at, or one this farm has nobody to render, keeps
   // its place in the queue rather than being started: a job marked rendering
   // that no worker will ever claim is a progress bar that never moves.
-  const next = renderQueue.findIndex(id => {
-    const queued = jobs.get(id);
-    return queued?.assetCheck !== 'checking'
-      && queued?.assetCheck !== 'waiting'
-      && !queued?.heldBy
-      && engineIsOffered(queued?.renderEngine);
-  });
+  const next = renderQueue.findIndex(id => readyToStart(jobs.get(id)));
 
   if (next === -1) return null;
 
@@ -1038,6 +1069,9 @@ export function forgetWorker(workerId) {
 
   for (const jobId of touched) settleJob(jobId);
 
+  // What it held can be claimed again, by a worker already waiting for work.
+  announce(WORK);
+
   return touched.size;
 }
 
@@ -1137,6 +1171,7 @@ export function recordBake(jobId, error) {
   forgetUsage(job.owner);
 
   console.log(`Job ${jobId}: simulations baked, ${job.totalFrames} frame(s) can go out`);
+  announce(WORK);
 
   return job;
 }

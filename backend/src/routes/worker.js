@@ -365,8 +365,10 @@ router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, re
     ? recordFrameUpload(req.jobId, frame, req.file.filename)
     : getJob(req.jobId);
 
-  // Cancellation can land while the frame is still streaming in.
-  if (!job || job.status !== 'rendering') {
+  // Cancellation can land while the frame is still streaming in, and takes the
+  // job's folder with it. A job only put back - the disk reaching its reserve
+  // with this very frame - still wants a frame it has already recorded.
+  if (!job || job.status === 'cancelled') {
     fs.rmSync(req.file.path, { force: true });
     return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
   }
@@ -564,7 +566,7 @@ router.post('/jobs/:id/frames/:frame/at', loadJob, requireRendering, validFrame,
     const isPrimary = extension === extensionOf(primaryOf(req.job.formats));
     const job = isPrimary ? recordFrameUpload(req.jobId, frame, filename) : getJob(req.jobId);
 
-    if (!job || job.status !== 'rendering') {
+    if (!job || job.status === 'cancelled') {
       return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
     }
 

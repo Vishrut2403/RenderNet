@@ -19,6 +19,8 @@ const ASSUMED_FRAME_MS = 10 * 1000;
 
 const clocks = new Map();
 const stamps = new Map();
+// Kept apart from the stamps, which are dropped as a job renders.
+const charged = new Set();
 
 let virtualNow = 0;
 
@@ -38,13 +40,27 @@ function costMs(job) {
   return framesLeft(job) * perFrame;
 }
 
-// Charged when the job joins the queue, and again if it goes back — for what is
-// left of it, so a job pushed aside halfway is not paid for twice.
+// Charged once, when the job first joins the queue. Going back - paused, held,
+// put back for the disk - costs nothing more: its whole length is already on
+// its owner's clock, so it only takes its place at the end of what they have
+// paid for.
 export function stampJob(job) {
   const owner = job.owner ?? '';
-  const start = Math.max(clocks.get(owner) ?? 0, virtualNow);
-  const finish = start + costMs(job);
+  const clock = clocks.get(owner) ?? 0;
+  const cost = costMs(job);
 
+  if (charged.has(job.id)) {
+    const finish = Math.max(clock, virtualNow + cost);
+
+    clocks.set(owner, finish);
+    stamps.set(job.id, { start: finish - cost, finish });
+    return;
+  }
+
+  const start = Math.max(clock, virtualNow);
+  const finish = start + cost;
+
+  charged.add(job.id);
   clocks.set(owner, finish);
   stamps.set(job.id, { start, finish });
 }
@@ -69,5 +85,6 @@ export function forgetJob(jobId) {
 export function levelUp() {
   clocks.clear();
   stamps.clear();
+  charged.clear();
   virtualNow = 0;
 }
