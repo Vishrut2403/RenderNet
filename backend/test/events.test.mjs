@@ -4,7 +4,7 @@
 import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
   adminSession, auth, createFakeBlender, createFakeScene, submitJob, waitForCondition, getJob
@@ -296,7 +296,7 @@ export default async function run() {
   try {
     // One process waits, another announces, and they share nothing but Redis.
     const listener = busProcess(`
-      import { startBus, waitFor, WORK, stopBus } from ${JSON.stringify(path.join(SRC, 'bus.js'))};
+      import { startBus, waitFor, WORK, stopBus } from ${JSON.stringify(pathToFileURL(path.join(SRC, 'bus.js')).href)};
       await startBus();
       console.log('ready');
       const heard = await waitFor(WORK, 10000);
@@ -307,7 +307,7 @@ export default async function run() {
     await listener.ready;
 
     const teller = busProcess(`
-      import { startBus, announce, WORK, stopBus } from ${JSON.stringify(path.join(SRC, 'bus.js'))};
+      import { startBus, announce, WORK, stopBus } from ${JSON.stringify(pathToFileURL(path.join(SRC, 'bus.js')).href)};
       await startBus();
       console.log('ready');
       announce(WORK);
@@ -361,7 +361,7 @@ export default async function run() {
     await reader.read();
 
     const elsewhere = busProcess(`
-      import { startBus, announceChanged, stopBus } from ${JSON.stringify(path.join(SRC, 'bus.js'))};
+      import { startBus, announceChanged, stopBus } from ${JSON.stringify(pathToFileURL(path.join(SRC, 'bus.js')).href)};
       await startBus();
       console.log('ready');
       announceChanged();
@@ -395,7 +395,7 @@ export default async function run() {
     return results;
   }
 
-  const bus = JSON.stringify(path.join(SRC, 'bus.js'));
+  const bus = JSON.stringify(pathToFileURL(path.join(SRC, 'bus.js')).href);
 
   // Both connected before the outage and told to carry on only after it, so
   // what is tested is two clients that lived through a restart.

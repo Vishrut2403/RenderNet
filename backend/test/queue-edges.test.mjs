@@ -6,7 +6,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, adminSession, auth,
   createFakeBlender, createFakeScene, submitJob, waitForCondition, getJob, sleep
@@ -41,7 +41,7 @@ function statusOf(base, token, jobId) {
 // process, and another has already loaded the queue there against its sandbox.
 function fairShares(box) {
   const script = `
-    import { stampJob, shareOf, levelUp } from ${JSON.stringify(path.join(SRC, 'fairness.js'))};
+    import { stampJob, shareOf, levelUp } from ${JSON.stringify(pathToFileURL(path.join(SRC, 'fairness.js')).href)};
     levelUp();
     const amy = { id: 1, owner: 'amy', totalFrames: 10, completedFrames: 0 };
     stampJob(amy);
