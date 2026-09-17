@@ -1,9 +1,7 @@
-// One credential per machine that renders, rather than one secret shared by all
-// of them: a machine that is lost or retired can be shut out on its own.
 import crypto from 'crypto';
 import os from 'os';
 import {
-  insertWorkerToken, workerTokenByHash, listWorkerTokens, getWorkerToken,
+  insertWorkerToken, workerTokenByHash, workerTokenHashTaken, listWorkerTokens, getWorkerToken,
   revokeWorkerToken, touchWorkerToken, deleteLocalWorkerTokens
 } from './db.js';
 
@@ -30,8 +28,6 @@ export function mintWorkerToken({ name, createdBy, isLocal = false }) {
   return { id, name, token };
 }
 
-// The token is high-entropy, so its digest is enough of a lookup key; a slow
-// hash here would run on every frame request a worker makes.
 export function machineFor(token) {
   if (typeof token !== 'string' || token.length === 0) return null;
 
@@ -81,9 +77,6 @@ export function revokeMachine(id) {
   return { success: true, name: machine.name };
 }
 
-// Minted fresh at boot and handed to the workers this server starts, so the
-// machine it runs on needs nothing configured and leaves nothing reusable
-// behind when it stops.
 let local = null;
 
 export function localMachineToken() {
@@ -99,13 +92,10 @@ export function localMachineToken() {
   return local.token;
 }
 
-// A farm upgrading from the single shared secret keeps working: the value it
-// already has becomes an ordinary machine credential, visible in the admin list
-// and revocable once every worker has one of its own.
 export function importSharedSecret() {
   const shared = process.env.WORKER_SECRET;
 
-  if (!shared || workerTokenByHash(digest(shared))) return null;
+  if (!shared || workerTokenHashTaken(digest(shared))) return null;
 
   const id = crypto.randomBytes(8).toString('hex');
 

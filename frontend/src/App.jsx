@@ -39,13 +39,11 @@ export default function App() {
       notify('Session expired — please sign in again', 'error');
     });
 
-    // Reachable mid-session: an admin can reset your password while you work.
     setPasswordChangeRequiredHandler(() => {
       setUser(current => (current ? { ...current, mustChangePassword: true } : current));
     });
   }, [notify]);
 
-  // A stored token may have expired while the tab was closed.
   useEffect(() => {
     if (!getToken()) return;
 
@@ -55,7 +53,13 @@ export default function App() {
         role: result.role,
         mustChangePassword: result.mustChangePassword
       }))
-      .catch(() => clearSession())
+      .catch(error => {
+        // Only a refusal ends the session, not a restarting server.
+        if (error.status === 401) {
+          clearSession();
+          setUser(null);
+        }
+      })
       .finally(() => setChecking(false));
   }, []);
 
@@ -63,8 +67,6 @@ export default function App() {
     return <div className="boot">Checking session…</div>;
   }
 
-  // An expired session signs the user out, and the notice explaining why would
-  // otherwise go with the rest of the app.
   if (!user) {
     return (
       <>
@@ -78,12 +80,10 @@ export default function App() {
     try {
       await api.logout();
     } catch {
-      // The local session is cleared either way.
     }
     signOut();
   }
 
-  // Nothing else is reachable until the password is replaced.
   if (user.mustChangePassword) {
     return (
       <div className="app">

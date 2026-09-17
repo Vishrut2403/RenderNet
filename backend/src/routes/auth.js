@@ -7,8 +7,6 @@ import {
 
 const router = express.Router();
 
-// A JSON body can carry any shape, and the layers below expect strings - an
-// object reaches SQLite or bcrypt as a bind parameter and throws.
 function credentials(...values) {
   return values.every(value => typeof value === 'string' && value.length > 0);
 }
@@ -65,6 +63,11 @@ router.post('/change-password', requireSession, route(async (req, res) => {
   
   const result = await changePassword(username, oldPassword, newPassword,
     req.headers.authorization?.replace('Bearer ', ''));
+
+  if (result.locked) {
+    res.set('Retry-After', String(result.retryAfter));
+    return res.status(429).json(result);
+  }
   
   if (result.success) {
     res.json(result);
@@ -92,15 +95,11 @@ router.get('/users', requireAuth, requireAdmin, (req, res) => {
   res.json({ users: listUsers() });
 });
 
-// Shown rather than set: whoever runs the farm reads it off this page and tells
-// their team, the way a wireless password is passed on.
 router.get('/signup-code', requireAuth, requireAdmin, (req, res) => {
   res.json(signupCodeNow());
 });
 
 router.post('/signup-code', requireAuth, requireAdmin, (req, res) => {
-  // Set in the environment, so this farm was configured by hand and a new code
-  // made here would be ignored the moment it was asked for.
   if (signupCodeNow().fixed) {
     return res.status(409).json({
       error: 'This farm takes its signup code from SIGNUP_CODE. Change it there and restart.'

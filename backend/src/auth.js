@@ -3,7 +3,7 @@ import fs from 'fs';
 import bcrypt from 'bcrypt';
 import {
   saveSession, loadSessions, deleteSession, deleteSessionsFor,
-  saveUser, getUser, getAllUsers, countUsers, readSetting, writeSetting
+  saveUser, createUser, getUser, getAllUsers, countUsers, readSetting, writeSetting
 } from './db.js';
 import { USERS_FILE } from './paths.js';
 
@@ -13,14 +13,10 @@ const DEFAULT_ADMIN_PASSWORD = 'admin123';
 const ATTEMPT_LIMIT = 5;
 const LOCKOUT_MS = 15 * 60 * 1000;
 
-// Held in memory on purpose. The workstation is switched off nightly, and a
-// lockout that outlived a reboot would mostly punish whoever mistyped last.
 function attemptLimiter() {
   const attempts = new Map();
 
   return {
-    // Unknown usernames are counted too, so a lockout says nothing about
-    // whether the account exists.
     secondsLeft(key) {
       const record = attempts.get(key);
 
@@ -35,8 +31,6 @@ function attemptLimiter() {
     },
 
     record(key) {
-      // Keys come from whatever the caller sent, so expired entries are swept
-      // rather than left to pile up.
       if (attempts.size > 1000) {
         for (const [name, seen] of attempts) {
           if (Date.now() >= seen.until) attempts.delete(name);
@@ -57,12 +51,8 @@ function attemptLimiter() {
 }
 
 const failedLogins = attemptLimiter();
-// Keyed by address rather than by name: the signup code is one shared secret,
-// and guessing it is the only way in that does not need an account already.
 const failedSignups = attemptLimiter();
 
-// Told apart by ear as often as by eye - somebody reads this one out - so no
-// character that could be heard or seen as another.
 const CODE_LETTERS = 'abcdefghjkmnpqrstuvwxyz23456789';
 const CODE_SETTING = 'signupCode';
 
@@ -73,21 +63,14 @@ function madeUpCode() {
   return `${letters.slice(0, 4).join('')}-${letters.slice(4).join('')}`;
 }
 
-// Read lazily: index.js loads .env before this module, but tests set it per run.
-// A code in the environment wins, so a farm that was configured by hand keeps
-// the code its team already knows.
 function signupCode() {
   return process.env.SIGNUP_CODE || readSetting(CODE_SETTING);
 }
 
-// What a signup would be checked against now, and whether this farm was told it
-// rather than choosing for itself.
 export function signupCodeNow() {
   return { code: signupCode(), fixed: !!process.env.SIGNUP_CODE };
 }
 
-// Made once and kept, so the code somebody was told on Monday still works on
-// Tuesday. Nobody has to think of one, which is the point.
 export function ensureSignupCode() {
   if (process.env.SIGNUP_CODE) return { code: process.env.SIGNUP_CODE, fixed: true };
 
@@ -101,7 +84,6 @@ export function ensureSignupCode() {
   return { code: stored, fixed: false };
 }
 
-// Whoever knew the old one can no longer sign up with it.
 export function newSignupCode() {
   const made = madeUpCode();
 
@@ -113,8 +95,6 @@ export function newSignupCode() {
 function matchesSecret(provided, expected) {
   if (typeof provided !== 'string' || !expected) return false;
 
-  // Digests rather than raw values, so length never has to match and the
-  // comparison cannot throw on unexpected input.
   return crypto.timingSafeEqual(
     crypto.createHash('sha256').update(provided).digest(),
     crypto.createHash('sha256').update(expected).digest()
@@ -125,9 +105,6 @@ function legacyHash(password) {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
 
-// Accounts created before the bcrypt migration still carry unsalted SHA-256
-// hashes. They cannot be converted without the plaintext, so they are verified
-// against the old scheme and re-hashed on the next successful login.
 async function verifyPassword(password, user) {
   if (user.hashAlgo === 'sha256') {
     return legacyHash(password) === user.passwordHash;
@@ -155,8 +132,6 @@ function migrateUsersFile() {
   }
 
   if (migrated) {
-    // Renamed rather than deleted: keeps a backup, and makes it obvious the
-    // file is no longer the authoritative store.
     fs.renameSync(USERS_FILE, `${USERS_FILE}.migrated`);
     console.log(`Migrated ${migrated} user(s) from ${USERS_FILE} into the database.`);
     console.log(`${USERS_FILE} renamed to ${USERS_FILE}.migrated; the database is now authoritative.`);
@@ -182,8 +157,6 @@ function seedAdmin() {
   console.warn('It cannot do anything until its password is changed at first login.');
 }
 
-// Installs that predate the flag can still be sitting on the seeded password,
-// which is the one credential everybody already knows.
 function usesDefaultPassword(user) {
   return user.hashAlgo === 'sha256'
     ? legacyHash(DEFAULT_ADMIN_PASSWORD) === user.passwordHash
@@ -220,8 +193,6 @@ for (const row of loadSessions()) {
 }
 
 export async function login(username, password) {
-  // Checked before any hashing: a locked-out name must not cost a bcrypt round
-  // on the way to being refused.
   const lockedFor = failedLogins.secondsLeft(username);
 
   if (lockedFor > 0) {
@@ -236,8 +207,6 @@ export async function login(username, password) {
   const user = getUser(username);
 
   if (!user) {
-    // Spend comparable time on an unknown username so response timing does not
-    // reveal which accounts exist.
     await bcrypt.compare(password, '$2b$12$invalidinvalidinvalidinvalidinvalidinvalidinvalidinvalidinv');
     failedLogins.record(username);
     return { success: false, error: 'Invalid username or password' };
@@ -313,7 +282,7 @@ export async function signup(username, password, code, from = 'unknown') {
     return { success: false, error: 'Username already exists' };
   }
 
-  saveUser({
+  const created = createUser({
     username,
     passwordHash: await bcrypt.hash(password, BCRYPT_ROUNDS),
     hashAlgo: 'bcrypt',
@@ -321,14 +290,15 @@ export async function signup(username, password, code, from = 'unknown') {
     createdAt: new Date().toISOString()
   });
 
+  if (!created) {
+    return { success: false, error: 'Username already exists' };
+  }
+
   console.log(`New user created: ${username}`);
 
   return { success: true, message: 'Account created successfully' };
 }
 
-// A password is changed because the old one is no longer trusted, so every
-// session opened with it goes too - the one asking excepted, which is the page
-// the change was made from.
 function endOtherSessions(username, keep = null) {
   for (const [token, session] of sessions) {
     if (session.username === username && token !== keep) sessions.delete(token);
@@ -344,9 +314,23 @@ export async function changePassword(username, oldPassword, newPassword, keepTok
     return { success: false, error: 'User not found' };
   }
 
+  const lockedFor = failedLogins.secondsLeft(username);
+
+  if (lockedFor > 0) {
+    return {
+      success: false,
+      locked: true,
+      retryAfter: lockedFor,
+      error: `Too many failed attempts. Try again in ${Math.ceil(lockedFor / 60)} minute(s).`
+    };
+  }
+
   if (!await verifyPassword(oldPassword, user)) {
+    failedLogins.record(username);
     return { success: false, error: 'Current password is incorrect' };
   }
+
+  failedLogins.clear(username);
 
   if (!newPassword || newPassword.length < 6) {
     return { success: false, error: 'New password must be at least 6 characters' };
@@ -378,11 +362,10 @@ export async function adminResetPassword(targetUsername, newPassword) {
   user.passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
   user.hashAlgo = 'bcrypt';
   user.passwordResetAt = new Date().toISOString();
-  // The admin who set it knows it, so the owner has to replace it.
   user.mustChangePassword = 1;
   saveUser(user);
-  // All of them: the account is being taken back from whoever was in it.
   endOtherSessions(targetUsername);
+  failedLogins.clear(targetUsername);
 
   console.log(`Password reset for user: ${targetUsername}`);
 
@@ -415,8 +398,6 @@ export function logout(token) {
   return { success: true };
 }
 
-// Establishes who is calling and nothing more. Used by the routes an account
-// must still reach while it is locked out of everything else.
 export function requireSession(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
 
@@ -439,8 +420,6 @@ export function requireSession(req, res, next) {
   next();
 }
 
-// Looked up per request rather than stored on the session, so changing the
-// password clears the lock immediately instead of at the next login.
 export function mustChangePassword(username) {
   return !!getUser(username)?.mustChangePassword;
 }
@@ -458,13 +437,11 @@ export function requireAuth(req, res, next) {
   });
 }
 
-// Identifies the caller when it can and gives up quietly when it cannot, for
-// the endpoints that answer everyone but answer a signed-in user in more detail.
 export function optionalAuth(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '');
   const verification = token ? verifyToken(token) : { valid: false };
 
-  if (verification.valid) {
+  if (verification.valid && !mustChangePassword(verification.username)) {
     req.user = { username: verification.username, role: verification.role };
   }
 

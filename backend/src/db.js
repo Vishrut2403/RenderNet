@@ -88,83 +88,55 @@ function addColumnIfMissing(table, column, definition) {
   return true;
 }
 
-// Frames already done when the job was last resumed, so a restart that made
-// progress can be told from one that made none.
 addColumnIfMissing('jobs', 'framesAtResume', 'INTEGER DEFAULT 0');
 addColumnIfMissing('jobs', 'frameStep', 'INTEGER DEFAULT 1');
 
-// Set where somebody else has seen the password: the seeded admin, or a reset.
 addColumnIfMissing('users', 'mustChangePassword', 'INTEGER DEFAULT 0');
 
-// Higher numbers go first; pausedBy records who displaced a job.
 addColumnIfMissing('jobs', 'priority', 'INTEGER DEFAULT 0');
 addColumnIfMissing('jobs', 'pausedBy', 'TEXT');
 
-// An admin's two overrides: pinnedAt puts a job in front of the whole farm,
-// heldBy keeps one out of the running until the same admin lets it go.
 addColumnIfMissing('jobs', 'pinnedAt', 'TEXT');
 addColumnIfMissing('jobs', 'heldBy', 'TEXT');
 
-// Applied to the scene at render time rather than by editing the .blend.
 addColumnIfMissing('jobs', 'resolutionPercent', 'INTEGER DEFAULT 100');
 addColumnIfMissing('jobs', 'samples', 'INTEGER');
 
-// Comma-separated Blender format ids; the first is what the frame record and
-// the preview point at.
 addColumnIfMissing('jobs', 'formats', "TEXT DEFAULT 'PNG'");
 
-// How each format is written: kept as text because Blender's depth is an enum
-// of digits rather than a number.
 addColumnIfMissing('jobs', 'exrCodec', "TEXT DEFAULT 'ZIP'");
 addColumnIfMissing('jobs', 'exrDepth', "TEXT DEFAULT '16'");
 addColumnIfMissing('jobs', 'jpegQuality', 'INTEGER DEFAULT 90');
 
-// Whether a video has been made of the finished frames.
 addColumnIfMissing('jobs', 'video', 'TEXT');
 
-// The frame rendered on its own first, and where its owner's answer has got to:
-// 'testing', 'waiting' for them, or 'approved'.
 addColumnIfMissing('jobs', 'testFrame', 'INTEGER');
 addColumnIfMissing('jobs', 'allowScripts', 'INTEGER');
 addColumnIfMissing('jobs', 'approval', 'TEXT');
 
-// A still cut into regions rendered separately, and how putting them back
-// together went.
 addColumnIfMissing('jobs', 'tiles', 'INTEGER');
 addColumnIfMissing('jobs', 'composite', 'TEXT');
 
-// A simulation the farm bakes before it renders anything: where that has got
-// to, the scene the bake produced, and what was found unbaked.
 addColumnIfMissing('jobs', 'bake', 'TEXT');
 addColumnIfMissing('jobs', 'bakedPath', 'TEXT');
 addColumnIfMissing('jobs', 'unbakedSims', 'TEXT');
 
-// What the scene reaches for outside itself, checked before it is queued.
 addColumnIfMissing('jobs', 'assetCheck', 'TEXT');
 addColumnIfMissing('jobs', 'missingAssets', 'TEXT');
 addColumnIfMissing('jobs', 'needsThisMachine', 'INTEGER DEFAULT 0');
 
-// One frame claimed by one worker, with an expiry: a worker that stops answering
-// loses the frame rather than stranding it.
 addColumnIfMissing('frames', 'startedAt', 'TEXT');
 addColumnIfMissing('frames', 'durationMs', 'INTEGER');
 addColumnIfMissing('frames', 'leaseId', 'TEXT');
 addColumnIfMissing('frames', 'leasedBy', 'TEXT');
 addColumnIfMissing('frames', 'leaseExpiresAt', 'TEXT');
-// Kept when the claim is let go, which clears leasedBy: which machine actually
-// rendered a frame is what says how fast that machine is.
 addColumnIfMissing('frames', 'renderedBy', 'TEXT');
 db.exec('CREATE INDEX IF NOT EXISTS idx_frames_lease ON frames(leaseId)');
 
-// The order frames are claimed in, which is not the order they are numbered in.
-// Rows from before this take their frame number, which is the order they were
-// already being rendered in.
 if (addColumnIfMissing('frames', 'ordinal', 'INTEGER')) {
   db.exec('UPDATE frames SET ordinal = frame');
 }
 
-// Only the measured frames, which is what the timings read and a fraction of
-// the table while a job is still running.
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_frames_duration ON frames(jobId, durationMs)
    WHERE durationMs IS NOT NULL`
@@ -191,18 +163,13 @@ export function saveJob(job) {
   const row = {};
 
   for (const column of COLUMNS) {
-    // SQLite rejects undefined and booleans.
     row[column] = job[column] === undefined ? null : job[column];
   }
 
   upsertJob.run(row);
-  // The one place every change to a job goes through, which is what makes it
-  // the place to say so.
   announceChanged();
 }
 
-// What this installation settled on for itself rather than being told: kept
-// here so it survives a restart and travels with the database backups.
 db.exec(`
   CREATE TABLE IF NOT EXISTS settings (
     name TEXT PRIMARY KEY,
@@ -224,10 +191,6 @@ export function writeSetting(name, value) {
 db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_owner ON jobs(owner, id DESC)');
 db.exec('CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status, id DESC)');
 
-// Ids rather than rows: the job records themselves are held in memory and kept
-// in step from there, and this is only being asked which of them a page shows.
-// Walking and sorting every job the farm has ever run, on every poll of every
-// open dashboard, is what this replaced.
 const pages = new Map();
 
 function pageQuery(byOwner, byStatus, byBefore) {
@@ -248,17 +211,12 @@ function pageQuery(byOwner, byStatus, byBefore) {
   return pages.get(key);
 }
 
-// One more than the page asked for, so the caller knows whether there is
-// another without counting what it is not going to show.
 export function pageOfJobIds({ owner = null, status = null, before = null, limit }) {
   return pageQuery(owner !== null, status !== null, before !== null)
     .all({ owner, status, before, limit: limit + 1 })
     .map(row => row.id);
 }
 
-// No limit: what is rendering is bounded by the size of the farm rather than by
-// how long it has been running, and a dashboard that quietly stopped listing
-// some of it would be worse than one that took a moment longer.
 export function renderingJobIds(owner = null) {
   const rows = owner === null
     ? db.prepare("SELECT id FROM jobs WHERE status = 'rendering' ORDER BY id DESC").all()
@@ -284,8 +242,6 @@ export function countJobsByStatus(owner = null) {
   return counts;
 }
 
-// Summed where the rows are rather than by adding up a list nobody wanted.
-// julianday gives a day count as a float, which is milliseconds to spare.
 const TOTALS = `SELECT
     COALESCE(SUM(completedFrames), 0) AS framesRendered,
     COALESCE(SUM(CASE
@@ -319,11 +275,6 @@ const insertFrame = db.prepare(
    VALUES (@jobId, @frame, @status, @filename, @error, @attempts, @ordinal, @updatedAt)`
 );
 
-// Claimed in bit-reversed order - the first frame, then the middle one, then the
-// quarters - so a job half done is an even sample of the whole range rather than
-// its opening seconds. A camera that goes wrong at frame 400 is then seen while
-// there is still something to be done about it. The first frame stays first,
-// which is what measures the span size and what a test frame renders.
 function spreadOrder(count) {
   if (process.env.FRAME_ORDER === 'sequential' || count < 2) return index => index;
 
@@ -338,9 +289,6 @@ function spreadOrder(count) {
   };
 }
 
-// A step renders every nth frame of the range, which is how a preview pass is
-// asked for. The rest of the farm never sees the step: it works from the rows
-// that come out of here.
 export const createFrames = db.transaction((jobId, frameStart, frameEnd, step = 1) => {
   const updatedAt = new Date().toISOString();
   const stride = Math.max(1, step);
@@ -355,8 +303,6 @@ export const createFrames = db.transaction((jobId, frameStart, frameEnd, step = 
   }
 });
 
-// Held rather than deleted, so the job keeps its full range and its progress
-// denominator while only the test frame can be claimed.
 export function holdFramesExcept(jobId, frame) {
   return db.prepare(
     `UPDATE frames SET status = 'held' WHERE jobId = ? AND frame != ? AND status = 'pending'`
@@ -381,8 +327,6 @@ export function getLatestDoneFrame(jobId) {
   ).get(jobId);
 }
 
-// Attempts go back to zero as well: a frame that exhausted its three tries is
-// being asked to try again, not being given a fourth.
 export function resetFailedFrames(jobId) {
   return db.prepare(
     `UPDATE frames SET status = 'pending', error = NULL, attempts = 0, updatedAt = ?
@@ -390,7 +334,6 @@ export function resetFailedFrames(jobId) {
   ).run(new Date().toISOString(), jobId).changes;
 }
 
-// Recent frames only: the estimate is for the machine as it is now.
 export function recentFrameDurations(limit = 200) {
   return db.prepare(
     `SELECT durationMs FROM frames WHERE durationMs IS NOT NULL
@@ -398,9 +341,6 @@ export function recentFrameDurations(limit = 200) {
   ).all(limit).map(row => row.durationMs);
 }
 
-// What one machine takes over a frame of one job. A machine's rate on other
-// scenes says nothing about this one, and the job's own median is whatever mix
-// of machines has rendered it so far.
 export function jobDurationsBy(jobId, workerId, limit = 50) {
   return db.prepare(
     `SELECT durationMs FROM frames
@@ -409,9 +349,6 @@ export function jobDurationsBy(jobId, workerId, limit = 50) {
   ).all(jobId, workerId, limit).map(row => row.durationMs);
 }
 
-// One job's measured frames, which is all that job's timings depend on. The
-// farm-wide version of this - every duration in the database, read on every
-// poll of the job list - is what this replaced.
 export function frameDurationsFor(jobId) {
   return db.prepare(
     `SELECT frame, durationMs FROM frames
@@ -431,9 +368,6 @@ export function countFramesByStatus(jobId) {
   return counts;
 }
 
-// When this frame's render actually began. A claim stamps every frame of a span
-// at once, but Blender works through them in order, so all but the first began
-// when the one before them in the same claim finished.
 function renderingBegan(leaseId, claimedAt) {
   if (!leaseId) return claimedAt;
 
@@ -465,8 +399,6 @@ export function markFrameDone(jobId, frame, filename) {
     .changes;
 }
 
-// A frame only counts as failed once it has used up its attempts; until then it
-// goes back to pending so the worker can have another go.
 export function markFrameAttemptFailed(jobId, frame, error, maxAttempts) {
   db.prepare(
     `UPDATE frames
@@ -489,6 +421,7 @@ export function markFramePending(jobId, frame) {
   ).run(new Date().toISOString(), jobId, frame);
 }
 
+// Compared as text: every value is a same-length UTC ISO string.
 const claimable = db.prepare(
   `SELECT frame FROM frames
     WHERE jobId = ? AND status = 'pending'
@@ -503,16 +436,11 @@ const claim = db.prepare(
       AND (leaseExpiresAt IS NULL OR leaseExpiresAt <= @now)`
 );
 
-// Compared as text, which is only sound because every one is a UTC ISO string of
-// the same length.
 function stamp(offsetMs = 0) {
   return new Date(Date.now() + offsetMs).toISOString();
 }
 
-// One transaction, so two workers asking at once cannot get the same frame. The
-// UPDATE repeats the conditions rather than trusting the SELECT, so a claim that
-// lost the race changes nothing and says so - and the frames it lost simply do
-// not join the span.
+// The UPDATE repeats the SELECT's conditions, so two workers can never share a frame.
 export const leaseFrames = db.transaction((jobId, workerId, ttlMs, wanted) => {
   const now = stamp();
   const rows = claimable.all(jobId, now, Math.max(1, wanted));
@@ -531,15 +459,11 @@ export const leaseFrames = db.transaction((jobId, workerId, ttlMs, wanted) => {
     if (taken) frames.push(row.frame);
   }
 
-  // Which frames a claim covers is decided by the order above; which order
-  // Blender is then given them in is not, and ascending is the cheaper one to
-  // render.
   frames.sort((a, b) => a - b);
 
   return frames.length > 0 ? { leaseId, leasedBy: workerId, expiresAt, jobId, frames } : null;
 });
 
-// Refused rather than extended: the frame may already belong to another worker.
 export function renewLease(leaseId, ttlMs) {
   const expiresAt = stamp(ttlMs);
 
@@ -557,8 +481,6 @@ export function releaseLease(leaseId) {
   ).run(leaseId).changes > 0;
 }
 
-// A machine that has gone is not coming back for what it was holding, and every
-// job it had a hand in may now be settleable.
 export function releaseLeasesOf(workerId) {
   const held = db.prepare(
     'SELECT DISTINCT jobId FROM frames WHERE leasedBy = ? AND leaseId IS NOT NULL'
@@ -579,8 +501,6 @@ export function clearJobLeases(jobId) {
   ).run(jobId).changes;
 }
 
-// Every frame the one claim covers. They share an owner and an expiry, so the
-// span answers as one thing.
 export function getLease(leaseId) {
   const rows = db.prepare(
     `SELECT jobId, frame, leasedBy, leaseExpiresAt AS expiresAt
@@ -597,10 +517,6 @@ export function getLease(leaseId) {
   };
 }
 
-// A file the artist handed over to fix a job the scene check stopped. Kept per
-// job rather than pooled by content: one job's upload must not quietly satisfy
-// another's missing texture, and dying with the job is the whole of its
-// lifetime - no reference counting, no sweep.
 db.exec(`
   CREATE TABLE IF NOT EXISTS job_assets (
     jobId INTEGER NOT NULL,
@@ -612,8 +528,6 @@ db.exec(`
   )
 `);
 
-// Replaced rather than added twice, so supplying the same one again is a fix
-// rather than an error.
 export function recordJobAsset({ jobId, storedPath, filename, bytes }) {
   db.prepare(
     `INSERT INTO job_assets (jobId, storedPath, filename, bytes, updatedAt)
@@ -633,10 +547,6 @@ export function deleteJobAssets(jobId) {
   return db.prepare('DELETE FROM job_assets WHERE jobId = ?').run(jobId).changes;
 }
 
-// Work the farm claims a job at a time rather than a frame at a time: putting a
-// tiled still back together, and baking a scene's simulations before anything
-// renders. Held apart from the job row so that saving the job cannot overwrite
-// a claim.
 function jobClaims(table) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS ${table} (
@@ -741,6 +651,10 @@ export function insertWorkerToken(row) {
   ).run(row);
 }
 
+export function workerTokenHashTaken(tokenHash) {
+  return !!db.prepare('SELECT 1 FROM worker_tokens WHERE tokenHash = ?').get(tokenHash);
+}
+
 export function workerTokenByHash(tokenHash) {
   return db.prepare(
     'SELECT * FROM worker_tokens WHERE tokenHash = ? AND revokedAt IS NULL'
@@ -780,8 +694,6 @@ export function getFailedFrames(jobId) {
   ).all(jobId);
 }
 
-// Built per call because the number of placeholders varies; the caller pages
-// first, so the list is bounded by the page size.
 export function getFailedFramesIn(jobIds) {
   if (jobIds.length === 0) return [];
 
@@ -792,8 +704,6 @@ export function getFailedFramesIn(jobIds) {
   ).all(...jobIds);
 }
 
-// Jobs written before frames were tracked individually have no rows at all.
-// Their frame numbers are recoverable from the filenames they recorded.
 const backfillFrames = db.transaction(() => {
   const stale = db.prepare(`
     SELECT id, frameStart, frameEnd, uploadedFrames, frameErrors FROM jobs
@@ -842,8 +752,6 @@ export function deleteSession(token) {
   db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
 }
 
-// Everything but the one asking, so changing a password does not sign the
-// person doing it out of the page they are on.
 export function deleteSessionsFor(username, except = null) {
   return db.prepare('DELETE FROM sessions WHERE username = ? AND token IS NOT ?')
     .run(username, except).changes;
@@ -861,6 +769,16 @@ const upsertUser = db.prepare(`
     (@username, @passwordHash, @hashAlgo, @role, @createdAt, @passwordChangedAt,
      @passwordResetAt, @mustChangePassword)
 `);
+
+const insertUser = db.prepare(`
+  INSERT OR IGNORE INTO users
+    (username, passwordHash, hashAlgo, role, createdAt, mustChangePassword)
+  VALUES (@username, @passwordHash, @hashAlgo, @role, @createdAt, 0)
+`);
+
+export function createUser(user) {
+  return insertUser.run(user).changes === 1;
+}
 
 export function saveUser(user) {
   upsertUser.run({
@@ -889,28 +807,23 @@ export function countUsers() {
 
 export default db;
 
-// VACUUM INTO rather than copying the file: it takes a consistent snapshot of a
-// live database, where copying one in WAL mode can catch it mid-write and
-// silently leave the newest jobs out.
 export function backupDatabase(now = new Date()) {
   if (DB_BACKUPS_KEPT < 1) return null;
 
   fs.mkdirSync(BACKUPS_DIR, { recursive: true });
 
-  // Milliseconds kept: two starts in the same second are ordinary when a
-  // service restarts, and the name has to stay unique and still sort by time.
   const stamp = now.toISOString().replace(/[:.]/g, '-');
   const target = path.join(BACKUPS_DIR, `rendernet-${stamp}.db`);
 
   try {
     if (fs.existsSync(target)) fs.rmSync(target);
 
+    // Not a file copy: a WAL database can be caught mid-write.
     db.prepare('VACUUM INTO ?').run(target);
     pruneBackups();
 
     return target;
   } catch (error) {
-    // A backup that fails must not stop the farm starting.
     console.error('Database backup failed:', error.message);
     return null;
   }
@@ -926,7 +839,6 @@ function pruneBackups() {
     try {
       fs.rmSync(path.join(BACKUPS_DIR, name));
     } catch {
-      // Next boot gets it.
     }
   }
 }

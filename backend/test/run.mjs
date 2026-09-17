@@ -21,6 +21,7 @@ import events from './events.test.mjs';
 import untrustedScenes from './untrusted-scenes.test.mjs';
 import joining from './joining.test.mjs';
 import queueEdges from './queue-edges.test.mjs';
+import accounts from './accounts.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -45,18 +46,14 @@ const suites = [
   ['Being told there is work', events],
   ['Scenes from somebody else', untrustedScenes],
   ['Adding a machine that renders', joining],
-  ['The queue at its edges', queueEdges]
+  ['The queue at its edges', queueEdges],
+  ['Accounts at their edges', accounts]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };
 const failures = [];
 const skips = [];
 
-// A check that skips itself for want of Blender or ffmpeg is right on a machine
-// without them and wrong in a job that just installed one - there the skip is
-// how a broken install would pass unnoticed. Naming a tool here turns that into
-// a failure, while leaving alone the skips that are about what a machine can
-// actually do, such as an engine that will not render headless.
 const required = (process.env.REQUIRE_TOOLS ?? '')
   .split(',').map(tool => tool.trim().toLowerCase()).filter(Boolean);
 
