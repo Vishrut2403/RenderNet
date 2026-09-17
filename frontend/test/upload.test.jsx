@@ -1,13 +1,8 @@
-// How a scene gets to the server. Everything below 32MB is one request; above
-// it the file goes in pieces that can be resumed, which is the part with the
-// most ways to go wrong and the least chance of being noticed by hand.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { api, setSession } from '../src/api/client';
 
 const MB = 1024 * 1024;
 
-// The uploader only ever asks a file for these four, so a test does not have to
-// allocate forty megabytes to describe one.
 function fakeFile({ name = 'scene.blend', size = 40 * MB, lastModified = 1000 } = {}) {
   return {
     name,
@@ -20,8 +15,6 @@ function fakeFile({ name = 'scene.blend', size = 40 * MB, lastModified = 1000 } 
 let sent;
 let respond;
 
-// jsdom has no XMLHttpRequest that talks to anything, so this stands in for it
-// and records what the uploader asked for.
 class FakeXhr {
   constructor() {
     this.upload = { addEventListener: (name, fn) => { this.onProgress = fn; } };
@@ -45,7 +38,6 @@ class FakeXhr {
     const record = { method: this.method, url: this.url, payload, xhr: this };
     sent.push(record);
 
-    // Answered on a later tick, the way a real request is.
     queueMicrotask(() => {
       const answer = respond(record, sent.length - 1);
 
@@ -152,7 +144,6 @@ describe('a scene too big for one request', () => {
       ? { uploadId: 'abc', received: 0, chunkSize: 16 * MB }
       : { jobId: 1 });
 
-    // The server took less of the first piece than was offered.
     respond = (record, index) => index === 0
       ? { status: 200, body: { received: 10 * MB } }
       : { status: 200, body: { received: offsetOf(record) + 16 * MB } };
@@ -270,7 +261,6 @@ describe('picking the same file again', () => {
 
     await api.upload(fakeFile({ size: 40 * MB }), { frameStart: 1, frameEnd: 1 });
 
-    // Only the last 16MB is sent again, not the 24MB already there.
     expect(sent.map(offsetOf)).toEqual([24 * MB]);
   });
 
@@ -291,7 +281,6 @@ describe('picking the same file again', () => {
 
     respond = () => ({ status: 200, body: { received: 40 * MB } });
 
-    // Same name and size, saved again since.
     await api.upload(fakeFile({ size: 40 * MB, lastModified: 2000 }),
       { frameStart: 1, frameEnd: 1 });
 

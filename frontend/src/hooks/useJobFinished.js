@@ -6,7 +6,6 @@ export function notificationsAvailable() {
   return typeof window !== 'undefined' && 'Notification' in window;
 }
 
-// On submitting a job rather than on load: browsers refuse without a gesture.
 export function askToNotify() {
   if (!notificationsAvailable() || Notification.permission !== 'default') return;
   Notification.requestPermission();
@@ -29,8 +28,6 @@ export function useJobFinished(jobs) {
     const seen = previous.current;
     previous.current = new Map(jobs.map(job => [job.id, job.status]));
 
-    // The first list is the baseline: announcing it would fire for everything
-    // that finished while the tab was closed.
     if (!seen) return;
     if (!notificationsAvailable() || Notification.permission !== 'granted') return;
 

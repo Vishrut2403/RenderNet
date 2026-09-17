@@ -5,9 +5,6 @@ import path from 'path';
 import { spawnPlan } from './process-control.js';
 
 export function findBlenderExecutable() {
-  // A configured path wins, so the server and the render worker never disagree
-  // about which binary is in play - a health check reporting no Blender while
-  // renders succeed is worse than no health check.
   if (process.env.BLENDER_PATH) {
     return fs.existsSync(process.env.BLENDER_PATH) ? process.env.BLENDER_PATH : null;
   }
@@ -22,9 +19,6 @@ export function findBlenderExecutable() {
   }
 }
 
-// What this machine's Blender lists for -E. An operator who knows more than the
-// build does - EEVEE wants a GL context a headless box may not give it - can
-// narrow the list with WORKER_ENGINES.
 export function renderableEngines(blenderPath) {
   const configured = (process.env.WORKER_ENGINES || '')
     .split(',')
@@ -33,8 +27,6 @@ export function renderableEngines(blenderPath) {
 
   if (configured.length > 0) return configured;
 
-  // Through the same launcher a render uses: Windows refuses to spawn a .cmd
-  // or .bat directly, and BLENDER_PATH may well point at one.
   const plan = spawnPlan(blenderPath, ['-b', '--factory-startup', '-E', 'help']);
 
   const probe = spawnSync(plan.command, plan.args, {
@@ -51,12 +43,9 @@ export function renderableEngines(blenderPath) {
     .filter(line => /^[A-Z][A-Z_]+$/.test(line));
 }
 
-// In preference order: the first one a machine has is the one it renders with.
 const DEVICE_KINDS = ['OPTIX', 'CUDA', 'HIP', 'ONEAPI', 'METAL'];
 const DEVICE_MARKER = 'RENDERNET_DEVICES ';
 
-// Cycles lists the CPU under every backend so it can render alongside a card,
-// so a backend counts as present only when a device of its own kind is.
 const DEVICE_SCRIPT = `import bpy, json
 
 prefs = bpy.context.preferences.addons['cycles'].preferences
@@ -73,8 +62,6 @@ found = [kind for kind in kinds
 print('${DEVICE_MARKER}' + json.dumps(found))
 `;
 
-// Which Cycles backends this machine's Blender can actually reach, fastest
-// first. A file rather than --python-expr: cmd.exe cannot carry the newlines.
 export function usableDevices(blenderPath) {
   const scriptPath = path.join(os.tmpdir(), `rendernet-devices-${process.pid}.py`);
 
@@ -104,14 +91,10 @@ export function usableDevices(blenderPath) {
   } catch {
     return [];
   } finally {
-    try { fs.unlinkSync(scriptPath); } catch { /* nothing to remove */ }
+    try { fs.unlinkSync(scriptPath); } catch {}
   }
 }
 
-// What a Cycles render should be told to use. Blender exits non-zero on every
-// frame when it is named a device this build has none of, so a setting that
-// does not match the machine falls back to the best that does rather than
-// failing the job; 'wanted' is what was asked for when that happens.
 export function chooseDevice(blenderPath) {
   const wanted = (process.env.CYCLES_DEVICE || '').trim().toUpperCase();
 

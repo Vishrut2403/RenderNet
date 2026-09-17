@@ -14,9 +14,6 @@ import { dataPath, RETENTION_DAYS } from '../paths.js';
 
 const router = express.Router();
 
-// A session in the header, or a scoped token in the query string. The session
-// token is never accepted from the query: a URL is copied, bookmarked and kept
-// in history, and none of those are places to leave an account.
 function authenticateDownload(req, res, next) {
   const header = req.headers.authorization?.replace('Bearer ', '');
 
@@ -50,8 +47,6 @@ function authenticateDownload(req, res, next) {
   next();
 }
 
-// A scoped token was already checked against the job when it was handed out,
-// so all that is left is that it is being used on the job it was minted for.
 function canAccess(job, req) {
   if (req.scopedJobId !== undefined) return req.scopedJobId === job.id;
 
@@ -72,9 +67,6 @@ router.post('/:id/token', requireAuth, (req, res) => {
   res.json(mintDownloadToken(job.id, req.user.username));
 });
 
-// A job that stopped early keeps every frame it delivered, and those frames are
-// all that stands between the user and re-rendering the whole range. Cancelled
-// jobs are absent because cancelling deletes their output.
 function deliveredFrames(job) {
   if (job.status === 'completed') return true;
   return job.status === 'failed' && job.completedFrames > 0;
@@ -105,9 +97,6 @@ router.get('/files/render_:id/:filename', authenticateDownload, (req, res) => {
   res.sendFile(filePath);
 });
 
-// Serves while the job is still running, unlike the listing and the ZIP below.
-// The point is to catch a render going wrong at frame 30 rather than at 500,
-// which is no use once it has already stopped.
 router.get('/:id/preview', authenticateDownload, (req, res) => {
   const job = getJob(Number(req.params.id));
 
@@ -119,8 +108,6 @@ router.get('/:id/preview', authenticateDownload, (req, res) => {
     return res.status(403).json({ error: 'Access denied' });
   }
 
-  // A tiled still has nothing to show until its pieces are put together: the
-  // frames it delivers are regions, which on their own are not the picture.
   const latest = isTiled(job)
     ? (job.composite === 'ready'
       ? { filename: compositeName(job), frame: job.frameStart }
@@ -180,12 +167,8 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
       outputFolder: job.outputFolder,
       totalFiles: files.length,
       partial: job.status !== 'completed',
-      // API-relative and without a token: the caller knows its own API origin,
-      // and only it knows whether the token belongs in the URL at all.
       files: files.map(filename => ({
         filename,
-        // A browser cannot show an EXR, so the caller needs to know before it
-        // puts the file in an <img>.
         previewable: PREVIEWABLE_EXTENSIONS.includes(path.extname(filename).toLowerCase()),
         path: `/download/files/render_${jobId}/${encodeURIComponent(filename)}`
       }))
@@ -197,7 +180,6 @@ router.get('/:id/files', authenticateDownload, (req, res) => {
 });
 
 
-// The client asks for the job's video, not for a filename it worked out itself.
 router.get('/:id/video', authenticateDownload, (req, res) => {
   const jobId = Number(req.params.id);
   const job = getJob(jobId);
@@ -251,16 +233,10 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
     
     archive.pipe(res);
 
-    // Browsers ask for a download twice often enough - a speculative fetch, a
-    // click that supersedes it - and without this the abandoned one goes on
-    // compressing every frame to a socket that has already gone.
     res.on('close', () => {
       if (!res.writableFinished) archive.abort();
     });
 
-    // The files the listing offers and nothing else: a tiled still keeps its
-    // regions in a folder beside the picture, and handing those back would be
-    // handing back the pieces of what was asked for.
     const folder = dataPath(job.outputFolder);
 
     for (const filename of getFilesInDirectory(folder)) {
@@ -275,9 +251,6 @@ router.get('/:id/zip', authenticateDownload, (req, res) => {
         return;
       }
 
-      // Mid-stream there is no status left to change, and ending cleanly would
-      // hand back a truncated ZIP that looks complete. Destroying the socket is
-      // the only way left to tell the client the download is not whole.
       res.destroy(err);
     });
     

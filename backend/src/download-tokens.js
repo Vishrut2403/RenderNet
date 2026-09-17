@@ -1,9 +1,5 @@
 import crypto from 'crypto';
 
-// A link in a page and an <img> tag cannot carry an Authorization header, so a
-// download URL has to carry something. A session token would be the whole
-// account, sitting in browser history and in anything the URL is pasted into;
-// this is one job, for a few minutes, and read-only.
 const SECRET = crypto.randomBytes(32);
 const TTL_MS = 10 * 60 * 1000;
 
@@ -28,9 +24,6 @@ export function readDownloadToken(token) {
   const [jobId, expiresAt, username, signature] = parts;
   const expected = sign(`${jobId}.${expiresAt}.${username}`);
 
-  // Digests rather than the strings themselves: a signature of the same length
-  // in characters can be a different length in bytes, and timingSafeEqual
-  // throws on that rather than answering.
   const same = crypto.timingSafeEqual(
     crypto.createHash('sha256').update(signature).digest(),
     crypto.createHash('sha256').update(expected).digest()

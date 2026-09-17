@@ -1,9 +1,5 @@
 import fs from 'fs';
 
-// Configured with a key and a certificate, or not at all. A half-configured
-// pair stops the server rather than quietly serving plain HTTP: somebody who
-// asked for TLS and did not get it would never know, and passwords, session
-// tokens and scenes all cross the network either way.
 export function tlsOptions() {
   const key = process.env.TLS_KEY;
   const cert = process.env.TLS_CERT;

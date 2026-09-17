@@ -11,13 +11,10 @@ export const MAX_PAGE = 100;
 
 const RECENT_SHOWN = 3;
 
-// What a job looks like to the API: the record, plus the things that are only
-// known by asking somewhere else.
 function parseMissing(stored) {
   if (!stored) return null;
 
   try {
-    // Reports from before the farm asked for these files named them by path.
     return JSON.parse(stored)
       .map(file => (typeof file === 'string' ? file.split(/[\\/]/).pop() : file.name));
   } catch {
@@ -25,8 +22,6 @@ function parseMissing(stored) {
   }
 }
 
-// What the job is waiting to be given, with the path each one answers for. Only
-// a job the scene check stopped has any.
 function awaitingAssets(job) {
   if (job.assetCheck !== 'waiting') return [];
 
@@ -83,13 +78,10 @@ export function getJob(jobId) {
   };
 }
 
-// An admin sees the lot; everybody else sees their own. Null means no filter.
 function ownerFor(viewer) {
   return !viewer || viewer.role === 'admin' ? null : viewer.username;
 }
 
-// The order and the page come from the database; the records themselves come
-// from memory, which is where the live state is kept.
 function pageOf(owner, { status = null, before = null, limit }) {
   const ids = pageOfJobIds({ owner, status, before, limit });
   const page = ids.slice(0, limit).map(id => jobs.get(id)).filter(Boolean);
@@ -108,8 +100,6 @@ export function listJobs({ viewer, status = null, before = null, limit = DEFAULT
   };
 }
 
-// Every render in flight, the newest few, and totals over the lot: what no
-// single page can answer.
 export function jobsSummary(viewer) {
   const owner = ownerFor(viewer);
   const rendering = renderingJobIds(owner).map(id => jobs.get(id)).filter(Boolean);

@@ -18,8 +18,6 @@ router.get('/', (req, res) => {
 });
 
 router.get('/:name', (req, res) => {
-  // Matched against the listing rather than sanitised, so nothing outside it
-  // is reachable however the name is spelled.
   if (!listLogs().includes(req.params.name)) {
     return res.status(404).json({ error: 'No such log' });
   }

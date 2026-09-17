@@ -1,6 +1,3 @@
-// The frame lease layer. Lives beside the worker-endpoint tests because both
-// need db.js loaded in this process, and whichever suite imports it first fixes
-// the database path for the whole run.
 const TTL = 60_000;
 
 function sleep(ms) {
@@ -22,8 +19,6 @@ export async function checkLeases(db, results) {
       new Date(first.expiresAt).getTime() > Date.now(), first?.expiresAt);
 
     const second = one(JOB, 'worker-b');
-    // The whole point: worker B must not be handed the frame worker A is
-    // already rendering, or both would render and upload it.
     results.check('a second worker is given another frame, not the same one',
       second?.frames[0] !== first?.frames[0] && second?.leaseId !== first?.leaseId,
       JSON.stringify(second));
@@ -41,10 +36,6 @@ export async function checkLeases(db, results) {
     const SPAN = 900006;
     db.createFrames(SPAN, 1, 10);
 
-    // Not 1,2,3,4: frames are claimed in bit-reversed order, so four frames of
-    // ten reach from one end of the range to the other rather than covering its
-    // first two seconds. The first frame is still the first one claimed, which
-    // is what measures the span size and what a test frame renders.
     const span = db.leaseFrames(SPAN, 'worker-span', TTL, 4);
     results.check('a claim for several frames returns them under one lease',
       span?.frames.join(',') === '1,3,5,9', JSON.stringify(span));
@@ -76,10 +67,6 @@ export async function checkLeases(db, results) {
 
     console.log('\n  What a frame of a span is timed at');
 
-    // Every frame of a claim is stamped when the claim is taken, but Blender
-    // works through them one after another: a frame really began when the one
-    // before it finished. Timing from the claim would charge each frame for the
-    // whole span so far, and the estimates read straight off these numbers.
     const TIMED = 900007;
     const PAUSE = 150;
     db.createFrames(TIMED, 1, 3);
@@ -112,13 +99,9 @@ export async function checkLeases(db, results) {
       JSON.stringify(reclaimed));
     results.check('and it is a new lease, not the abandoned one',
       reclaimed?.leaseId !== abandoned?.leaseId);
-    // Otherwise the worker that vanished could come back and upload over the
-    // frame the new worker is now rendering.
     results.check('a lease whose frame has been taken over cannot be renewed',
       db.renewLease(abandoned.leaseId, TTL) === null);
 
-    // Checked on a frame nobody has reclaimed, so it is the expiry being
-    // refused rather than the lease having been overwritten.
     const STALE = 900004;
     db.createFrames(STALE, 1, 1);
     const stale = one(STALE, 'worker-slow', -1000);
@@ -174,9 +157,6 @@ export async function checkLeases(db, results) {
       one(LAST, 'worker-h')?.frames[0] === exhausted.frames[0],
       JSON.stringify(db.getFrames(LAST)));
 
-    // Reachable from the queue only for a frame recorded as done whose file has
-    // since gone missing, but the claim has to go with it either way: the frame
-    // is about to be handed to somebody else.
     const BACK = 900005;
     db.createFrames(BACK, 1, 1);
     const putBack = one(BACK, 'worker-i');

@@ -7,8 +7,6 @@ import { UPLOADS_DIR, RENDERS_DIR, SCRATCH_DIR, RETENTION_DAYS } from './paths.j
 import { pruneOldLogs } from './logger.js';
 import { sweepPartials } from './upload-sessions.js';
 
-// The workstation is switched off nightly, so in practice this gets one pass. A
-// file that disappears mid-pass must not cost the rest of it.
 function expired(target, cutoff) {
   try {
     return fs.statSync(target).mtimeMs < cutoff;
@@ -17,9 +15,6 @@ function expired(target, cutoff) {
   }
 }
 
-// A scene is a directory holding the one file, so its age is that file's rather
-// than the directory's - which changes only when something is put in or taken
-// out of it.
 function sceneAge(target) {
   try {
     const stats = fs.statSync(target);
@@ -37,12 +32,9 @@ function sceneAge(target) {
 
 export function cleanupOldFiles() {
   const now = Date.now();
-  // A backstop for files nobody came back for; the per-user quota is the limit.
   const cutoff = now - (RETENTION_DAYS * 24 * 60 * 60 * 1000);
 
   try {
-    // A job can sit queued for longer than the cutoff, and deleting by age alone
-    // would take its .blend before it renders.
     const active = getActiveJobPaths();
     const uploadsDir = UPLOADS_DIR;
     if (fs.existsSync(uploadsDir)) {

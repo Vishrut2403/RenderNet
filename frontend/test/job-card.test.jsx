@@ -1,5 +1,3 @@
-// What a job card offers depends entirely on the state the job is in, and
-// offering the wrong thing is how somebody deletes a render that is still going.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -62,7 +60,6 @@ describe('a job waiting to be approved', () => {
 
     expect(button(/render the rest/i)).toBeInTheDocument();
     expect(button(/^cancel$/i)).toBeInTheDocument();
-    // Hurrying a job that is waiting on a person would do nothing.
     expect(button(/mark urgent/i)).not.toBeInTheDocument();
   });
 

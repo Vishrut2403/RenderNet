@@ -1,5 +1,3 @@
-// A job list that does not grow without bound, and the counts and dashboard
-// totals that have to keep working once it stops being the whole list.
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, adminSession, signUp,
   login, auth, createFakeScene, submitJob
@@ -10,9 +8,6 @@ const SECRET = 'test-worker-secret';
 const JOBS = 12;
 const MINE = JOBS + 1 + 5;
 
-// The counts here are only stable while every job stays queued, so the farm is
-// told its one machine renders something else: the queue then starts nothing,
-// whether or not this runner has Blender.
 async function offerAnotherEngine(base) {
   await fetch(`${base}/worker/lease`, {
     method: 'POST',
@@ -68,7 +63,6 @@ export default async function run() {
         index === 0 || job.id < first.body.jobs[index - 1].id),
       JSON.stringify(first.body.jobs.map(job => job.id)));
 
-    // The tabs count every job the user has, not the handful on screen.
     results.check('the counts cover everything, not the page',
       first.body.counts.all === JOBS, String(first.body.counts.all));
     results.check('and break down by status',
@@ -99,8 +93,6 @@ export default async function run() {
       walked.every((id, index) => index === 0 || id < walked[index - 1]),
       JSON.stringify(walked));
 
-    // What the cursor is for: an offset would push everything down a row and
-    // show the reader the same job twice.
     console.log('\n  A job arriving mid-walk');
 
     const held = await page(base, painter, '?limit=5');
@@ -142,14 +134,10 @@ export default async function run() {
     const sculptor = await login(base, 'sculptor', 'sculptor-password');
     const theirs = await queueJobs(base, sculptor, scene, 4);
 
-    // Queued after theirs, so the newest rows in the farm belong to somebody
-    // else: a page cut before the owner is considered would come back short.
     await queueJobs(base, painter, scene, 5);
 
     const others = await page(base, sculptor, '?limit=3');
 
-    // Filtering after the page is cut would hand this reader three rows with
-    // somebody else's two taken out of them.
     results.check('a full page of their own, not a filtered one',
       others.body.jobs.length === 3, String(others.body.jobs.length));
     results.check('none of them anyone else\'s',

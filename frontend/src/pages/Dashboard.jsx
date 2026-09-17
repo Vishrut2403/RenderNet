@@ -60,8 +60,6 @@ function ActiveJob({ job, now, workers }) {
 }
 
 export function Dashboard({ notify }) {
-  // One request for what this page shows rather than every job the user has:
-  // the totals are counted server-side, so the payload does not grow with them.
   const live = useRef(false);
   const summaryPoll = usePolling(api.jobsSummary,
     result => jobsInterval(result?.rendering, live.current));

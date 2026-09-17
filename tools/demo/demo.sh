@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# A farm to look at, kept well away from anything real: its own data directory,
-# its own database, its own accounts. Runs in the foreground like any other dev
-# server, so Ctrl+C is how it stops.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -15,9 +12,6 @@ export SIGNUP_CODE="rendernet-demo"
 
 say() { printf '\033[36m%s\033[0m\n' "$*"; }
 
-# better-sqlite3 is compiled against one Node major and refuses to load under any
-# other, so this wants the exact version .node-version names rather than merely a
-# new enough one. The shell default is whatever the shell says.
 use_supported_node() {
   local want current shown bin
   want="$(cat "$ROOT/.node-version" 2>/dev/null || echo 22)"
@@ -62,8 +56,6 @@ answering() {
 build_if_stale() {
   local dist="$ROOT/frontend/dist/index.html"
 
-  # Anything under src/ newer than the bundle means the browser would be handed
-  # the previous build.
   if [ ! -f "$dist" ] || [ -n "$(find "$ROOT/frontend/src" "$ROOT/frontend/index.html" \
       -newer "$dist" -print -quit 2>/dev/null)" ]; then
     say "Building the frontend…"
@@ -80,8 +72,6 @@ start() {
   build_if_stale
   mkdir -p "$DATA"
 
-  # Waits for the server this command is about to become, then fills it. Only
-  # the first run needs it; a restart keeps whatever was rendered before.
   if [ ! -f "$DATA/seeded" ]; then
     (
       for _ in $(seq 1 60); do

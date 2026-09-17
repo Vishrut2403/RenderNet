@@ -8,8 +8,6 @@ export function Upload({ onSubmitted, notify }) {
   const [frameStart, setFrameStart] = useState(1);
   const [frameEnd, setFrameEnd] = useState(1);
   const [frameStep, setFrameStep] = useState(1);
-  // Asked for rather than hardcoded, so the form cannot offer an engine the
-  // server would refuse or miss one it has gained.
   const [engines, setEngines] = useState([]);
   const [engine, setEngine] = useState('');
   const [formats, setFormats] = useState([]);
@@ -20,13 +18,11 @@ export function Upload({ onSubmitted, notify }) {
   const [exrDepth, setExrDepth] = useState('16');
   const [jpegQuality, setJpegQuality] = useState(90);
   const [resolutionPercent, setResolutionPercent] = useState(100);
-  // Blank means whatever the scene already specifies.
   const [samples, setSamples] = useState('');
   const [urgent, setUrgent] = useState(false);
   const [skipAssetCheck, setSkipAssetCheck] = useState(false);
   const [allowScripts, setAllowScripts] = useState(false);
   const [testFirst, setTestFirst] = useState(false);
-  // Blank follows the start frame, wherever that ends up.
   const [testFrame, setTestFrame] = useState('');
   const [tiles, setTiles] = useState(0);
   const [progress, setProgress] = useState(null);
@@ -37,10 +33,7 @@ export function Upload({ onSubmitted, notify }) {
   const [error, setError] = useState('');
   const [dragging, setDragging] = useState(false);
   const inputRef = useRef(null);
-  // Fields the artist has set for themselves; the scene fills in the rest.
   const edited = useRef(new Set());
-  // Only the file picked most recently may write to the form: an earlier one
-  // whose upload is still finishing has been replaced.
   const picked = useRef(0);
 
   const frameCount = Number(frameEnd) < Number(frameStart)
@@ -90,8 +83,6 @@ export function Upload({ onSubmitted, notify }) {
     fill('formats', value => setChosen([value]), settings.format);
   }
 
-  // Sent as soon as it is chosen rather than on submit, so it can be read while
-  // the rest of the form is being filled in.
   async function prepare(selected) {
     const run = ++picked.current;
 
@@ -117,7 +108,6 @@ export function Upload({ onSubmitted, notify }) {
       setScene(report);
       if (report.read) apply(report.settings);
     } catch (err) {
-      // The file goes up with the form instead.
       if (picked.current !== run) return;
       setProgress(null);
       setError(err.message);
@@ -134,7 +124,6 @@ export function Upload({ onSubmitted, notify }) {
       return;
     }
 
-    // The same file chosen a second time is already on its way up.
     if (file && selected.name === file.name && selected.size === file.size
       && selected.lastModified === file.lastModified) return;
 

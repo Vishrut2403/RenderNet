@@ -1,5 +1,3 @@
-// A worker as its own process: it knows the API and nothing else. Started by the
-// server for this machine, or run by hand on another one.
 import './env.js';
 import RenderWorker from './render-worker.js';
 
@@ -9,7 +7,6 @@ const worker = new RenderWorker(workerId);
 
 let running = true;
 
-// An IPC channel means the server's pool started this and speaks for it.
 const alone = !process.send;
 
 function shutDown(signal) {
@@ -23,7 +20,6 @@ function shutDown(signal) {
 process.on('SIGTERM', () => shutDown('SIGTERM'));
 process.on('SIGINT', () => shutDown('SIGINT'));
 
-// Closes the moment the server goes, however it went.
 if (!alone) {
   process.on('disconnect', () => shutDown('the server that started it has gone'));
 }

@@ -1,7 +1,3 @@
-// Worker callback endpoints, exercised in-process against the real queue. A
-// stand-in for Blender sits on its first frame for a minute, so the callbacks
-// run against a job that is genuinely mid-render rather than one forced into
-// that state by hand.
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -24,19 +20,12 @@ export default async function run() {
     ['WORKER_SECRET', 'BLENDER_PATH', 'API_URL', 'DB_PATH', 'DATA_DIR', 'MAX_FRAME_SPAN',
       'MAX_FRAME_BYTES']);
 
-  // Set before importing queue.js: db.js and render-worker.js read these at
-  // module load.
   process.env.WORKER_SECRET = SECRET;
   process.env.BLENDER_PATH = createFakeBlender(sandbox);
   process.env.API_URL = `http://127.0.0.1:${PORT}`;
   process.env.DATA_DIR = sandbox;
   process.env.DB_PATH = path.join(sandbox, 'worker-test.db');
-  // The callbacks below need frames the running worker has not taken, and the
-  // job it sits on is short. Spans are proved against the endpoints by claiming
-  // one here by hand rather than by leaving the worker room to take them.
   process.env.MAX_FRAME_SPAN = '1';
-  // Small enough to reach without moving megabytes about; what matters is that
-  // the cap is a setting rather than a number written into the route.
   process.env.MAX_FRAME_BYTES = '2048';
 
   process.chdir(sandbox);
@@ -48,11 +37,8 @@ export default async function run() {
   const db = await import('../src/db.js');
   const workerRouter = (await import('../src/routes/worker.js')).default;
   const registry = await import('../src/worker-registry.js');
-  // index.js does this at boot; this suite mounts the router on its own.
   const tokens = await import('../src/worker-tokens.js');
   tokens.importSharedSecret();
-  // Frames may only be sent by the machine holding the claim, so the stand-in
-  // claims them as the machine whose token it sends.
   const standIn = tokens.machineFor(SECRET).id;
 
   const app = express();
@@ -103,9 +89,6 @@ export default async function run() {
     let res;
     let body;
 
-    // This one occupies the worker for a minute so the callbacks below run
-    // against a job that is genuinely mid-render; the next stays queued behind
-    // it, which is the state a cancellation has to be safe in.
     const jobId = submit('hang.blend');
     const queuedId = submit('hang-two.blend');
 
@@ -128,8 +111,6 @@ export default async function run() {
     });
     results.check('wrong secret is rejected', res.status === 401, `got ${res.status}`);
 
-    // Same character count as the secret, one byte longer once encoded, which
-    // is what a raw timingSafeEqual comparison throws on.
     res = await fetch(`${base}/jobs/${jobId}/progress`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-worker-token': 'tést-secret-abc123' },
@@ -149,18 +130,11 @@ export default async function run() {
       'base64'
     );
 
-    // A frame may only be sent by whoever holds the claim on it, so this stands
-    // in for a worker and claims everything the running one has not already
-    // taken - which is frame 1, the one the stand-in Blender is sitting on.
-    // The worker runs in its own process now, so it takes a moment to start up
-    // and claim the frame it is going to sit on.
     await waitForCondition(
       () => db.liveLeases().some(lease => lease.jobId === jobId && lease.frame === 1),
       { label: 'the worker to claim its first frame' }
     );
 
-    // Taken as one span and then singly, so both the frames a single claim
-    // covers and the frames it does not are under test below.
     const claims = new Map();
     const span = db.leaseFrames(jobId, standIn, 600_000, 2);
 
@@ -209,8 +183,6 @@ export default async function run() {
       refused.status === 413 && /may not exceed/.test((await refused.json()).error ?? ''),
       `got ${refused.status}`);
 
-    // A render cut short leaves a file with the right name and the wrong bytes,
-    // which nothing downstream would notice until somebody opened the ZIP.
     const truncated = new FormData();
     truncated.set('frame', new File([Buffer.alloc(64)], 'frame.png', { type: 'image/png' }));
 
@@ -238,8 +210,6 @@ export default async function run() {
     upload = await uploadFrame(2, claims.get(2));
     results.check('a second frame advances progress to 50%', upload.body.progress === 50,
       `got ${upload.body.progress}`);
-    // Frames 2 and 3 were claimed together, so the same lease id had to carry
-    // both of them - one claim, several frames.
     results.check('every frame a span covers may be sent under its one claim',
       claims.get(2) === claims.get(3) && upload.status === 200, claims.get(2));
 
@@ -266,8 +236,6 @@ export default async function run() {
     results.check('non-integer frame rejected', res.status === 400, `got ${res.status}`);
 
     console.log('\n  Frame retries');
-    // A frame that failed goes back into circulation without its claim, so each
-    // attempt is a fresh one - which is what lets another worker pick it up.
     const failFrame = async () => {
       if (!db.getLease(claims.get(4))) {
         const again = db.leaseFrames(jobId, standIn, 600_000, 1);
@@ -336,8 +304,6 @@ export default async function run() {
 
     console.log('\n  Handing over a frame instead of sending it');
 
-    // A renderer on the server's own machine has already written the frame to a
-    // disk the server can read, so it hands over a path rather than the bytes.
     db.markFramePending(jobId, 4);
     const local = tokens.localMachineToken();
     const held = db.leaseFrames(jobId, tokens.machineFor(local).id, 600_000, 1);
@@ -359,7 +325,6 @@ export default async function run() {
       return { status: response.status, body: await response.json().catch(() => ({})) };
     };
 
-    // Somebody else's file, named by a machine that has no business naming it.
     const outside = path.join(sandbox, 'users.json');
     fs.writeFileSync(outside, 'not a frame');
 
@@ -378,8 +343,6 @@ export default async function run() {
     results.check('and it lands where an uploaded frame would',
       fs.existsSync(path.join(sandbox, views.getJob(jobId).outputFolder, 'frame_0004.png')));
 
-    // Naming a file is only safe from a machine that shares this one's disk.
-    // Anywhere else it would be pointing at somebody else's.
     db.markFramePending(jobId, 4);
     const elsewhere = db.leaseFrames(jobId, standIn, 600_000, 1);
     const again = path.join(scratch, 'frame_0004.png');
@@ -397,16 +360,12 @@ export default async function run() {
 
     console.log('\n  A machine part way through a span is still here');
 
-    // A worker asks for work once a span, so on a long one it can go minutes
-    // without saying anything but the renewals - and a machine dropped from the
-    // registry stops counting towards how wide the next span may be.
     db.markFramePending(jobId, 4);
     const busy = db.leaseFrames(jobId, 'busy-machine', 600_000, 1);
 
     registry.announceWorker({ workerId: 'busy-machine', name: 'busy', engines: ['CYCLES'] });
     registry.announceWorker({ workerId: 'quiet-machine', name: 'quiet', engines: ['CYCLES'] });
 
-    // Six minutes on, past the five a machine is counted as current for.
     const realNow = Date.now;
     Date.now = () => realNow() + 6 * 60_000;
 
@@ -425,7 +384,6 @@ export default async function run() {
     }
 
   } finally {
-    // Stops the stand-in Blender still sitting on its first frame.
     for (const job of jobs.values()) {
       if (job.status === 'rendering' || job.status === 'pending') queue.cancelJob(job.id);
     }

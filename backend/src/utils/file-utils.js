@@ -19,8 +19,6 @@ export function deleteFile(filePath) {
   return false;
 }
 
-// Streamed rather than read whole: an upload may be gigabytes, and this runs on
-// the request that finishes one.
 export function hashFile(filePath) {
   return new Promise((resolve, reject) => {
     const hash = crypto.createHash('sha256');
@@ -32,8 +30,6 @@ export function hashFile(filePath) {
   });
 }
 
-// Reads only the first few bytes: a frame may be hundreds of megabytes, and all
-// that is in question is whether it starts the way its format does.
 export function startsWith(filePath, bytes) {
   let handle = null;
 
@@ -51,8 +47,6 @@ export function startsWith(filePath, bytes) {
   }
 }
 
-// Null when the check itself fails: a farm that stops rendering because it
-// could not read the filesystem is worse than one that tries and fails loudly.
 export function freeBytes(dir) {
   try {
     const stats = fs.statfsSync(dir);
@@ -63,9 +57,6 @@ export function freeBytes(dir) {
   }
 }
 
-// Files only: a tiled still keeps its pieces in a folder beside them, and a
-// directory name in the listing would be offered as a download and added to
-// the ZIP as one.
 export function getFilesInDirectory(dirPath) {
   try {
     if (!fs.existsSync(dirPath)) return [];

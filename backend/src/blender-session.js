@@ -3,17 +3,12 @@ import { launch, terminate } from './utils/process-control.js';
 const OUTPUT_TAIL = 4000;
 const KILL_GRACE_MS = 5000;
 
-// Said by the daemon script as each frame's files land, so a span hands its
-// frames back as it goes rather than all at the end.
 export const FRAME_DONE = 'RENDERNET_FRAME_DONE ';
 
 const READY = 'RENDERNET_READY';
 const SPAN_DONE = 'RENDERNET_SPAN_DONE';
 const SPAN_FAILED = 'RENDERNET_SPAN_FAILED ';
 
-// Read once at startup, then handed a span of frames at a time as JSON on
-// standard input. End of input ends it, so a Blender whose worker was killed
-// outright does not sit holding the scene.
 export const DAEMON_SCRIPT = `import bpy, sys, json
 
 PATTERN = bpy.context.scene.render.filepath
@@ -24,8 +19,6 @@ def render(frames):
 
     for number in frames:
         scene.frame_set(number)
-        # write_still writes render.filepath as it stands, where Blender's own
-        # -f would expand the padding in it, so the number is put in here.
         scene.render.filepath = PATTERN.replace('####', str(number).zfill(4))
         bpy.ops.render.render(write_still=True)
 
@@ -49,19 +42,12 @@ while True:
     print('${SPAN_DONE}', flush=True)
 `;
 
-// What makes two launches the same launch. Only the variables this farm sets
-// are compared: everything else in the environment is fixed for the life of the
-// worker process.
 export function sessionKey(executable, args, env) {
   const ours = Object.entries(env).filter(([name]) => name.startsWith('RENDERNET_')).sort();
 
   return JSON.stringify([executable, args, ours]);
 }
 
-// One Blender, held open across the claims it can serve. Reused only when the
-// command line and environment would have been identical, so anything that used
-// to be decided at launch - the scene, the engine, the output pattern, the
-// region of a tile - still is.
 export class BlenderSession {
   constructor(executable, args, env) {
     this.executable = executable;
@@ -92,11 +78,7 @@ export class BlenderSession {
 
       this.process = blender;
 
-      // Both pipes have to be drained. An unread one fills its buffer and
-      // blocks Blender mid-write, and nothing here would ever time out.
       blender.stdout.on('data', data => this.readOutput(data));
-      // A span written to a Blender that has just died is an EPIPE on this
-      // stream rather than a throw, and an unhandled one would end the worker.
       blender.stdin.on('error', () => {});
       blender.stderr.on('data', (data) => {
         this.stderr = (this.stderr + data).slice(-OUTPUT_TAIL);
@@ -131,8 +113,6 @@ export class BlenderSession {
   readOutput(data) {
     this.stdout = (this.stdout + data).slice(-OUTPUT_TAIL);
 
-    // Read a line at a time: a chunk can end mid-marker, and half a frame
-    // number is worse than none.
     this.partial += data;
 
     const lines = this.partial.split('\n');
@@ -168,7 +148,6 @@ export class BlenderSession {
       return;
     }
 
-    // Blender reports most failures on stdout, not stderr.
     const detail = (this.stderr.trim() || this.stdout.trim()).slice(-500);
 
     this.settle(code === 0
@@ -187,7 +166,6 @@ export class BlenderSession {
     else waiting.resolve();
   }
 
-  // Resolves once the process is actually gone.
   kill() {
     const running = this.process;
 
@@ -196,7 +174,6 @@ export class BlenderSession {
     return new Promise((resolve) => {
       running.on('close', () => resolve());
 
-      // A Blender that ignores the stop request keeps the queue waiting.
       if (terminate(running)) {
         this.killTimer = setTimeout(() => running.kill('SIGKILL'), KILL_GRACE_MS);
         this.killTimer.unref?.();

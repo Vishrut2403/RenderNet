@@ -1,8 +1,5 @@
 import cors from 'cors';
 
-// The app is served by this process from FRONTEND_DIST, so everything it needs
-// comes from the same origin. Styles are the one exception: the boot message in
-// index.html is inline, and the progress bar sets its own width.
 const POLICY = [
   "default-src 'self'",
   "script-src 'self'",
@@ -16,8 +13,6 @@ const POLICY = [
   "frame-ancestors 'none'"
 ].join('; ');
 
-// Only over TLS: promising a browser that this host is HTTPS-only, on a farm
-// that is not, would lock people out of their own workstation for a year.
 const HSTS = process.env.TLS_KEY && process.env.TLS_CERT
   ? 'max-age=31536000'
   : null;
@@ -40,9 +35,6 @@ function allowedOrigins() {
     .filter(Boolean);
 }
 
-// A browser only asks about cross-origin requests, and the UI this server ships
-// is same-origin. Anything else has to be named, so a page on another site
-// cannot call the API with whatever the visitor's browser will send.
 export function crossOrigin() {
   const allowed = allowedOrigins();
 

@@ -1,7 +1,3 @@
-// Scenes are stored by what is in them, so the same file sent again is the copy
-// already on disk. What that buys is one file and one charge against the quota
-// however many jobs render it; what it costs is that the file outlives any one
-// of them, which is what most of this is about. Runs without Blender.
 import fs from 'fs';
 import path from 'path';
 import {
@@ -17,8 +13,6 @@ function storedScenes(sandbox) {
 
   if (!fs.existsSync(uploads)) return [];
 
-  // Everything the stand-in records lives here too; the scenes are the
-  // directories, one per hash.
   return fs.readdirSync(uploads, { withFileTypes: true })
     .filter(entry => entry.isDirectory())
     .map(entry => entry.name);
@@ -74,7 +68,6 @@ export default async function run() {
     console.log('\n  A scene sent under another name');
 
     const renamed = createFakeScene(sandbox, 'chair-final.blend');
-    // Same bytes, different name: what is inside it is what decides.
     fs.writeFileSync(renamed, fs.readFileSync(scene));
 
     const third = await submit(renamed);
@@ -97,8 +90,6 @@ export default async function run() {
 
     console.log('\n  What a shared scene outlives');
 
-    // Cancelling is what clears a job's files, and these are queued rather than
-    // rendered, so it is the one that has to respect the sharing.
     const drop = id =>
       status(`${base}/jobs/${id}/cancel`, { method: 'POST', headers: auth(token) });
 
@@ -118,8 +109,6 @@ export default async function run() {
 
     console.log('\n  A job refused after its bytes have arrived');
 
-    // The scene is on disk before the settings are looked at, so refusing has
-    // to put it back - without taking the copy another job is rendering.
     const refused = await submit(createFakeScene(sandbox, 'table.blend'), { frameEnd: 0 });
     const still = await jobOf(other.body.jobId);
 
@@ -147,8 +136,6 @@ export default async function run() {
 
     results.check('the second of them is accepted', theirs.status === 200,
       JSON.stringify(theirs.body));
-    // One file on disk, but each of them is charged: otherwise whoever sent it
-    // second renders for free and a quota stops meaning anything.
     results.check('and charged for it even though the bytes were already here',
       await usageOf(base, sculptor) > before,
       `${before} then ${await usageOf(base, sculptor)}`);
@@ -173,8 +160,6 @@ export default async function run() {
   return results;
 }
 
-// The checks above want nothing rendering underneath them, so the farm only
-// gets a worker once they are done.
 async function restartWithWorker(server, sandbox, port) {
   await stopServer(server);
 

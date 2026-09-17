@@ -1,7 +1,3 @@
-// End-to-end HTTP tests against a real server instance in a sandbox directory.
-// What only a real Blender can answer is checked here and skipped without one;
-// what merely needs frames on disk lives in the downloads suite, which runs
-// everywhere.
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -23,7 +19,6 @@ export default async function run() {
   let server;
 
   try {
-    // Seeded before the server boots so the one-time users.json import runs.
     const legacyHash = crypto.createHash('sha256').update('legacypass').digest('hex');
     fs.writeFileSync(path.join(sandbox, 'users.json'), JSON.stringify({
       admin: {
@@ -72,8 +67,6 @@ export default async function run() {
         body: JSON.stringify({ username: 'legacyuser', password: 'wrong' })
       }) === 401);
 
-    // Only the extension is checked at upload time, so validation and access
-    // control can be exercised without invoking Blender.
     const stubBlend = path.join(sandbox, 'stub.blend');
     fs.writeFileSync(stubBlend, Buffer.alloc(1024, 7));
 
@@ -127,8 +120,6 @@ export default async function run() {
     results.check('new signups are hashed with bcrypt',
       algoFor('tester').hashAlgo === 'bcrypt' && algoFor('tester').passwordHash.startsWith('$2b$'));
 
-    // Signed in somewhere else as well, which is what a changed password has to
-    // reach: whoever knew the old one is still holding a session opened with it.
     const elsewhere = await login(base, 'tester', 'testpass123');
 
     const changed = await fetch(`${base}/auth/change-password`, {
@@ -150,9 +141,6 @@ export default async function run() {
         body: JSON.stringify({ username: 'tester', password: 'testpass123' })
       }) === 401);
 
-    // A JSON body can carry any shape. An object reaching SQLite as a bind
-    // parameter throws, and an async route that throws is an unhandled
-    // rejection - which takes the whole server down, render and all.
     console.log('\n  Malformed credentials do not take the server down');
     const post = (route, body) => status(`${base}${route}`, {
       method: 'POST',
@@ -195,14 +183,10 @@ export default async function run() {
     results.check('and says how long to wait', !!locked.headers.get('retry-after'),
       String(locked.headers.get('retry-after')));
 
-    // The point of a lockout: guessing is stopped even if the next guess is
-    // the right one, so an attacker cannot simply keep going.
     const rightButLocked = await tryLogin('correcthorse');
     results.check('the correct password is refused while locked out',
       rightButLocked.status === 429, `got ${rightButLocked.status}`);
 
-    // A name that does not exist is counted the same way, so a lockout never
-    // reveals which accounts are real.
     const ghost = (password) => fetch(`${base}/auth/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -228,8 +212,6 @@ export default async function run() {
         && offered.engines.every(entry => entry.id && entry.label),
       JSON.stringify(offered.engines));
 
-    // The form offers exactly these, so anything here the upload route would
-    // refuse is an option that fails only once somebody picks it.
     const refused = [];
     for (const { id } of offered.engines ?? []) {
       const attempt = await submitJob(base, adminToken, stubBlend, {
@@ -297,8 +279,6 @@ export default async function run() {
     const users = await (await fetch(`${base}/auth/users`, { headers: auth(adminToken) })).text();
     results.check('password hashes are not exposed', !users.includes('passwordHash'));
 
-    // A throwaway account: resetting one still in use below would lock the
-    // token those checks depend on and pass them for the wrong reason.
     await signUp(base, 'resetme', 'originalpass');
     const inUse = await login(base, 'resetme', 'originalpass');
 
@@ -312,7 +292,6 @@ export default async function run() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'resetme', password: 'reset-by-admin' })
     })).json();
-    // The admin who set it knows it, so the owner has to replace it.
     results.check('an admin reset hands the account back locked',
       afterReset.mustChangePassword === true, JSON.stringify(afterReset.mustChangePassword));
     results.check('and signs out whoever was in it',
@@ -348,8 +327,6 @@ export default async function run() {
     results.check('frames written to disk',
       fs.readdirSync(path.join(sandbox, finished.outputFolder)).length === 2);
 
-    // The dashboard totals are summed in SQL rather than by adding up a list of
-    // every job the farm has run, so the arithmetic is worth reading back.
     const totals = await (await fetch(`${base}/jobs/summary`,
       { headers: auth(adminToken) })).json();
     const spent = new Date(finished.completedAt) - new Date(finished.startedAt);
@@ -359,10 +336,6 @@ export default async function run() {
     results.check('and how long the farm spent on them',
       Math.abs(totals.renderMs - spent) < 1000, `${totals.renderMs} against ${spent}`);
 
-    // The upload form offers these by name and the worker passes them straight
-    // to -E. Blender keeps renamed identifiers working as aliases for a while,
-    // so drifting from its canonical list is a warning rather than a breakage -
-    // but it is the only notice there is before the alias goes.
     const accepted = blenderEngines();
     const unknown = ENGINE_IDS.filter(engine => !accepted.includes(engine));
 
@@ -370,8 +343,6 @@ export default async function run() {
       unknown.length === 0,
       `${JSON.stringify(unknown)} not in ${JSON.stringify(accepted)}`);
 
-    // The stand-in can only mimic the render_post handler. This is the one
-    // place the script itself runs inside a real Blender.
     const multi = await submitJob(base, adminToken, blend, {
       frameStart: 1, frameEnd: 1, formats: ['PNG', 'JPEG', 'OPEN_EXR']
     });
@@ -385,15 +356,12 @@ export default async function run() {
     results.check('all three files are there',
       produced.join(',') === 'frame_0001.exr,frame_0001.jpg,frame_0001.png', produced.join(','));
 
-    // Each format has to be its own encoding, not the same bytes renamed.
     const bytes = name => fs.readFileSync(path.join(sandbox, multiJob.outputFolder, name));
     results.check('the PNG is a PNG', bytes('frame_0001.png').subarray(1, 4).toString() === 'PNG');
     results.check('the JPEG is a JPEG', bytes('frame_0001.jpg').subarray(0, 2).toString('hex') === 'ffd8');
     results.check('the EXR is an EXR',
       bytes('frame_0001.exr').subarray(0, 4).toString('hex') === '762f3101');
 
-    // The codec and the depth are only visible in the file Blender wrote, and
-    // the default is the one that decides how much disk every job costs.
     const written = exrHeader(path.join(sandbox, multiJob.outputFolder, 'frame_0001.exr'));
     results.check('the EXR is written half float, not the 32-bit a scene defaults to',
       written.pixelTypes.length > 0 && written.pixelTypes.every(type => type === EXR_HALF),
@@ -417,15 +385,11 @@ export default async function run() {
         && other.pixelTypes.every(type => type === EXR_FLOAT),
       `${other.compression} / ${JSON.stringify(other.pixelTypes)}`);
 
-    // The JPEG is saved from the finished render rather than by the render
-    // itself, so its quality proves the handler applies settings too.
     const sizeOf = (job, name) => fs.statSync(path.join(sandbox, job.outputFolder, name)).size;
     results.check('and a JPEG at quality 10 is smaller than the same frame at 90',
       sizeOf(lossyJob, 'frame_0001.jpg') < sizeOf(multiJob, 'frame_0001.jpg'),
       `${sizeOf(lossyJob, 'frame_0001.jpg')} vs ${sizeOf(multiJob, 'frame_0001.jpg')}`);
 
-    // The format is forced on the command line, but the depth is a separate
-    // setting the scene carries, and a 16-bit PNG is not what the form offers.
     const deep = createFixtureBlend(sandbox, {
       name: 'deep.blend', extra: "s.render.image_settings.color_depth = '16'"
     });
@@ -433,16 +397,10 @@ export default async function run() {
       frameStart: 1, frameEnd: 1, formats: ['PNG']
     })).body.jobId);
 
-    // Byte 24 of a PNG is the bit depth in its header.
     const pngDepth = fs.readFileSync(path.join(sandbox, deepJob.outputFolder, 'frame_0001.png'))[24];
     results.check('a scene set to 16-bit PNG is still written at the 8 the form promises',
       pngDepth === 8, String(pngDepth));
 
-    // The asset check is a script run inside Blender against a real scene, so a
-    // scene that genuinely reaches for a file that is not there is the only way
-    // to know it reports one. The texture is linked to the shader and strongly
-    // red, so a frame rendered without it is Blender's magenta rather than a
-    // picture that merely looks slightly different.
     const texture = path.join(sandbox, 'wood.png');
     const wanting = createFixtureBlend(sandbox, {
       name: 'wanting.blend',
@@ -458,12 +416,8 @@ export default async function run() {
         `node.image = bpy.data.images.load(r'${texture}')`,
         "links = mat.node_tree.links",
         "links.new(node.outputs['Color'], mat.node_tree.nodes['Principled BSDF'].inputs['Base Color'])",
-        // Into the slot the faces actually use: appending would leave the cube
-        // on whatever material it already had.
         "bpy.data.objects['Cube'].data.materials.clear()",
         "bpy.data.objects['Cube'].data.materials.append(mat)",
-        // A black world, so what the frame averages to is the textured cube
-        // rather than the backdrop around it.
         "bpy.context.scene.world.node_tree.nodes['Background']"
         + '.inputs[0].default_value = (0.0, 0.0, 0.0, 1.0)'
       ].join('\n')
@@ -485,8 +439,6 @@ export default async function run() {
     results.check('and the file it wanted is named',
       wantingJob.missingAssets?.includes('wood.png'), JSON.stringify(wantingJob.missingAssets));
 
-    // What the artist would do: hand over the one file rather than pack and
-    // upload the whole scene again.
     const handOver = new FormData();
     handOver.set('for', wantingJob.awaitingAssets[0].stored);
     handOver.set('asset', new File([fs.readFileSync(texture)], 'wood.png', { type: 'image/png' }));
@@ -503,21 +455,15 @@ export default async function run() {
       textured.status === 'completed' && textured.completedFrames === 1,
       `${textured.status}: ${textured.error || ''}`);
 
-    // The proof that the datablock was really repointed: Blender renders a
-    // texture it cannot find as magenta, where this one is red.
     const colour = meanColour(path.join(sandbox, textured.outputFolder, 'frame_0001.png'));
 
     results.check('and it is the texture that was supplied, not the missing-file magenta',
       colour !== null && colour.red > colour.blue * 2,
       JSON.stringify(colour));
 
-    // The ordinary fixture has nothing outside itself, so the same check has to
-    // let it through - a check that stopped everything would be worse than none.
     results.check('while a self-contained scene is passed as sound',
       multiJob.assetCheck === 'ok', multiJob.assetCheck);
 
-    // A stub ffmpeg proves the plumbing; only the real one proves that what
-    // comes out is a video a player will open.
     if (!ffmpegAvailable()) {
       results.skipped('the frames are encoded into a playable video', 'ffmpeg not installed');
     } else {
@@ -534,15 +480,12 @@ export default async function run() {
 
       const video = path.join(sandbox, finished.outputFolder, `render_${jobId}.mp4`);
 
-      // 'ftyp' at byte four is what a player looks for.
       results.check('the frames are encoded into a playable video',
         encoded && fs.existsSync(video)
           && fs.readFileSync(video).subarray(4, 8).toString() === 'ftyp',
         encoded ? `${fs.existsSync(video)}` : 'ffmpeg did not finish');
     }
 
-    // The expression is built by hand and handed to Blender's own interpreter,
-    // so the only proof it is valid Python against a real scene is running it.
     const tuned = await submitJob(base, adminToken, blend, {
       frameStart: 1, frameEnd: 1, resolutionPercent: 25, samples: 2
     });

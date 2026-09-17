@@ -1,6 +1,3 @@
-// The platform decisions are taken as data so both branches can be checked from
-// either OS. Windows is where the project deploys and the one place the rest of
-// the suite cannot reach from a developer machine.
 import { spawn } from 'child_process';
 import { createResults, waitForCondition } from './helpers.mjs';
 import { spawnPlan, terminate } from '../src/utils/process-control.js';
@@ -9,11 +6,6 @@ function commandLine(plan) {
   return plan.args[plan.args.length - 1];
 }
 
-// CommandLineToArgvW, which is how every Windows program recovers its argv.
-// Running the generated line back through it is the closest this can get to
-// Windows from a developer machine: cmd /s strips the outer quotes, the .cmd
-// re-emits the rest through %*, and the process at the end parses it by these
-// rules. A quoting bug shows up here as an argument that comes back wrong.
 function parseWindowsArgv(line) {
   const argv = [];
   let current = '';
@@ -61,7 +53,6 @@ function parseWindowsArgv(line) {
   return argv;
 }
 
-// What cmd /s does before handing the rest on.
 function stripOuterQuotes(line) {
   return line.startsWith('"') && line.endsWith('"') ? line.slice(1, -1) : line;
 }
@@ -98,8 +89,6 @@ export default async function run() {
   results.check('an argument with a space survives quoted',
     line.includes('"C:\\my scenes\\a.blend"'), line);
 
-  // A trailing backslash before the closing quote would escape it and swallow
-  // the rest of the command line - the classic Windows quoting bug.
   const trailing = commandLine(spawnPlan('C:\\a b\\x.bat', ['C:\\out dir\\'], 'win32'));
   results.check('a trailing backslash is doubled so it cannot escape the quote',
     trailing.includes('"C:\\out dir\\\\"'), trailing);
@@ -144,9 +133,6 @@ export default async function run() {
     await waitForCondition(() => survivor.exitCode !== null || survivor.signalCode !== null,
       { label: 'the child to stop' }));
 
-  // taskkill is forceful already, so there is nothing left to escalate to. Off
-  // Windows it is absent and the fallback kill is what stops the child, which
-  // is the path that runs if taskkill is ever missing on Windows too.
   const tree = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
   await waitForCondition(() => tree.pid !== undefined, { label: 'the child to start' });
 

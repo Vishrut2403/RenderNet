@@ -17,27 +17,16 @@ const WORKER_BASE = `${API_URL}/api/worker`;
 const OUTPUT_TAIL = 4000;
 const KILL_GRACE_MS = 5000;
 const RENEW_EVERY_MS = 5000;
-// How long a Blender with nothing left to render is kept open for the next
-// claim. Zero closes it after every span, which is what a machine short of
-// memory wants.
 const IDLE_MS = Number(process.env.BLENDER_IDLE_MS ?? 60000);
 
-// Asked of Blender once, on the first launch that needs it: unset means the
-// fastest device this machine has rather than the CPU.
 let chosenDevice = null;
 
 const SLOT = process.env.WORKER_ID || '';
 
-// A .blend can carry Python that Blender runs as it opens the file, so it is
-// refused unless whoever uploaded this one said to allow it. Scripts of ours
-// still run either way: -P is explicit rather than something the file asked for.
+// Both flags explicit, so the workstation's auto-run preference never decides.
 function scriptsIn(allowed) {
-  // Said both ways: leaving the flag off would hand the decision back to the
-  // workstation's own preference, which is exactly what this is here to stop.
   return allowed ? ['--enable-autoexec'] : ['--disable-autoexec'];
 }
-// Zero asks the server to answer at once, which is how a farm without the
-// event bus behaves and what the idle loop is still there for.
 const WAIT_SECONDS = Number(process.env.WORKER_WAIT_SECONDS ?? 25);
 
 async function progressFrom(response) {
@@ -52,7 +41,6 @@ function cyclesDevice() {
       console.log(`⚠️  Cycles: this Blender offers no ${chosenDevice.wanted} device, `
         + `rendering with ${chosenDevice.device}`);
     } else if (!SLOT || SLOT.endsWith('-0')) {
-      // Every worker here probes the same Blender and would say the same thing.
       console.log(`Cycles renders here on ${chosenDevice.device}`);
     }
   }
@@ -63,9 +51,6 @@ function cyclesDevice() {
 const SCRATCH_DIR = process.env.WORKER_SCRATCH_DIR
   || path.join(os.tmpdir(), 'rendernet-worker');
 
-// Blender writes one format per render; the rest are saved from the finished
-// Render Result. A file rather than --python-expr because a command line cannot
-// carry newlines through cmd.exe on Windows.
 const TILE_SCRIPT = `import bpy, os
 ${GRID_PYTHON}
 
@@ -97,8 +82,6 @@ EXR_DEPTH = os.environ.get('RENDERNET_EXR_DEPTH', '')
 JPEG_QUALITY = os.environ.get('RENDERNET_JPEG_QUALITY', '')
 
 
-# Depth and quality are one setting shared by every format rather than one per
-# format, so each format has to state its own or inherit the last one written.
 def use_format(settings, name):
     settings.file_format = name
 
@@ -120,8 +103,6 @@ def save_extras(scene, _depsgraph=None):
     if result is None:
         return
 
-    # One launch may render a span of frames, so the name comes from the frame
-    # in hand rather than from a single stem passed in.
     base = os.path.join(os.environ['RENDERNET_FRAME_DIR'],
                         os.environ['RENDERNET_FRAME_PREFIX']
                         + str(scene.frame_current).zfill(4))
@@ -135,9 +116,6 @@ def save_extras(scene, _depsgraph=None):
         use_format(settings, PRIMARY)
 
 
-# render_write runs after render_post and after Blender has written the frame
-# itself, so by here every file for this frame is on disk. Flushed because the
-# worker reads this as it goes.
 def announce(scene, _depsgraph=None):
     print('${FRAME_DONE}%d' % scene.frame_current, flush=True)
 
@@ -157,9 +135,6 @@ if EXTRAS:
 bpy.app.handlers.render_write.append(announce)
 `;
 
-// Scenes are stored as uploads/<hash>/<name>, so the directory a scene is in
-// says what it is. Anything else - a job from before scenes were stored that
-// way - falls back to the job it belongs to.
 function sceneName(blendPath) {
   const holding = path.basename(path.dirname(blendPath ?? ''));
 
@@ -176,9 +151,6 @@ function describeSpan(frames) {
   return `frames ${frames[0]}-${frames[frames.length - 1]} (${frames.length})`;
 }
 
-// What one frame of a span actually wrote. Null when the frame Blender was
-// meant to produce is not there, which is how a span reports a frame that
-// failed inside an otherwise good run.
 function filesFor(stem, primary, extras, frame) {
   const expected = stem + extensionOf(primary);
 
@@ -196,29 +168,18 @@ function filesFor(stem, primary, extras, frame) {
   return written;
 }
 
-// Everything a Blender launch is told apart from which frames to render, which
-// is what lets one serve every claim it can. The frames go in over stdin.
 function blenderCommand(blendPath, outputDir, renderEngine, overrides, output) {
-  // '####' pads the frame number to four digits; a single '#' does not pad at
-  // all, so the written and expected names never agree.
   const { primary = 'PNG', extras = [], outputScript, prefix = 'frame_' } = output;
-  // Part of the command rather than of the session it runs in, so a resident
-  // Blender opened for a job that allows scripts is never handed one that does
-  // not: the flag is in the arguments the session is keyed by.
   const { allowScripts } = overrides;
 
   const args = [
     '-b', blendPath,
     ...scriptsIn(allowScripts),
     '-E', renderEngine,
-    // Forced so the extension is predictable whatever the .blend specifies.
     '-F', primary,
     '-o', path.join(outputDir, `${prefix}####`)
   ];
 
-  // Blender has no flag for resolution or sample count, so they are set on the
-  // loaded scene instead. One line with no newlines: on Windows this whole
-  // command may travel through cmd.exe, which cannot carry them.
   const expression = sceneOverrides(renderEngine, overrides);
 
   if (expression) args.push('--python-expr', expression);
@@ -226,15 +187,10 @@ function blenderCommand(blendPath, outputDir, renderEngine, overrides, output) {
   args.push('-P', outputScript);
 
   if (renderEngine === 'CYCLES') {
-    // Add-on options are only recognised after '--'; earlier, Blender treats
-    // them as a file to open. Read before the script runs, so a script that
-    // waits for work does not hold the device up.
+    // Blender only reads add-on options after '--'.
     args.push('--', '--cycles-device', cyclesDevice().device);
   }
 
-  // Passed as environment rather than script arguments: Blender hands its own
-  // leftovers to the script and the quoting is one less thing to get wrong on
-  // Windows.
   const env = {
     ...process.env,
     RENDERNET_FRAME_DIR: outputDir,
@@ -252,7 +208,6 @@ function blenderCommand(blendPath, outputDir, renderEngine, overrides, output) {
   return { args, env };
 }
 
-// Blender has no flag for either, so they are set on the loaded scene.
 function sceneOverrides(renderEngine, { resolutionPercent, samples } = {}) {
   const assignments = [];
 
@@ -269,9 +224,7 @@ function sceneOverrides(renderEngine, { resolutionPercent, samples } = {}) {
   return `import bpy; s=bpy.context.scene; ${assignments.join('; ')}`;
 }
 
-// Read lazily: the server may generate the secret at boot, after this import.
 function workerHeaders(extra = {}) {
-  // WORKER_SECRET is what a farm upgrading from the shared secret still has.
   const token = process.env.WORKER_TOKEN || process.env.WORKER_SECRET || '';
 
   return { 'x-worker-token': token, ...extra };
@@ -281,7 +234,6 @@ class RenderWorker {
   constructor(workerId = 'local-worker') {
     this.workerId = workerId;
     this.currentProcess = null;
-    // A cancelled job ends the frame, not the worker.
     this.abandoned = false;
     this.stopping = false;
     this.killTimer = null;
@@ -292,8 +244,6 @@ class RenderWorker {
 
   stop() {
     this.stopping = true;
-    // Held requests are what a worker spends its idle life in: without this a
-    // shutdown or a cancellation waits out however long it asked to be held.
     this.waiting?.abort();
     this.cancel();
     this.dropSession();
@@ -306,7 +256,6 @@ class RenderWorker {
 
     if (!running) return this.dropSession();
 
-    // A Blender that ignores the stop request keeps the queue waiting behind it.
     if (terminate(running)) {
       this.killTimer = setTimeout(() => running.kill('SIGKILL'), KILL_GRACE_MS);
       this.killTimer.unref();
@@ -315,9 +264,6 @@ class RenderWorker {
     return true;
   }
 
-  // The Blender held open between claims, if there is one. Reused only when the
-  // command line and environment would have been identical, so everything that
-  // used to be decided at launch still is.
   async sessionFor(args, env) {
     clearTimeout(this.idleTimer);
 
@@ -337,8 +283,6 @@ class RenderWorker {
     return session;
   }
 
-  // Held for the next claim rather than closed, so a worker that keeps claiming
-  // from one job parses the scene once instead of once a span.
   holdSession() {
     clearTimeout(this.idleTimer);
 
@@ -362,9 +306,6 @@ class RenderWorker {
     return held !== null;
   }
 
-  // Kept under what the scene is rather than which job wanted it: the server
-  // stores a scene once however many jobs render it, and this machine
-  // downloads it once too. A second frame range of the same shot is free.
   async fetchBlend(jobId, blendPath, version = null) {
     const held = sceneName(blendPath) ?? `job_${jobId}${version ? `_${version}` : ''}`;
     const cached = path.join(SCRATCH_DIR, `${held}.blend`);
@@ -373,13 +314,9 @@ class RenderWorker {
 
     fs.mkdirSync(SCRATCH_DIR, { recursive: true });
 
-    // A scene of this job under another version is the copy from before it was
-    // baked again, and nothing will ask for it now.
     for (const stale of fs.readdirSync(SCRATCH_DIR)) {
       if (!stale.startsWith(`job_${jobId}_`) || stale === `${held}.blend`) continue;
 
-      // Windows refuses to remove a file another slot on this machine may still
-      // have open; it is scratch, and the next fetch will pass this way again.
       try {
         fs.rmSync(path.join(SCRATCH_DIR, stale), { force: true });
       } catch {
@@ -393,7 +330,6 @@ class RenderWorker {
 
     if (!response.ok) throw new Error(`the server answered ${response.status}`);
 
-    // Moved into place so an interrupted download is never mistaken for a scene.
     const partial = `${cached}.part`;
     fs.writeFileSync(partial, Buffer.from(await response.arrayBuffer()));
     fs.renameSync(partial, cached);
@@ -403,9 +339,6 @@ class RenderWorker {
     return cached;
   }
 
-  // Files handed over for a scene that reaches outside itself. Read off the
-  // server's disk where this machine is the server, fetched over HTTP where it
-  // is not - the same rule the scene itself follows.
   async gatherAssets(lease, outputDir, remote) {
     const assets = lease.assets ?? [];
 
@@ -440,7 +373,6 @@ class RenderWorker {
     return given;
   }
 
-  // Resolves to whether there was anything to do.
   async claimAndRender() {
     if (this.stopping) return false;
 
@@ -457,8 +389,6 @@ class RenderWorker {
     return true;
   }
 
-  // Probed once: it costs a Blender start, and the answer cannot change while
-  // this process is running.
   engines() {
     this.engineList ??= renderableEngines(BLENDER_PATH);
     return this.engineList;
@@ -478,12 +408,10 @@ class RenderWorker {
           engines: this.engines(),
           device: cyclesDevice().device,
           deviceWanted: cyclesDevice().wanted,
-          // Held there until there is something rather than asked again here.
           wait: WAIT_SECONDS
         })
       });
 
-      // 204 is the ordinary "nothing for you" answer.
       if (!response.ok || response.status === 204) return null;
 
       return (await response.json()).lease;
@@ -499,8 +427,6 @@ class RenderWorker {
     const primary = primaryOf(formats);
     const extras = extrasOf(formats);
 
-    // A worker elsewhere has neither the uploaded scene nor the server's scratch
-    // space, so it fetches the one and uses its own for the other.
     const remote = process.env.WORKER_REMOTE === '1' || !fs.existsSync(lease.blendPath);
 
     let blendPath = lease.blendPath;
@@ -512,7 +438,6 @@ class RenderWorker {
       try {
         blendPath = await this.fetchBlend(jobId, lease.blendPath, lease.blendVersion);
       } catch (error) {
-        // Charged to the first frame only: nothing in the span was attempted.
         console.error(`Could not fetch the scene for job ${jobId}: ${error.message}`);
         await this.reportFrameFailure(
           jobId, frames[0], `Worker could not fetch the scene: ${error.message}`, leaseId);
@@ -521,10 +446,6 @@ class RenderWorker {
       }
     }
 
-    // Named per worker rather than per span: workers sharing a job share the
-    // folder, and one of them rewriting the file another is reading would break
-    // that render. A name that changed between spans would also be a different
-    // command line, and so a Blender that could not be reused.
     const outputScript = path.join(outputDir, `render_${this.workerId.replace(/\W/g, '_')}.py`);
 
     fs.writeFileSync(outputScript,
@@ -540,8 +461,6 @@ class RenderWorker {
         fs.writeFileSync(assetManifest, JSON.stringify(given));
       }
     } catch (error) {
-      // Rendering without them is the untextured picture the check exists to
-      // prevent, so the span is given up rather than delivered wrong.
       console.error(`Could not gather the files for job ${jobId}: ${error.message}`);
       await this.reportFrameFailure(
         jobId, frames[0], `Worker could not fetch a supplied file: ${error.message}`, leaseId);
@@ -549,8 +468,6 @@ class RenderWorker {
       return;
     }
 
-    // A tile renders one scene frame under the number of its region; everything
-    // else renders the frames it was given.
     const sceneFrames = lease.tile ? [lease.sceneFrame] : frames;
     const prefix = lease.tile ? `tile_${lease.tile.index}_` : 'frame_';
 
@@ -560,8 +477,6 @@ class RenderWorker {
 
     this.startRenewing(lease);
 
-    // Frames go back as Blender finishes them rather than when the span does,
-    // so a machine switched off mid-span keeps what it had already rendered.
     const announced = new Set();
     const handled = new Set();
     let pump = Promise.resolve();
@@ -605,7 +520,6 @@ class RenderWorker {
         }
       );
     } catch (error) {
-      // Judged frame by frame below rather than thrown away whole.
       failure = error;
     }
 
@@ -617,17 +531,12 @@ class RenderWorker {
       this.stopRenewing();
       this.holdSession();
 
-      // However the span ended: a job being cancelled waits for exactly this,
-      // and a span that finished before the first renewal never heard about it.
       await this.releaseLease(leaseId);
 
       fs.rmSync(outputScript, { force: true });
     }
   }
 
-  // Stepping every simulation from its first frame and writing the result into
-  // the scene, so that the frames can then be rendered in any order on any
-  // machine. Nothing of this job renders until it is done.
   async bakeLeasedScene(lease) {
     const { leaseId, jobId, bake } = lease;
     const outputDir = path.join(SCRATCH_DIR, `bake_${jobId}`);
@@ -638,7 +547,6 @@ class RenderWorker {
     this.startRenewing(lease);
 
     const remote = process.env.WORKER_REMOTE === '1' || !fs.existsSync(lease.blendPath);
-    // Where the server can already read it, where this machine is the server.
     const output = remote ? path.join(outputDir, 'baked.blend') : bake.path;
 
     fs.mkdirSync(remote ? outputDir : path.dirname(output), { recursive: true });
@@ -648,13 +556,7 @@ class RenderWorker {
 
       let attempt = await this.runBake(blendPath, outputDir, output, bake, remote);
 
-      // A scene with a fluid in it is written out pointing at the job's folder
-      // and opened again to be filled: one repointed mid-session simulates
-      // something slightly its own.
       if (!attempt.failure && attempt.again) {
-        // Emptied before the second opening: writing the scene out put the
-        // frame it was on into the folder, and a fill that reads that frame
-        // back rather than simulating it comes out a little different.
         fs.rmSync(remote ? path.join(outputDir, 'fluid') : bake.caches,
           { recursive: true, force: true });
 
@@ -688,15 +590,11 @@ class RenderWorker {
       const blender = launch(BLENDER_PATH,
         ['-b', blendPath, ...scriptsIn(bake.allowScripts), '-P', script], {
         stdio: ['ignore', 'pipe', 'pipe'],
-        // Baking a fluid's noise drops a 24MB tile file in the working
-        // directory, which is the install directory unless it is told otherwise.
         cwd: outputDir,
         env: {
           ...process.env,
           RENDERNET_BAKE_LAST: String(bake.last),
           RENDERNET_BAKE_OUT: output,
-          // Where a fluid's frames go. Beside the scene where this machine is
-          // the server, in its own scratch where it is not.
           RENDERNET_BAKE_CACHE: remote ? path.join(outputDir, 'fluid') : bake.caches,
           RENDERNET_BAKE_STAGE: stage ?? ''
         }
@@ -717,9 +615,6 @@ class RenderWorker {
 
         if (code !== 0) return answer(lastLine(said) || `Blender exited with code ${code}`);
 
-        // Blender bakes what it can and exits nought either way, so the scene
-        // is only worth keeping when the script says every cache came back with
-        // frames in it.
         const stuck = said.split('\n').find(line => line.includes(UNBAKED_MARKER));
 
         if (stuck) {
@@ -737,8 +632,6 @@ class RenderWorker {
     });
   }
 
-  // Sent where this machine is somewhere else; where it is the server, the file
-  // is already in the job's folder and only the news has to travel.
   async sendBaked(jobId, leaseId, file) {
     const url = `${WORKER_BASE}/jobs/${jobId}/baked`;
 
@@ -780,8 +673,6 @@ class RenderWorker {
     }).catch(reason => console.error(`Could not report it: ${reason.message}`));
   }
 
-  // Every region of a still, whether they are on this machine's own disk or have
-  // to be fetched. The picture is made here and handed back like a frame.
   async assembleLeasedStill(lease) {
     const { leaseId, jobId, composite } = lease;
     const outputDir = path.join(SCRATCH_DIR, `composite_${jobId}`);
@@ -792,8 +683,6 @@ class RenderWorker {
 
     this.startRenewing(lease);
 
-    // The same test the renders use: a machine told it is somewhere else does not
-    // reach for server paths that happen to exist on this one.
     const remote = process.env.WORKER_REMOTE === '1' || !fs.existsSync(lease.blendPath);
 
     try {
@@ -819,8 +708,6 @@ class RenderWorker {
     }
   }
 
-  // Straight off the disk where the server keeps them, or over HTTP where this
-  // machine is somewhere else.
   async gatherTiles(lease, outputDir, remote) {
     const extension = extensionOf(lease.composite.format);
     const tiles = [];
@@ -848,7 +735,6 @@ class RenderWorker {
     return tiles;
   }
 
-  // Resolves to what went wrong, or null.
   putTogether(blendPath, outputDir, tiles, output, composite) {
     return new Promise(resolve => {
       const script = path.join(outputDir, 'composite.py');
@@ -922,9 +808,6 @@ class RenderWorker {
     }).catch(reason => console.error(`Could not report it: ${reason.message}`));
   }
 
-  // Resolves to whether this frame has been dealt with. A frame announced whose
-  // files are not there is left to the accounting pass, which is the one place
-  // a failure is decided.
   async deliverFrame(lease, { index, sceneFrames, outputDir, prefix, primary, extras, remote }) {
     if (this.abandoned) return true;
 
@@ -938,7 +821,6 @@ class RenderWorker {
     let delivered = true;
     let progress = null;
 
-    // Every format has to arrive or the ZIP is missing one for this frame alone.
     for (const file of produced) {
       const handed = await this.handOverFrame(jobId, frame, file, leaseId, remote);
 
@@ -967,11 +849,6 @@ class RenderWorker {
     return true;
   }
 
-  // What the span did not deliver. Blender works through a span in order, so on
-  // a launch that gave up partway the first frame with nothing to show is the
-  // one that failed and the frames behind it were never attempted - those are
-  // said nothing about, and releasing the span returns them with their attempts
-  // intact.
   async accountFor(lease, handled, failure) {
     const { leaseId, jobId, frames } = lease;
 
@@ -988,9 +865,6 @@ class RenderWorker {
   }
 
   startRenewing(lease) {
-    // Far more often than the term needs, because a refused renewal is also how
-    // a cancelled job reaches a worker the server cannot call into. Renewing is
-    // one small request; waiting a third of a lease term to notice is not.
     const every = Math.min(Math.max(Math.floor(lease.ttlMs / 3), 1000), RENEW_EVERY_MS);
 
     this.renewTimer = setInterval(async () => {
@@ -1001,9 +875,6 @@ class RenderWorker {
 
       if (!response || response.ok) return;
 
-      // The job has stopped - cancelled, or paused for something more urgent.
-      // A refused renewal is how a worker finds that out without the server
-      // having to reach into it.
       console.warn(`Claim on ${lease.frames ? describeSpan(lease.frames) : `job ${lease.jobId}`}`
         + ' refused, abandoning it');
       this.cancel();
@@ -1031,9 +902,6 @@ class RenderWorker {
     return session.renderSpan(frames, output.onFrame);
   }
 
-  // On this machine the file is already on a disk the server can read, so it is
-  // handed over by name rather than read, encoded, sent and written again. Only
-  // an optimisation: anything the server will not take that way is sent.
   async handOverFrame(jobId, frameNumber, framePath, leaseId, remote) {
     if (remote) return this.uploadFrame(jobId, frameNumber, framePath, leaseId);
 
@@ -1046,7 +914,6 @@ class RenderWorker {
 
       if (response.ok) return { ok: true, progress: await progressFrom(response) };
     } catch {
-      // Fall through and send it.
     }
 
     return this.uploadFrame(jobId, frameNumber, framePath, leaseId);
@@ -1055,8 +922,6 @@ class RenderWorker {
   async uploadFrame(jobId, frameNumber, framePath, leaseId) {
     try {
       const formData = new FormData();
-      // Named explicitly rather than left to the stream's path: the extension
-      // is how the server knows which format arrived.
       formData.append('frame', fs.createReadStream(framePath), {
         filename: path.basename(framePath)
       });
@@ -1093,7 +958,6 @@ class RenderWorker {
     }
   }
 
-  // Resolves to whether the frame still has attempts left.
   async reportFrameFailure(jobId, frameNumber, error, leaseId) {
     try {
       const response = await fetch(`${WORKER_BASE}/jobs/${jobId}/frames/${frameNumber}/failed`, {
@@ -1106,7 +970,6 @@ class RenderWorker {
 
       return body.retry === true;
     } catch (err) {
-      // Retrying against a server we cannot reach would just spin.
       console.error(`Failed to report frame failure: ${err.message}`);
       return false;
     }

@@ -1,6 +1,3 @@
-// Fills a running RenderNet with jobs in the states worth photographing: work
-// finished, work in flight, work queued behind it, one still waiting on its
-// owner and one that was stopped before it wasted the machine's night.
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';

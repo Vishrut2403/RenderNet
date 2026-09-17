@@ -1,7 +1,3 @@
-// A .blend is somebody else's file, and Blender will run Python it carries as
-// it opens one. On a farm several people submit to, that is code execution on
-// the workstation, so every place a scene is opened has to say no. Needs a real
-// Blender: the stand-in has no Python to run.
 import fs from 'fs';
 import path from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -13,14 +9,9 @@ import {
 
 const PORT = 5624;
 
-// A text datablock set to register runs when the file is opened, on a machine
-// that allows it. This one only writes a file, which is the whole point: if the
-// marker appears, anything else could have happened instead.
 function hostileScene(box, marker) {
   return createFixtureBlend(box, {
     name: 'untrusted.blend',
-    // Quoted by JSON rather than pasted between quotes: a Windows path is full of
-    // backslashes, and the \\U in C:\\Users starts an escape in a Python string.
     extra: `
 marker = ${JSON.stringify(marker)}
 text = bpy.data.texts.new('payload.py')
@@ -35,9 +26,6 @@ camera.location = (4, -4, 3)
   });
 }
 
-// A cube whose height is worked out by a function the file defines. At frame 24
-// it sits high in shot; without the function it stays on the floor, so the two
-// renders are nothing like each other.
 function drivenScene(box) {
   return createFixtureBlend(box, {
     name: 'driven.blend',
@@ -79,8 +67,6 @@ apart = numpy.abs(pixels(os.environ['A']) - pixels(os.environ['B']))
 print('DIFF %.4f' % (100.0 * (apart.max(axis=1) > 0.01).mean()))
 `;
 
-// The share of pixels that differ, as the simulation matrix measures it. -1 if
-// either picture is not there to compare.
 function differing(a, b) {
   if (!fs.existsSync(a) || !fs.existsSync(b)) return -1;
 
@@ -122,8 +108,6 @@ export default async function run() {
   try {
     console.log('\n  A scene that would rather run code than render');
 
-    // The scene is opened before anybody has approved anything, so this is the
-    // earliest place the farm touches a stranger's file.
     const readMarker = path.join(box, 'READ_RAN.txt');
     const blend = hostileScene(box, readMarker);
 
@@ -137,8 +121,6 @@ export default async function run() {
 
     console.log('\n  Finding every driver that needs Python');
 
-    // A driver sits wherever there is animation data, and one the check misses
-    // renders wrong without a word.
     const everywhere = createFixtureBlend(box, {
       name: 'everywhere.blend',
       extra: `
@@ -201,13 +183,10 @@ s.collection.objects.link(bpy.data.objects.new('CameraObject', lens))
 
     results.check('rendering one does not run it either',
       !fs.existsSync(renderMarker), 'the scene executed code on the farm');
-    // Refusing to run its scripts must not turn into refusing to render it.
     results.check('while the frame itself still arrives',
       finished.status === 'completed' && finished.completedFrames === 1,
       `${finished.status}, ${finished.completedFrames} frame(s)`);
 
-    // The way out for a rig whose drivers call its own functions: the person who
-    // owns the file says it may run, for that job and no other.
     const allowedMarker = path.join(box, 'ALLOWED_RAN.txt');
     const allowed = await submitJob(server.base, token, hostileScene(box, allowedMarker),
       { frameStart: 1, frameEnd: 1, skipAssetCheck: true, allowScripts: true });
@@ -231,8 +210,6 @@ s.collection.objects.link(bpy.data.objects.new('CameraObject', lens))
       stopped.status === 'failed' && /drivers?/i.test(stopped.error || ''),
       `${stopped.status}: ${stopped.error || ''}`);
 
-    // The same file and the same choice would fail the same way, so a rerun has
-    // to say so rather than leave the job waiting on a check nobody restarts.
     const rerun = await fetch(`${server.base}/jobs/${refused.body.jobId}/rerun`,
       { method: 'POST', headers: auth(token) });
 
@@ -244,8 +221,6 @@ s.collection.objects.link(bpy.data.objects.new('CameraObject', lens))
       rerun.status >= 400 && afterRerun.status === 'failed' && afterRerun.assetCheck !== 'checking',
       `rerun answered ${rerun.status}; job is ${afterRerun.status}, check ${afterRerun.assetCheck}`);
 
-    // The farm's frame against one rendered here by hand from the same file:
-    // the only standard that says the drivers really worked.
     const wanted = await submitJob(server.base, token, driven,
       { frameStart: 24, frameEnd: 24, allowScripts: true });
 
@@ -263,8 +238,6 @@ s.collection.objects.link(bpy.data.objects.new('CameraObject', lens))
 
     const ours = path.join(box, rendered.outputFolder ?? '', 'frame_0024.png');
 
-    // Pixels rather than bytes: two PNGs of the same picture are not the same
-    // file, and it is the picture that has to match.
     const apart = differing(ours, byHand);
 
     results.check('and once allowed, its frame is the one Blender renders by hand',
@@ -282,8 +255,6 @@ s.collection.objects.link(bpy.data.objects.new('CameraObject', lens))
       blender.on('error', reject);
     });
 
-    // Two renders with the driver dead would also match each other. This is what
-    // says the match above was made with the driver actually working.
     const moved = differing(byHand, withoutScripts);
 
     results.check('where the driver really did move something',

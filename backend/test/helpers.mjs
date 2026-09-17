@@ -30,8 +30,6 @@ export function createResults(suiteName) {
   return results;
 }
 
-// The suites set env vars that modules read at import time, so each must put
-// process.env back as it found it or it leaks into whatever runs next.
 export function snapshotEnv(keys) {
   const saved = new Map(keys.map(key => [key, process.env[key]]));
 
@@ -43,16 +41,12 @@ export function snapshotEnv(keys) {
   };
 }
 
-// Each run gets its own directory so the server's uploads/, renders/,
-// worker-tmp/, users.json and database never touch real data.
 export function makeSandbox(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), `rendernet-${prefix}-`));
 }
 
 export function removeSandbox(dir) {
   try {
-    // A stand-in left running holds its files open, and Windows refuses to
-    // unlink those. The sandbox is under the temp dir either way.
     fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
   } catch (error) {
     console.log(`    (could not remove sandbox ${dir}: ${error.code})`);
@@ -64,9 +58,6 @@ export function blenderAvailable() {
   return probe.status === 0;
 }
 
-// Blender renamed EEVEE's identifier twice across 4.x and 5.x, and an engine the
-// installed Blender does not recognise fails every frame of the job. Asking it
-// rather than hardcoding a list is the whole point.
 export function blenderEngines() {
   const probe = spawnSync('blender', ['-b', '--factory-startup', '-E', 'help'], { encoding: 'utf8' });
 
@@ -78,9 +69,6 @@ export function blenderEngines() {
     .filter(line => /^[A-Z][A-Z_]+$/.test(line));
 }
 
-// EEVEE and Workbench rasterise, so they want a GL context that a headless
-// machine with no GPU may not be able to give them. Cycles does not, which is
-// why it is the one the rest of the suite renders with.
 export function engineRenders(engine, blendPath, dir) {
   const pattern = path.join(dir, `probe_${engine}_####`);
   const produced = path.join(dir, `probe_${engine}_0001.png`);
@@ -94,7 +82,6 @@ export function engineRenders(engine, blendPath, dir) {
   return rendered;
 }
 
-// Renders fast: 64x64, one Cycles sample, no denoising.
 export function createFixtureBlend(dir, { name = 'fixture.blend', extra = '' } = {}) {
   const blendPath = path.join(dir, name);
   const script = `
@@ -122,9 +109,6 @@ bpy.ops.wm.save_as_mainfile(filepath=r'${blendPath}')
   return blendPath;
 }
 
-// The average colour of a rendered frame, read by the only thing here that can
-// open one. Enough to tell a texture that arrived from Blender's magenta stand
-// in for one that did not.
 export function meanColour(imagePath) {
   const script = `
 import bpy, numpy
@@ -151,23 +135,6 @@ const PNG_1X1 = Buffer.from(
   'base64'
 );
 
-// A stand-in for Blender that writes the frame the worker expects. Behaviour is
-// keyed off the .blend filename so one server can drive every scenario:
-// 'noisy' floods stdout, 'slow' takes its time per frame, 'hang' stays on one
-// frame long enough to test against a job that is genuinely mid-render,
-// 'stubborn' ignores a polite stop and stays alive so cancelling it has to force
-// (wait for stubbornIsUnkillable before cancelling; see below),
-// 'vanishing' kills the worker that launched it, once,
-// 'stalls' delivers its first frame and then never finishes another,
-// 'fat' writes twenty megabytes a frame,
-// 'uneven' takes far longer on worker-1 than on the others,
-// 'broken' exits non-zero with its complaint on stdout, 'flaky' does so for
-// one frame until a marker file says otherwise, and 'unglued' refuses to put
-// a tiled still back together until one does.
-// The behaviour lives in a Node script, reached through a wrapper the platform
-// can actually execute: a shell script on POSIX, a .cmd on Windows. The .cmd
-// also puts the worker's own cmd.exe launch and process-tree kill under test,
-// which is where Windows differs from everything else.
 export function fakeBlenderPath(dir) {
   return path.join(dir, process.platform === 'win32' ? 'fake-blender.cmd' : 'fake-blender');
 }
@@ -558,10 +525,6 @@ async function renderSpan(frames) {
   return blenderPath;
 }
 
-// Node needs a few milliseconds to boot and install the handler, and a job is
-// already 'rendering' the moment it is submitted - so a cancel sent as soon as
-// the status flips lands before the stand-in can ignore anything, killing it on
-// the default disposition and leaving the escalation path untested.
 export function stubbornIsUnkillable(sandbox, jobId) {
   const marker = path.join(sandbox, 'worker-tmp', `job_${jobId}`, 'refusing-to-exit');
 
@@ -570,8 +533,6 @@ export function stubbornIsUnkillable(sandbox, jobId) {
   });
 }
 
-// Named in its own bytes: scenes are stored by what is in them, so fixtures
-// that differed only by filename would all be the one file on disk.
 export function createFakeScene(dir, name) {
   const scenePath = path.join(dir, name);
   const bytes = Buffer.alloc(256, 3);
@@ -598,8 +559,6 @@ export async function getJob(base, token, jobId) {
   return (await fetch(`${base}/jobs/${jobId}`, { headers: auth(token) })).json();
 }
 
-// Windows can refuse to rebind a port whose previous connections are still
-// winding down, and the restart tests reuse one port on purpose.
 const START_ATTEMPTS = 3;
 
 export async function startServer(options) {
@@ -616,8 +575,6 @@ export async function startServer(options) {
   throw new Error(`Server did not start on port ${options.port}:\n${lastLog}`);
 }
 
-// A server behind its own certificate cannot be reached with fetch's default
-// trust, so the caller hands over the certificate it just made.
 export function httpsGet(url, ca) {
   return new Promise((resolve, reject) => {
     https.get(url, { ca, headers: {} }, response => {
@@ -632,8 +589,6 @@ export function httpsGet(url, ca) {
   });
 }
 
-// Stands in for ffmpeg where it is not installed: writes a file with the same
-// leading bytes an .mp4 has, so the plumbing can be tested anywhere.
 export function createFakeFfmpeg(dir) {
   const scriptPath = path.join(dir, 'fake-ffmpeg.js');
 
@@ -712,7 +667,6 @@ async function tryStartServer({ port, cwd, dataDir = cwd, env = {}, ca = null })
       const res = ca ? await httpsGet(`${base}/health`, ca) : await fetch(`${base}/health`);
       if (ca ? res.status === 200 : res.ok) return { server: { proc, base, getLog: () => log } };
     } catch {
-      // not listening yet
     }
 
     if (proc.exitCode !== null || proc.signalCode !== null) break;
@@ -759,8 +713,6 @@ export function auth(token) {
 export const SIGNUP_CODE = 'test-signup-code';
 export const ADMIN_PASSWORD = 'workshop-admin-pw';
 
-// The seeded admin can do nothing until its password is replaced, so suites
-// start by doing that. Servers restarted mid-suite log straight back in.
 export async function adminSession(base) {
   try {
     const token = await login(base, 'admin', 'admin123');
@@ -820,9 +772,6 @@ export async function submitJob(base, token, blendPath, {
   return { status: res.status, body: await res.json() };
 }
 
-// OpenEXR header: the magic and version, then name\0type\0size(int32)value
-// until an empty name. Compression and the channels' pixel type are what say
-// whether the codec and the colour depth a job asked for actually arrived.
 export const EXR_COMPRESSION = { NONE: 0, ZIP: 3, PIZ: 4, DWAA: 8 };
 export const EXR_HALF = 1;
 export const EXR_FLOAT = 2;
@@ -855,8 +804,6 @@ export function exrHeader(file) {
     if (name === 'channels') {
       let cursor = 0;
 
-      // Each channel is its name, then the pixel type, then 16 bytes of
-      // sampling and padding this does not need.
       while (value[cursor] !== 0) {
         cursor = value.indexOf(0, cursor) + 1;
         header.pixelTypes.push(value.readInt32LE(cursor));

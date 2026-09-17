@@ -39,8 +39,6 @@ function requireWorker(req, res, next) {
   next();
 }
 
-// One credential covers every worker process on a machine, so each names the
-// slot it is: the frames of one machine's slots never mix with another's.
 function identityOf(req) {
   const slot = typeof req.body?.workerId === 'string'
     ? req.body.workerId.replace(/[^\w.-]/g, '').slice(0, 64)
@@ -61,16 +59,11 @@ function ownedLease(req) {
   return lease && heldBy(lease, req.machine.id) ? lease : null;
 }
 
-// A machine is entitled to the files of the jobs it is working on and no
-// others - whether it is rendering frames of one, putting its tiles together,
-// or baking it.
 function working(req) {
   return [...liveLeases(), ...liveComposites(), ...liveBakes()]
     .some(claim => claim.jobId === req.jobId && heldBy(claim, req.machine.id));
 }
 
-// A worker whose claim has lapsed could otherwise upload over the frame somebody
-// else is now rendering.
 function requireLease(req, res, next) {
   const leaseId = req.headers['x-lease-id'];
   const lease = typeof leaseId === 'string' ? getLease(leaseId) : null;
@@ -87,9 +80,6 @@ function requireLease(req, res, next) {
   next();
 }
 
-// The machine putting a still back together holds a claim on the job rather
-// than on a frame, and it is the only one that may fetch the pieces or hand the
-// picture back.
 function requireComposite(req, res, next) {
   const leaseId = req.headers['x-lease-id'];
   const lease = typeof leaseId === 'string' ? getCompositeLease(leaseId) : null;
@@ -104,7 +94,6 @@ function requireComposite(req, res, next) {
   next();
 }
 
-// Runs before multer so a bad id is a clean 404, not a storage-engine error.
 function loadJob(req, res, next) {
   const jobId = Number(req.params.id);
   const job = getJob(jobId);
@@ -118,8 +107,6 @@ function loadJob(req, res, next) {
   next();
 }
 
-// Runs before multer so a callback for a cancelled job cannot recreate the
-// output folder that cancellation just deleted.
 function requireRendering(req, res, next) {
   if (req.job.status !== 'rendering') {
     return res.status(409).json({
@@ -130,8 +117,6 @@ function requireRendering(req, res, next) {
   next();
 }
 
-// Tiles are working parts, not output: kept aside so the listing and the ZIP
-// show the finished picture rather than the pieces of it.
 function folderFor(job) {
   const folder = isTiled(job) ? dataPath(tilesPath(job.outputFolder)) : dataPath(job.outputFolder);
 
@@ -159,8 +144,6 @@ const storage = multer.diskStorage({
     }
   },
   filename: (req, file, cb) => {
-    // From the URL and the filename, not the body: multer only exposes text
-    // fields sent before the file, which is a fragile ordering to depend on.
     const frame = Number(req.params.frame);
     const extension = path.extname(file.originalname).toLowerCase();
 
@@ -178,9 +161,6 @@ const upload = multer({
   limits: { fileSize: MAX_FRAME_BYTES }
 });
 
-// Only the frames on disk are downloadable, so the server is the one that says
-// whether what arrived is the picture it is named as rather than taking the
-// worker's word for it.
 function unreadable(file) {
   const signature = signatureFor(path.extname(file.filename));
 
@@ -192,7 +172,6 @@ function unreadable(file) {
   return null;
 }
 
-// Scratch space may be on another filesystem, where a rename cannot reach.
 function moveInto(from, to) {
   try {
     fs.renameSync(from, to);
@@ -207,8 +186,6 @@ function moveInto(from, to) {
 function validFrame(req, res, next) {
   const frame = Number(req.params.frame);
 
-  // A tiled still is claimed by region, so the number names a tile rather than
-  // a frame of the scene.
   const [lowest, highest] = isTiled(req.job)
     ? [1, req.job.tiles]
     : [req.job.frameStart, req.job.frameEnd];
@@ -224,8 +201,6 @@ function validFrame(req, res, next) {
 
 router.use(requireWorker);
 
-// How long a worker may be left holding on before being told there is nothing.
-// Capped rather than trusted: a request held open is a socket the server keeps.
 const MAX_WAIT_MS = 60 * 1000;
 
 function waitAsked(body) {
@@ -239,8 +214,6 @@ function waitAsked(body) {
 router.post('/lease', async (req, res) => {
   const workerId = identityOf(req);
 
-  // Said again with every request rather than registered once: a worker that
-  // stops asking stops counting, which is all the liveness this needs.
   announceWorker({
     workerId,
     name: req.machine.name,
@@ -258,17 +231,10 @@ router.post('/lease', async (req, res) => {
     giveUp.abort();
   });
 
-  // Asked again after every announcement rather than trusting it: the queue
-  // decides who may have what, and the announcement only says to go and ask.
-  // A worker this machine cannot give work to waits out its deadline here.
   for (;;) {
     const left = deadline - Date.now();
 
-    // Listened for before asking, never after. Asking is itself what starts the
-    // next job when the current one has no frames left to give, so the
-    // announcement that says so lands while this call is still running - and a
-    // listener attached afterwards would have missed it and waited out the
-    // whole deadline with work sitting there.
+    // Listen before asking: asking can start the next job and announce it mid-call.
     const told = left > 0 && !gone ? waitFor(WORK, left, giveUp.signal) : null;
     const lease = leaseNextFrame(workerId, req.machine.isLocal);
 
@@ -284,7 +250,6 @@ router.post('/lease', async (req, res) => {
     if (gone || Date.now() >= deadline) break;
   }
 
-  // 204 rather than an error: having no work is the ordinary answer.
   if (!gone) res.status(204).end();
 });
 
@@ -306,15 +271,11 @@ router.post('/leases/:leaseId/release', (req, res) => {
   res.json({ released: releaseFrameLease(req.params.leaseId) });
 });
 
-// For a worker on another machine. Worker-authenticated; the browser downloads
-// live under /api/download.
 router.get('/jobs/:id/blend', loadJob, (req, res) => {
   if (!working(req)) {
     return res.status(403).json({ error: `No claim on job ${req.jobId}` });
   }
 
-  // The baked scene once there is one: it is the scene the frames render from,
-  // and the machine baking it has none yet.
   const stored = req.job.bakedPath || req.job.filePath;
   const blend = stored && dataPath(stored);
 
@@ -325,9 +286,6 @@ router.get('/jobs/:id/blend', loadJob, (req, res) => {
   res.sendFile(blend);
 });
 
-// A file the artist handed over for something the scene reaches for. Served on
-// the same terms as the scene itself: only to a machine rendering this job, and
-// only from inside that job's own folder.
 router.get('/jobs/:id/assets/:filename', loadJob, (req, res) => {
   if (!working(req)) {
     return res.status(403).json({ error: `No claim on job ${req.jobId}` });
@@ -359,15 +317,11 @@ router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, re
   const isPrimary = path.extname(req.file.filename).toLowerCase()
     === extensionOf(primaryOf(req.job.formats));
 
-  // Only the primary marks the frame done. The others are the same image in
-  // another format, and counting them would put progress past 100%.
   const job = isPrimary
     ? recordFrameUpload(req.jobId, frame, req.file.filename)
     : getJob(req.jobId);
 
-  // Cancellation can land while the frame is still streaming in, and takes the
-  // job's folder with it. A job only put back - the disk reaching its reserve
-  // with this very frame - still wants a frame it has already recorded.
+  // A job put back for the disk still wants a frame it has already recorded.
   if (!job || job.status === 'cancelled') {
     fs.rmSync(req.file.path, { force: true });
     return res.status(409).json({ error: `Job ${req.jobId} is no longer rendering` });
@@ -386,8 +340,6 @@ router.post('/jobs/:id/frames/:frame', loadJob, requireRendering, validFrame, re
 });
 
 
-// A machine that is not on the server's own disk fetches the pieces over HTTP,
-// the way it fetches the scene.
 router.get('/jobs/:id/tiles/:index', loadJob, requireRendering, requireComposite, (req, res) => {
   const index = Number(req.params.index);
 
@@ -416,8 +368,6 @@ const composite = multer({
         cb(error);
       }
     },
-    // Named here rather than taken from what arrived: it is the one frame of
-    // the scene, in the format the job asked for.
     filename: (req, file, cb) => cb(null, compositeName(req.job))
   }),
   limits: { fileSize: MAX_FRAME_BYTES }
@@ -437,8 +387,6 @@ function requireBake(req, res, next) {
   next();
 }
 
-// The whole scene comes back rather than the cache alone: the caches are inside
-// it, which is what makes the bake one file to send and one to delete.
 const baked = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => {
@@ -457,8 +405,6 @@ const baked = multer({
 
 router.post('/jobs/:id/baked', loadJob, requireRendering, requireBake,
   baked.single('scene'), (req, res) => {
-    // A renderer on this machine bakes straight into the job's folder, so there
-    // is nothing to send: it says where it put it instead.
     if (!req.file) {
       const inPlace = req.machine.isLocal === true
         && fs.existsSync(dataPath(bakedScenePath(req.job)));
@@ -515,10 +461,6 @@ router.post('/jobs/:id/composite/failed', loadJob, requireRendering, requireComp
     res.json({ success: true });
   });
 
-// A renderer on this machine has already written the frame to a disk the server
-// can read, so it hands over a path instead of the bytes. Only a machine using
-// the credential this server mints for itself may do it: a path from anywhere
-// else would be somebody naming a file they do not own.
 router.post('/jobs/:id/frames/:frame/at', loadJob, requireRendering, validFrame, requireLease,
   (req, res) => {
     if (req.machine.isLocal !== true) {
@@ -611,7 +553,6 @@ router.post('/jobs/:id/progress', loadJob, requireRendering, (req, res) => {
 });
 
 
-// Multer rejects (an unexpected format, an oversized frame) surface here.
 router.use((error, req, res, _next) => {
   if (req.file?.path) fs.rmSync(req.file.path, { force: true });
 

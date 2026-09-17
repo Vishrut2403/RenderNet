@@ -1,7 +1,3 @@
-// Workers as separate processes. The claim worth proving here is that two of
-// them share one job without ever being given the same frame. Losing a worker
-// is covered by the lease-expiry checks and the shutdown-survival test, which
-// can force that state without needing to find a process id. Runs without Blender.
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -20,14 +16,8 @@ const ONDISK_PORT = 5619;
 const DEVICE_PORT = 5620;
 const BAKE_PORT = 5621;
 
-// "[worker-1] ✅ Job 17..., frame 3 rendered: ..." - the pool tags each worker's
-// output with which one it came from, so the log says who delivered what. One
-// launch may cover a span of frames, so this reads the line each frame gets as
-// it lands rather than the one the span starts with.
 const RENDER_LINE = /\[worker-(\d+)\][^\n]*Job \d+, frame (\d+) rendered/g;
 
-// "[worker-1] 🎬 Job 17, frames 2-5 (4) (CYCLES)" - how wide a claim each
-// machine was given. A single frame is written without a count.
 function spansFromLog(log, jobId) {
   const line = new RegExp(
     `\\[worker-(\\d+)\\][^\\n]*🎬 Job ${jobId}, frames? [\\d-]+(?: \\((\\d+)\\))?`, 'g');
@@ -85,8 +75,6 @@ export default async function run() {
     results.check('the log records what was rendered', renders.length >= 6,
       `${renders.length} render lines`);
 
-    // The point of the whole lease layer: two workers asking at the same moment
-    // must never be given the same frame, or both would render and upload it.
     const frames = renders.map(render => render.frame);
     const duplicates = frames.filter((frame, index) => frames.indexOf(frame) !== index);
 
@@ -106,9 +94,6 @@ export default async function run() {
 
     const bothOf = ids => ids.includes(shortJob.body.jobId) && ids.includes(longJob.body.jobId);
 
-    // Each observation is recorded on its own, so a health endpoint that lost
-    // sight of one of the jobs cannot be mistaken for a scheduler that never
-    // started it.
     let bothRendering = false;
     let bothInHealth = null;
     let busyWorkers = null;
@@ -128,8 +113,6 @@ export default async function run() {
       { label: 'both jobs to be rendering at once', timeoutMs: 60000 }
     );
 
-    // With one frame between them and two workers, the second worker would sit
-    // idle until the first job finished if it could not start the next one.
     results.check('the second job starts before the first has finished', bothRendering);
     results.check('health names every job in flight, not just one',
       bothInHealth !== null, JSON.stringify(bothInHealth));
@@ -146,9 +129,6 @@ export default async function run() {
 
     console.log('\n  A worker somewhere else fetches the scene for itself');
 
-    // Started by hand rather than by the server, told to behave as though it
-    // were on another machine: it downloads the .blend over HTTP and renders in
-    // its own scratch space instead of reading the server's.
     const elsewhere = makeSandbox('worker-elsewhere');
 
     remoteWorker = spawn(process.execPath, [path.join(BACKEND_ROOT, 'src', 'worker-main.js')], {
@@ -183,9 +163,6 @@ export default async function run() {
     results.check('and rendered frames of it',
       /frame \d+ \(/.test(remoteLog), remoteLog.slice(-400));
 
-    // A second range of the same shot, which is the ordinary way a scene comes
-    // back. The machine already holds those bytes and should not fetch them
-    // again: the server keeps one copy of a scene, and so does this.
     const again = await submitJob(server.base, token, createFakeScene(sandbox, 'slow.blend'), {
       frameStart: 4, frameEnd: 5
     });
@@ -219,9 +196,6 @@ export default async function run() {
   return results;
 }
 
-// Baking is claimed like any other work, so it can be claimed by a machine that
-// is not the server: it fetches the scene, bakes it, and sends the baked one
-// back for everyone else to render from.
 async function bakingElsewhere(results) {
   const box = makeSandbox('bake-elsewhere');
   const elsewhere = makeSandbox('bake-far-away');
@@ -270,9 +244,6 @@ async function bakingElsewhere(results) {
     results.check('and the baked scene was sent back to the server',
       fs.existsSync(baked) && fs.statSync(baked).size > 0, baked);
 
-    // A machine somewhere else keeps the scenes it fetches. Baked again - here
-    // because the job's folder was swept - the scene it kept is last night's,
-    // and rendering from it would deliver frames of a bake nobody asked for.
     const opened = () => fs.readFileSync(path.join(elsewhere, 'launches.txt'), 'utf8')
       .split('\n').filter(line => line.startsWith('job_'));
 
@@ -305,10 +276,6 @@ async function bakingElsewhere(results) {
   }
 }
 
-// Blender exits non-zero on every frame when it is named a Cycles backend the
-// build has none of, so what a machine is set to matters as much as what it
-// has. Nobody edits a .env on the workstation, either, which is why an unset
-// device means the fastest one rather than the CPU.
 async function devices(results) {
   const box = makeSandbox('devices');
   const asked = process.env.CYCLES_DEVICE;
@@ -387,9 +354,6 @@ async function devices(results) {
   }
 }
 
-// A machine somewhere else is sent the .blend and nothing beside it, so a scene
-// whose textures merely happen to be on this disk would render untextured there
-// and say nothing was wrong. It stays on the machine that can see them.
 async function filesOnlyHere(results) {
   const box = makeSandbox('files-only-here');
   const elsewhere = makeSandbox('files-elsewhere');
@@ -403,7 +367,6 @@ async function filesOnlyHere(results) {
     server = await startServer({
       port: ONDISK_PORT,
       cwd: box,
-      // Nothing renders here, so the only machine on offer is the distant one.
       env: { BLENDER_PATH: createFakeBlender(box), WORKER_SLOTS: '0' }
     });
 
@@ -435,7 +398,6 @@ async function filesOnlyHere(results) {
     results.check('and lets the job through rather than failing it',
       held.assetCheck === 'ok', held.assetCheck);
 
-    // Long enough that a machine willing to take it would have finished by now.
     await sleep(6000);
 
     const untouched = await getJob(server.base, token, kept.body.jobId);
@@ -444,7 +406,6 @@ async function filesOnlyHere(results) {
       untouched.completedFrames === 0 && untouched.status !== 'completed',
       `${untouched.status}, ${untouched.completedFrames} frames`);
 
-    // The same farm with a renderer of its own finishes it.
     await stopServer(server);
     server = await startServer({
       port: ONDISK_PORT,
@@ -466,9 +427,6 @@ async function filesOnlyHere(results) {
   }
 }
 
-// A claim is sized in time, so it has to be sized against the machine taking
-// it: the same span on a machine that renders a frame in a second and one that
-// takes fifteen leaves the fast one waiting on the slow one's queue.
 async function unevenMachines(results) {
   const box = makeSandbox('uneven');
   let server;
@@ -485,10 +443,6 @@ async function unevenMachines(results) {
     const token = await adminSession(server.base);
     const scene = createFakeScene(box, 'uneven.blend');
 
-    // No warm-up job: what a machine takes over a frame is measured on the job
-    // it is rendering, so a rate gathered on another one would not carry over.
-    // Long enough that a claim is never bounded by what is left of the job,
-    // which would taper the spans on its own and prove nothing.
     const job = await submitJob(server.base, token, scene,
       { frameStart: 1, frameEnd: 120, skipAssetCheck: true });
 
@@ -500,9 +454,6 @@ async function unevenMachines(results) {
     results.check('the job finished', finished.status === 'completed', finished.status);
     results.check('both machines took part', slow.length > 0 && fast.length > 0,
       `worker-0 ${fast.length} claims, worker-1 ${slow.length}`);
-    // Fifteen times slower a frame, against a three-second claim: three frames,
-    // after the single frame that measures it. Every machine gets that one
-    // frame first, because nothing else says what this scene costs it.
     results.check('the slow one takes one frame to measure itself',
       slow[0] === 1, slow.join(','));
     results.check('and is never given more than a few frames at a time after it',
@@ -515,9 +466,6 @@ async function unevenMachines(results) {
   }
 }
 
-// A machine that dies is holding a claim nobody will renew. Waiting it out
-// costs the whole lease term, and a claim now covers a span of frames or the
-// last step of a tiled still, so that is a lot of the farm doing nothing.
 async function losingAWorker(results) {
   const box = makeSandbox('worker-lost');
   let server;
@@ -525,8 +473,6 @@ async function losingAWorker(results) {
   try {
     console.log('\n  A machine that dies mid-render');
 
-    // Long enough that expiry cannot be what frees the frame: only the pool
-    // noticing the worker go can finish this job inside the wait below.
     server = await startServer({
       port: LOST_PORT,
       cwd: box,
@@ -556,9 +502,6 @@ async function losingAWorker(results) {
   }
 }
 
-// A worker that cannot render an engine must not be given frames of it: it
-// would fail all three attempts of each, and three failures in a row stop the
-// job for everybody.
 async function capabilities(results) {
   const box = makeSandbox('capabilities');
   let server;
@@ -595,8 +538,6 @@ async function capabilities(results) {
     const waiting = await (await fetch(`${server.base}/jobs/${eevee.body.jobId}`, {
       headers: auth(token)
     })).json();
-    // Queued, not started: a job marked rendering that no worker will ever
-    // claim is a progress bar that never moves.
     results.check('the one it cannot is left queued rather than failed or started',
       waiting.status === 'pending' && waiting.completedFrames === 0 && waiting.failedFrames === 0,
       `${waiting.status}: ${waiting.completedFrames} done, ${waiting.failedFrames} failed`);
@@ -611,8 +552,6 @@ async function capabilities(results) {
         && problem.includes('BLENDER_EEVEE')),
       JSON.stringify(reported.problems));
 
-    // The same worker code, told it can do the other engine: the job was never
-    // broken, it was waiting for a machine that offers what it needs.
     const elsewhere = makeSandbox('capabilities-eevee');
 
     eeveeWorker = spawn(process.execPath, [path.join(BACKEND_ROOT, 'src', 'worker-main.js')], {

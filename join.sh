@@ -1,11 +1,4 @@
 #!/usr/bin/env bash
-# One command for a machine that only renders: it installs what is missing, asks
-# the farm for a credential of its own, and starts rendering. Nothing is
-# submitted or downloaded from here - a browser is still the whole client.
-#
-#   ./join.sh http://rendernet.local:5500
-#
-# Safe to run again; the second time it is just how this machine joins.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,9 +22,6 @@ fi
 
 SERVER="${SERVER%/}"
 
-# Same floor as the server: below 22 there is no prebuilt better-sqlite3 and
-# installing turns into a compile. The worker never opens the database, but
-# installing the backend still pulls it in.
 node_major() { node -v 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/'; }
 
 check_node() {
@@ -53,8 +43,6 @@ reachable() {
   curl -sf -m 5 "$SERVER/api/health" >/dev/null 2>&1
 }
 
-# Asked for once and kept, so joining again does not leave a trail of credentials
-# on the farm that nobody can tell apart.
 ask_for_credential() {
   local user password answer token name
 
@@ -102,8 +90,6 @@ Sign in at $SERVER in a browser, choose a new one, then run this again."
   say "Issued and saved. Revoke it under Admin if this machine stops helping."
 }
 
-# Quoted the way JSON wants rather than pasted in raw: a password is entitled to
-# contain a quote or a backslash.
 json_string() {
   node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$1"
 }
@@ -118,8 +104,6 @@ json_true() {
   ' "$1" "$2"
 }
 
-# A job that cannot exist, so all this answers is whether the farm still accepts
-# the credential: 404 when it does, 401 once it has been revoked.
 credential_status() {
   curl -s -o /dev/null -w '%{http_code}' -m 5 \
     -H "x-worker-token: $WORKER_TOKEN" "$SERVER/api/worker/jobs/0/blend" || true

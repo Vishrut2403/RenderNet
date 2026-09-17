@@ -1,8 +1,4 @@
 #!/usr/bin/env bash
-# One command for the machine that renders: installs what is missing, builds the
-# page the browser gets, starts the farm, and then says the two things anybody
-# else needs — where to point their browser and what to type to make an account.
-# Safe to run again; the second time it is just how the farm is started.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -13,8 +9,6 @@ warn() { printf '\033[33m%s\033[0m\n' "$*" >&2; }
 
 node_major() { node -v 2>/dev/null | sed 's/^v\([0-9]*\).*/\1/'; }
 
-# That version or newer. Older will not do: better-sqlite3 ships no prebuilt
-# binary before it and would try to compile itself.
 use_supported_node() {
   local want current shown bin
   want="$(cat "$ROOT/.node-version" 2>/dev/null || echo 22)"
@@ -48,12 +42,7 @@ MESSAGE
   exit 1
 }
 
-# The database module is a compiled thing, built for whichever Node installed
-# it. Switching Node majors between runs leaves the wrong binary in place, which
-# is a rebuild rather than anything to think about.
 rebuild_if_wrong_node() {
-  # Opened, not merely required: the compiled part is not loaded until a
-  # database is, so requiring it says nothing about whether it will work.
   (cd "$ROOT/backend" \
     && node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1) && return 0
 
@@ -83,8 +72,6 @@ install_if_missing() {
   fi
 }
 
-# Anything under src/ newer than the bundle means the browser would be handed
-# the previous build.
 build_if_stale() {
   local dist="$ROOT/frontend/dist/index.html"
 
@@ -95,8 +82,6 @@ build_if_stale() {
   fi
 }
 
-# The address on the network this machine actually reaches other machines by,
-# which is not necessarily the first one it happens to have.
 this_machine() {
   ip route get 1.1.1.1 2>/dev/null | awk '{ for (i = 1; i < NF; i++) if ($i == "src") print $(i + 1) }' \
     || true
@@ -135,7 +120,6 @@ cd "$ROOT/backend"
 node src/index.js >"$log" 2>&1 &
 farm=$!
 
-# Ctrl+C is how this is stopped, and it has to take the farm with it.
 trap 'kill "$farm" 2>/dev/null || true' INT TERM
 
 for _ in $(seq 1 60); do

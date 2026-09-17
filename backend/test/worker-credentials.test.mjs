@@ -1,5 +1,3 @@
-// A credential per machine rather than one secret for all of them: what a
-// machine may do with it, and what revoking it takes away.
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, adminSession, signUp,
   login, auth, submitJob, createFakeBlender, createFakeScene, waitForCondition, getJob
@@ -50,7 +48,6 @@ export default async function run() {
   let server;
 
   try {
-    // No local workers, so the only machines asking for frames are this test's.
     server = await startServer({
       port: PORT,
       cwd: sandbox,
@@ -193,8 +190,6 @@ export default async function run() {
   return results;
 }
 
-// The machine the server runs on mints its own at every boot, so nobody has to
-// configure it and nothing reusable is left behind when it stops.
 async function theWorkstationItself(results) {
   const sandbox = makeSandbox('credentials-local');
   let server;

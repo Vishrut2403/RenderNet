@@ -1,6 +1,3 @@
-// How often the pages ask the server for more. The interval is derived from
-// what came back, so a job that has just started rendering has to be watched
-// closely from the next poll rather than the one after it.
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { renderHook, waitFor } from '@testing-library/react';
 import { usePolling } from '../src/hooks/usePolling';

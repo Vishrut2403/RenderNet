@@ -1,6 +1,3 @@
-// Render pipeline behaviour that a real Blender cannot be made to exhibit on
-// demand: a scene that floods stdout, one that takes long enough to cancel
-// mid-render, and one that refuses to stop when asked. Runs without Blender.
 import fs from 'fs';
 import Database from 'better-sqlite3';
 import path from 'path';
@@ -17,8 +14,6 @@ export default async function run() {
   const results = createResults('render-pipeline');
 
   const sandbox = makeSandbox('pipeline');
-  // Deliberately not the data directory: on the workstation the server is
-  // launched by Task Scheduler, which may start it anywhere.
   const elsewhere = makeSandbox('pipeline-cwd');
   let server;
 
@@ -27,8 +22,6 @@ export default async function run() {
       port: PORT,
       cwd: elsewhere,
       dataDir: sandbox,
-      // A lease whose release never lands is only reclaimed when it expires, so
-      // the term is kept well inside the waits below.
       env: { BLENDER_PATH: createFakeBlender(sandbox), LEASE_TTL_MS: '20000' }
     });
 
@@ -40,8 +33,6 @@ export default async function run() {
     const noisy = await submitJob(base, token, createFakeScene(sandbox, 'noisy.blend'), {
       frameStart: 1, frameEnd: 2
     });
-    // 400KB per frame with nobody draining the pipe used to block Blender
-    // mid-write, leaving the job rendering forever.
     const noisyJob = await waitForJob(base, token, noisy.body.jobId, 30000);
     results.check('noisy render completes instead of hanging',
       noisyJob.status === 'completed', `${noisyJob.status}: ${noisyJob.error || ''}`);
@@ -65,8 +56,6 @@ export default async function run() {
     const earlyJob = await waitForJob(base, token, earlyExit.body.jobId, 60000);
 
     results.check('the job is marked failed', earlyJob.status === 'failed', earlyJob.status);
-    // Without this the farm works through all ten frames, three attempts each,
-    // to learn what the first three already said.
     results.check('it stops after three failed frames rather than trying all ten',
       earlyJob.failedFrames === 3, `${earlyJob.failedFrames} failed`);
     results.check('the frames past that point were never attempted',
@@ -135,10 +124,6 @@ export default async function run() {
     const cancelledAt = Date.now();
     await fetch(`${base}/jobs/${stubbornId}/cancel`, { method: 'POST', headers: auth(token) });
 
-    // A polite stop is ignored, so the queue only moves once the forceful one
-    // lands - SIGKILL on POSIX, taskkill on Windows. Left to itself the
-    // stand-in exits after 60s, so the bound is what separates a real
-    // escalation from simply outwaiting the process.
     const released = await waitForCondition(
       async () => (await getJob(base, token, after.body.jobId)).status === 'completed',
       { timeoutMs: 25000, label: 'the queue to be released by a forceful kill' }
@@ -217,7 +202,6 @@ export default async function run() {
     const waitingJob = await getJob(base, token, waiting.body.jobId);
     results.check('the job under test is still queued', waitingJob.status === 'pending', waitingJob.status);
 
-    // Backdate it well past the 48 hour cutoff.
     const stale = new Date(Date.now() - 72 * 60 * 60 * 1000);
     fs.utimesSync(inSandbox(waitingJob.filePath), stale, stale);
 
@@ -276,10 +260,6 @@ export default async function run() {
       resumedAfterPause.status === 'completed' && resumedAfterPause.completedFrames === 6,
       `${resumedAfterPause.status}, ${resumedAfterPause.completedFrames} frames`);
 
-    // While a paused job's worker winds down, isRendering stays true and
-    // currentJobId still points at it. A second urgent job arriving in that
-    // window must not queue it twice. The window is milliseconds normally, so
-    // this uses the stand-in that refuses to stop and has to be killed outright.
     console.log('\n  A second urgent job does not queue the paused one twice');
     const wedged = await submitJob(base, token, createFakeScene(sandbox, 'stubborn.blend'), {
       frameStart: 1, frameEnd: 2
@@ -314,10 +294,6 @@ export default async function run() {
       { label: 'the stubborn job to be cancelled' }
     );
 
-    // A job paused for something more important is 'pending', so nothing about
-    // it looks in flight - but its worker still owns the slot and its Blender
-    // may still be alive. This walks the path end to end; it does not prove the
-    // ordering, which converges either way once the worker settles.
     console.log('\n  Cancelling a job that is paused but still winding down');
     const pausing = await submitJob(base, token, createFakeScene(sandbox, 'stubborn.blend'), {
       frameStart: 1, frameEnd: 2
@@ -372,9 +348,6 @@ export default async function run() {
     results.check('the job is gone from the list',
       await status(`${base}/jobs/${ordinaryId}`, { headers: auth(token) }) === 404);
 
-    // The workstation is switched off nightly, so a long render meets several
-    // shutdowns before it finishes. Each one has to cost at most the frame in
-    // flight, and none of them may count against the job.
     console.log('\n  Surviving repeated shutdowns mid-render');
 
     const restart = async () => {
@@ -432,8 +405,6 @@ export default async function run() {
       delivered = after.completedFrames;
     }
 
-    // Three interruptions is past the old abandonment threshold; a job that
-    // keeps advancing must not be given up on.
     const finished = await waitForJob(server.base, session, crashedId, 60000);
     results.check('the job finishes after three shutdowns', finished.status === 'completed',
       `${finished.status}: ${finished.error || ''}`);
@@ -441,7 +412,6 @@ export default async function run() {
       `got ${finished.completedFrames}`);
     results.check('no frame was rendered twice',
       fs.readdirSync(crashedFolder).length === 6, fs.readdirSync(crashedFolder).join(','));
-    // The strongest evidence that resume picks up rather than starts over.
     results.check('an already-delivered frame is never re-rendered',
       fs.statSync(path.join(crashedFolder, 'frame_0001.png')).mtimeMs === firstFrameStamp);
 
@@ -463,8 +433,6 @@ export default async function run() {
       abandoned.status === 'failed', abandoned.status);
     results.check('and says why', /without rendering/.test(abandoned.error || ''), abandoned.error);
 
-    // Abandoning a job must not abandon the frames it already delivered: those
-    // are the only thing standing between the user and re-rendering the range.
     console.log('\n  Frames delivered before a job is given up on stay downloadable');
     const stalled = await submitJob(base, session, createFakeScene(sandbox, 'stalls.blend'), {
       frameStart: 1, frameEnd: 4
@@ -476,8 +444,6 @@ export default async function run() {
       { label: 'the first frame to be delivered', timeoutMs: 30000 }
     );
 
-    // One more shutdown than the doomed job above: the first restart sees a
-    // frame delivered since submission, so it does not count as a lost evening.
     for (let attempt = 1; attempt <= 4; attempt++) {
       await waitForCondition(
         async () => (await getJob(server.base, session, stalledId)).status === 'rendering',
@@ -534,9 +500,6 @@ export default async function run() {
     removeSandbox(elsewhere);
   }
 
-  // Pruning is by job age, deleting is by file age, and the two disagree: a
-  // render's mtime is its last frame, long after the job was created. Its own
-  // instance because it needs a retention window nothing else can tolerate.
   const pruneBox = makeSandbox('prune');
   let pruneServer;
 
@@ -545,8 +508,6 @@ export default async function run() {
     pruneServer = await startServer({
       port: PORT + 2,
       cwd: pruneBox,
-      // Negative: the cutoff lands in the future, so every job record is old
-      // enough to prune and only the files' mtimes decide anything.
       env: { BLENDER_PATH: createFakeBlender(pruneBox), RETENTION_DAYS: '-1' }
     });
 
@@ -607,8 +568,6 @@ export default async function run() {
     removeSandbox(pruneBox);
   }
 
-  // A tiny quota on its own instance: the real 5GB limit is not reachable in a
-  // test, and lowering it on the shared server would break everything above.
   const quotaBox = makeSandbox('quota');
   let quotaServer;
 
@@ -653,7 +612,6 @@ export default async function run() {
     removeSandbox(quotaBox);
   }
 
-  // One render, several files, all of them in the one ZIP.
   const formatBox = makeSandbox('formats');
   let formatServer;
 
@@ -705,8 +663,6 @@ export default async function run() {
         .filter((name, index, all) => all.indexOf(name) === index).length === 6,
       'names found in the archive');
 
-    // The preview is served from whatever the frame record points at, so the
-    // record has to point at the primary rather than the last file uploaded.
     const preview = await fetch(`${formatServer.base}/download/${many.body.jobId}/preview`, {
       headers: auth(formatToken)
     });
@@ -745,7 +701,6 @@ export default async function run() {
     removeSandbox(formatBox);
   }
 
-  // Somebody deciding whether to wait around wants a time, not a position.
   const waitBox = makeSandbox('wait');
   let waitServer;
 
@@ -760,7 +715,6 @@ export default async function run() {
 
     const waitToken = await adminSession(waitServer.base);
 
-    // Nothing has rendered yet, so there is no rate to estimate from.
     const first = await submitJob(
       waitServer.base, waitToken, createFakeScene(waitBox, 'slow.blend'),
       { frameStart: 1, frameEnd: 4 }
@@ -791,13 +745,10 @@ export default async function run() {
       thirdJob.startsIn > secondJob.startsIn,
       `${secondJob.startsIn} then ${thirdJob.startsIn}`);
 
-    // slow.blend takes two seconds a frame and has three left, so the estimate
-    // has to be in that neighbourhood rather than an arbitrary number.
     results.check('the estimate is near the work actually outstanding',
       secondJob.startsIn > 2000 && secondJob.startsIn < 30000,
       `${secondJob.startsIn}ms for ~3 frames at ~2s`);
 
-    // Urgency reorders the queue, so it has to reorder the estimates too.
     await fetch(`${waitServer.base}/jobs/${third.body.jobId}/priority`, {
       method: 'POST',
       headers: { ...auth(waitToken), 'Content-Type': 'application/json' },
@@ -819,14 +770,9 @@ export default async function run() {
       (jumped.startsIn ?? 0) < displaced.startsIn,
       `urgent ${jumped.startsIn} vs ${displaced.startsIn}`);
 
-    // Preemption takes a moment: the job it displaced has to stop before the
-    // urgent one starts, and in between nothing is rendering at all.
     const listJobs = async () =>
       (await (await fetch(`${waitServer.base}/jobs`, { headers: auth(waitToken) })).json()).jobs;
 
-    // Read as the condition is tested rather than after it: a short job can
-    // finish in the gap between the two, and then there is nothing rendering
-    // left to ask about.
     let all = [];
 
     await waitForCondition(
@@ -843,9 +789,6 @@ export default async function run() {
       inFlight !== undefined && inFlight.startsIn === null,
       JSON.stringify(all.map(job => [job.status, job.startsIn])));
 
-    // A displaced job may be queued or already picked up again, depending on
-    // whether the urgent one still has frames to claim, so what is asserted is
-    // the rule rather than which of the two it landed in.
     results.check('every queued job is told when it starts and every running one is not',
       all.every(job => job.status === 'pending'
         ? typeof job.startsIn === 'number'
@@ -857,9 +800,6 @@ export default async function run() {
     removeSandbox(waitBox);
   }
 
-  // The wait somebody is promised has to be costed the same way the queue they
-  // are in was ordered, or the two disagree: the order says the heavy job ahead
-  // of them is expensive and the estimate says it is average.
   const heavyBox = makeSandbox('heavy');
   let heavyServer;
 
@@ -874,13 +814,10 @@ export default async function run() {
 
     const heavyToken = await adminSession(heavyServer.base);
 
-    // Fills the farm's recent frames with quick ones, so its median frame is
-    // nothing like the frame of the job that renders next.
     const quick = await submitJob(heavyServer.base, heavyToken,
       createFakeScene(heavyBox, 'quick.blend'), { frameStart: 1, frameEnd: 12 });
     await waitForJob(heavyServer.base, heavyToken, quick.body.jobId, 60000);
 
-    // Two seconds a frame against a farm whose recent frames took milliseconds.
     const heavy = await submitJob(heavyServer.base, heavyToken,
       createFakeScene(heavyBox, 'slow-shot.blend'), { frameStart: 1, frameEnd: 6 });
 
@@ -897,8 +834,6 @@ export default async function run() {
 
     results.check('the job in front is the slow one and is still going',
       inFront.status === 'rendering' && left > 0, `${inFront.status}, ${left} left`);
-    // Costed at the farm's median it would be a few hundred milliseconds, which
-    // is the answer this is here to rule out.
     results.check('the wait is costed at what the job in front actually takes',
       queued.startsIn > left * 1000,
       `${queued.startsIn}ms promised for ${left} frames at ~2s each`);
@@ -909,8 +844,6 @@ export default async function run() {
     removeSandbox(heavyBox);
   }
 
-  // Blender has no flag for either, so they are only visible in the command
-  // line the worker builds.
   const settingsBox = makeSandbox('settings');
   let settingsServer;
 
@@ -953,8 +886,6 @@ export default async function run() {
       tunedJob.resolutionPercent === 25 && tunedJob.samples === 8,
       `${tunedJob.resolutionPercent}% / ${tunedJob.samples}`);
 
-    // EEVEE has no sample count of the kind Cycles means, so asking for one
-    // must not put an attribute on the scene that does not exist.
     const eevee = await submitJob(
       settingsServer.base, settingsToken, createFakeScene(settingsBox, 'eevee.blend'),
       { frameStart: 1, frameEnd: 1, engine: 'BLENDER_EEVEE', resolutionPercent: 50, samples: 8 }
@@ -978,8 +909,6 @@ export default async function run() {
     );
     const defaultJob = await waitForJob(settingsServer.base, settingsToken, byDefault.body.jobId, 30000);
 
-    // Half float rather than the 32-bit a scene carries by default: the size of
-    // every EXR the farm keeps depends on it, so it is worth stating.
     results.check('a job that says nothing gets half-float ZIP and quality 90',
       defaultJob.exrCodec === 'ZIP' && defaultJob.exrDepth === '16'
         && defaultJob.jpegQuality === 90,
@@ -1033,9 +962,6 @@ export default async function run() {
     removeSandbox(settingsBox);
   }
 
-  // A job's timings are worked out once and kept until one of its own frames
-  // moves, so the two things worth proving are that they follow the frames as
-  // they arrive and that the numbers themselves are the ones intended.
   const timingBox = makeSandbox('timings');
   let timingServer;
 
@@ -1056,9 +982,6 @@ export default async function run() {
     );
     const timedId = timed.body.jobId;
 
-    // Read while it is still going, which is what a dashboard does: a job's
-    // timings are remembered, and this is the read that would leave a stale
-    // answer behind if nothing forgot them as frames land.
     await waitForCondition(
       async () => (await getJob(timingServer.base, timingToken, timedId)).completedFrames >= 1,
       { label: 'the first frame', timeoutMs: 60000 }
@@ -1073,9 +996,6 @@ export default async function run() {
     results.check('and the finished job reports all of them',
       timedJob.timing?.measured === 4, JSON.stringify(timedJob.timing));
 
-    // Written by hand rather than measured, so the median and the slowest are
-    // known in advance. Four frames: the median is the third once sorted, and
-    // the two slowest are a tie the answer has to break the same way each time.
     const db = new Database(path.join(timingBox, 'test.db'));
     const written = db.prepare('UPDATE frames SET durationMs = ? WHERE jobId = ? AND frame = ?');
 
@@ -1084,8 +1004,6 @@ export default async function run() {
     }
     db.close();
 
-    // Restarted rather than waited out: the numbers are worked out from the
-    // frames table, so a fresh process has to arrive at the same answer.
     await stopServer(timingServer);
     timingServer = await startServer({
       port: PORT + 13,
@@ -1107,8 +1025,6 @@ export default async function run() {
     removeSandbox(timingBox);
   }
 
-  // Frames are what the farm makes; a video of them is what people actually
-  // want to watch.
   const videoBox = makeSandbox('video');
   let videoServer;
 
@@ -1137,7 +1053,6 @@ export default async function run() {
     );
     const shotJob = await waitForJob(videoServer.base, videoToken, shot.body.jobId, 60000);
 
-    // 'flaky' fails its second frame, so this job has a gap in the middle.
     results.check('the job delivered frames either side of a failure',
       shotJob.completedFrames === 2 && shotJob.failedFrames === 1,
       `${shotJob.completedFrames} done, ${shotJob.failedFrames} failed`);
@@ -1164,8 +1079,6 @@ export default async function run() {
     results.check('at the frame rate asked for',
       asked.includes('-r 24'), asked.split('\n')[0]);
 
-    // Downloaded by job rather than by filename, so the client never has to know
-    // how the file is named.
     const minted = await fetch(`${videoServer.base}/download/${shot.body.jobId}/token`,
       { method: 'POST', headers: auth(videoToken) });
     const { token: downloadToken } = await minted.json();
@@ -1179,9 +1092,6 @@ export default async function run() {
     results.check('a frame rate outside 1 to 120 is refused', rejected.status === 400,
       String(rejected.status));
 
-    // ffmpeg can read an EXR, but not into anything a browser will play back
-    // without being told how to map it, so the job is turned down rather than
-    // producing something wrong.
     const exrOnly = await submitJob(
       videoServer.base, videoToken, createFakeScene(videoBox, 'exr.blend'),
       { frameStart: 1, frameEnd: 3, formats: ['OPEN_EXR'] }
@@ -1192,7 +1102,6 @@ export default async function run() {
     results.check('a job with only EXR frames is turned down', exrRefused.status === 409,
       String(exrRefused.status));
 
-    // One frame is a picture, not a video.
     const single = await submitJob(
       videoServer.base, videoToken, createFakeScene(videoBox, 'single.blend'),
       { frameStart: 1, frameEnd: 1 }
@@ -1216,8 +1125,6 @@ export default async function run() {
     removeSandbox(videoBox);
   }
 
-  // A scene that reaches for textures it did not bring renders untextured
-  // rather than failing, which is worth catching before the whole range.
   const assetBox = makeSandbox('assets');
   let assetServer;
 
@@ -1248,9 +1155,6 @@ export default async function run() {
     );
     const wantingId = unpacked.body.jobId;
 
-    // Not a failure. The scene is already on the disk and is two textures
-    // short, and re-uploading it to supply them is the whole cost being
-    // avoided, so the job waits for the files instead.
     await waitForCondition(
       async () => (await getJob(assetServer.base, assetToken, wantingId)).assetCheck === 'waiting',
       { label: 'the job to ask for what it is missing' });
@@ -1259,8 +1163,6 @@ export default async function run() {
 
     results.check('a scene missing its textures is not failed',
       wanting.status === 'pending', wanting.status);
-    // The point of checking first: no worker time is spent on frames that were
-    // going to come out wrong.
     results.check('without rendering a frame of it', wanting.completedFrames === 0,
       `${wanting.completedFrames} frames rendered`);
     results.check('naming the files, without the artist\'s own folders',
@@ -1311,8 +1213,6 @@ export default async function run() {
       supplied.status === 'completed' && supplied.completedFrames === 40,
       `${supplied.status}, ${supplied.completedFrames} of 40`);
 
-    // The files handed over belong to this job, so deleting it takes the record
-    // of them with it rather than leaving rows nothing will ever read again.
     const rowsAbout = jobId => {
       const db = new Database(path.join(assetBox, 'test.db'), { readonly: true });
 
@@ -1337,10 +1237,6 @@ export default async function run() {
 
     console.log('\n  A file that brings its own needs with it');
 
-    // A linked .blend cannot be packed into the scene that links it, and until
-    // it has been supplied Blender cannot open it to see what it reaches for in
-    // turn. So the job is looked at again once the last file arrives, rather
-    // than queued on the strength of a check that could not have known.
     const layered = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'layered.blend'),
       { frameStart: 1, frameEnd: 2 }
@@ -1359,8 +1255,6 @@ export default async function run() {
 
     await supply(layeredId, asksFor.awaitingAssets[0].stored, 'rig.blend');
 
-    // Nothing else arrives to trigger this: the job has everything it was
-    // asked for, and looking again is what turns up the rest.
     await waitForCondition(
       async () => {
         const now = await getJob(assetServer.base, assetToken, layeredId);
@@ -1392,12 +1286,6 @@ export default async function run() {
     results.check('somebody who means it can render it anyway',
       anywayJob.status === 'completed', anywayJob.status);
 
-    // The farm hands frames out side by side and out of order, and every span
-    // is a fresh Blender. A simulation stepped as it renders cannot survive
-    // that, and would come back looking nothing like the artist's own render.
-    // So the farm bakes it first, on the machine with the hours to spend.
-    // Cleared first: the record is shared by every render in this sandbox, and
-    // what matters is which scene the frames after the bake came from.
     fs.rmSync(path.join(assetBox, 'uploads', 'spans.txt'), { force: true });
 
     const simulated = await submitJob(
@@ -1423,8 +1311,6 @@ export default async function run() {
     results.check('rather than from the one that was uploaded',
       spans.every(span => span.startsWith('baked.blend')), spans.join(' | '));
 
-    // Baked once and kept: the second job over the same scene has its own copy
-    // rather than one job quietly rendering from another's.
     const failing = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'unbaked-crash.blend'),
       { frameStart: 1, frameEnd: 4 }
@@ -1438,8 +1324,6 @@ export default async function run() {
     results.check('and no frame of it was rendered',
       failedBake.completedFrames === 0, `${failedBake.completedFrames} frames rendered`);
 
-    // Blender bakes what it can and exits nought either way, so a scene that
-    // comes back half baked is the case a return code cannot catch.
     const partly = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'unbaked-partly.blend'),
       { frameStart: 1, frameEnd: 4 }
@@ -1457,9 +1341,6 @@ export default async function run() {
     results.check('a failed bake can be tried again, unlike a scene nothing can fix',
       retried.status === 200, `got ${retried.status}`);
 
-    // A cache on a linked object is written into the file it was linked from,
-    // never into the one linking it, so baking it here would report success and
-    // be gone the moment the scene was opened again.
     const borrowed = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'linked-sim.blend'),
       { frameStart: 1, frameEnd: 3 }
@@ -1477,9 +1358,6 @@ export default async function run() {
     results.check('without a machine spending an hour finding that out',
       !attempted.includes('linked-sim'), attempted.trim());
 
-    // The other one Blender will not bake: an object switched off in the
-    // viewport. The farm could step it as the frames render, but that is a
-    // third picture, matching neither the artist's nor a proper bake.
     const tucked = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'hidden-sim.blend'),
       { frameStart: 1, frameEnd: 3 }
@@ -1492,9 +1370,6 @@ export default async function run() {
       /viewport/.test(tuckedJob.error ?? '') && /monitor/.test(tuckedJob.error ?? ''),
       tuckedJob.error);
 
-    // Smoke, fire and liquid keep their frames in a folder the scene points at
-    // rather than inside it. The farm fills that folder itself and then keeps
-    // the job on the machine holding it.
     const smoke = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'fluid.blend'),
       { frameStart: 1, frameEnd: 3 }
@@ -1513,8 +1388,6 @@ export default async function run() {
     results.check('and the job is kept on the machine that holds it',
       smokeJob.needsThisMachine === 1, String(smokeJob.needsThisMachine));
 
-    // A geometry nodes simulation zone steps frame to frame like cloth does, and
-    // renders the state it starts in when a frame is asked for on its own.
     const stepped = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'nodesim.blend'),
       { frameStart: 1, frameEnd: 3 }
@@ -1528,10 +1401,6 @@ export default async function run() {
     results.check('and it stays on any machine, having nothing beside the scene',
       steppedJob.needsThisMachine === 0, String(steppedJob.needsThisMachine));
 
-    // A bake is a claim on the job like any other, so a job cancelled part way
-    // through one is not finished with until the machine baking it has stopped.
-    // Cancelling as though it were idle would delete the job's folder while a
-    // Blender was still writing the baked scene into it.
     const interrupted = await submitJob(
       assetServer.base, assetToken, createFakeScene(assetBox, 'unbaked-slow.blend'),
       { frameStart: 1, frameEnd: 2 }
@@ -1556,8 +1425,6 @@ export default async function run() {
 
     results.check('a job cancelled while it is being baked cleans up', gone);
 
-    // Long enough for the interrupted bake to have finished writing had nothing
-    // stopped it: the folder must not come back.
     await sleep(5000);
 
     results.check('and the bake does not put its folder back afterwards',
@@ -1569,8 +1436,6 @@ export default async function run() {
     removeSandbox(assetBox);
   }
 
-  // Retrying a frame that failed for a reason since put right, without paying
-  // again for the frames that were fine.
   const rerunBox = makeSandbox('rerun');
   let rerunServer;
 
@@ -1607,7 +1472,6 @@ export default async function run() {
 
     await waitForJob(rerunServer.base, rerunToken, flakyId, 60000);
 
-    // What the user would have gone away and put right.
     fs.writeFileSync(path.join(rerunBox, 'uploads', 'fixed'), '');
 
     const again = await fetch(`${rerunServer.base}/jobs/${flakyId}/rerun`, {
@@ -1641,8 +1505,6 @@ export default async function run() {
     removeSandbox(rerunBox);
   }
 
-  // The database is the only record of who owns which frames. Its own instance
-  // so the backup count can be pushed low enough to see rotation.
   const backupBox = makeSandbox('backup');
   let backupServer;
 
@@ -1668,8 +1530,6 @@ export default async function run() {
 
     results.check('a backup is written at boot', backups().length === 1, JSON.stringify(backups()));
 
-    // Opened on its own, the snapshot has to be a working database rather than
-    // a half-written file - which is what copying one in WAL mode can produce.
     const snapshot = new Database(path.join(backupsDir, backups()[0]), { readonly: true });
     const users = snapshot.prepare('SELECT COUNT(*) AS n FROM users').get().n;
     snapshot.close();
@@ -1695,9 +1555,6 @@ export default async function run() {
     removeSandbox(backupBox);
   }
 
-  // A disk with no room fails every frame of every job rather than one, and
-  // burns three retries on each. Its own instance because the threshold has to
-  // be higher than the free space on whatever machine this runs on.
   const fullBox = makeSandbox('full-disk');
   let fullServer;
 
@@ -1707,7 +1564,6 @@ export default async function run() {
     fullServer = await startServer({
       port: PORT + 5,
       cwd: fullBox,
-      // Larger than any real disk, so the check always reads as full.
       env: { BLENDER_PATH: createFakeBlender(fullBox), MIN_FREE_BYTES: String(2 ** 60) }
     });
 
@@ -1725,9 +1581,6 @@ export default async function run() {
     await stopServer(fullServer);
   }
 
-  // Work already queued when the disk fills is the case the upload gate cannot
-  // cover: it is held and rechecked, not failed, because deleting one finished
-  // job is all it takes to let it run.
   let heldServer;
 
   try {
@@ -1750,7 +1603,6 @@ export default async function run() {
       { label: 'the job to start' }
     );
 
-    // Switched off with work outstanding, and the disk full by morning.
     heldServer.proc.kill('SIGKILL');
     await waitForCondition(
       () => heldServer.proc.exitCode !== null || heldServer.proc.signalCode !== null,
@@ -1782,11 +1634,6 @@ export default async function run() {
     removeSandbox(fullBox);
   }
 
-  // The reserve is what stops the disk ever actually filling, and nothing used
-  // to look at it between a job starting and ending: a long render walked
-  // straight through it and then failed every remaining frame three times over.
-  // Reached here with real bytes - the reserve is set just under what the disk
-  // actually has, and the job writes its way past it.
   const eatingBox = makeSandbox('disk-mid-render');
   let eatingServer;
 
@@ -1806,13 +1653,6 @@ export default async function run() {
     });
 
     const eatingToken = await adminSession(eatingServer.base);
-    // Twenty megabytes a frame at two seconds a frame: enough bytes to cross
-    // the reserve, and slow enough that free space is read again on the way.
-    // The range is far longer than the half dozen frames that should cross it,
-    // because the reserve is pinned to what the disk had before the server
-    // started and this machine is free to hand space back in the meantime. A
-    // job that could finish inside that drift would pass by completing, which
-    // is the one outcome this must not read as success.
     const eating = await submitJob(
       eatingServer.base, eatingToken, createFakeScene(eatingBox, 'fat-slow.blend'),
       { frameStart: 1, frameEnd: 30, skipAssetCheck: true }
@@ -1840,9 +1680,6 @@ export default async function run() {
     removeSandbox(eatingBox);
   }
 
-  // The workstation is started by Task Scheduler, where stdout goes nowhere.
-  // Its own instance because rotation and pruning need limits nothing else can
-  // work under.
   const logBox = makeSandbox('logs');
   let logServer;
 
@@ -1852,8 +1689,6 @@ export default async function run() {
     const logsDir = path.join(logBox, 'logs');
     fs.mkdirSync(logsDir, { recursive: true });
 
-    // Named as a log from long ago, then given an mtime to match: only the
-    // sweep at boot should be able to remove it.
     const stale = path.join(logsDir, 'rendernet-2020-01-01.log');
     fs.writeFileSync(stale, 'from a previous decade\n');
     fs.utimesSync(stale, new Date(0), new Date(0));
@@ -1861,8 +1696,6 @@ export default async function run() {
     logServer = await startServer({
       port: PORT + 4,
       cwd: logBox,
-      // Small enough that the server's own startup output overflows it, so
-      // rotation happens without having to manufacture megabytes.
       env: {
         BLENDER_PATH: createFakeBlender(logBox),
         MAX_LOG_BYTES: '400',
@@ -1886,9 +1719,6 @@ export default async function run() {
     results.check('output past the size limit rotates into a new file',
       onDisk().length > 1, JSON.stringify(onDisk()));
 
-    // A subset rather than an equal count: the server is still logging, and at
-    // this size limit it can rotate a new file into existence between the two
-    // reads. Files are only ever added, so everything listed is still there.
     const listed = await (await fetch(`${logServer.base}/logs`, { headers: auth(logToken) })).json();
     results.check('an admin can list the logs',
       listed.files?.length > 0 && listed.files.every(file => onDisk().includes(file.name)),
@@ -1915,8 +1745,6 @@ export default async function run() {
 
     const logged = () => onDisk().map(name => fs.readFileSync(path.join(logsDir, name), 'utf8')).join('');
 
-    // The server is another process and writes its line when the response
-    // finishes, which is not ordered against the client's fetch resolving here.
     const appears = (pattern, label) =>
       waitForCondition(() => pattern.test(logged()), { timeoutMs: 10000, label });
 
@@ -1939,8 +1767,6 @@ export default async function run() {
       await appears(/GET \/api\/jobs\/999999 404 \d+ms user=logpeeker/, 'the 404 line'),
       `the request itself returned ${missing}`);
 
-    // Counted rather than measured by file size: the queue logs on a timer of
-    // its own, and a byte comparison would catch that instead.
     const polls = () => (logged()
       .match(/(GET \/api\/jobs|GET \/api\/jobs\/summary|GET \/api\/jobs\/queue\/status) 200/g) ?? []).length;
 
@@ -1955,9 +1781,6 @@ export default async function run() {
       });
     }
 
-    // Issued after the polls and recorded, so seeing it means the server has
-    // dealt with them too - otherwise this asserts an absence that has simply
-    // not been written yet.
     await fetch(`${logServer.base}/logs`, { headers: auth(logToken) });
     await appears(/GET \/api\/logs 200/, 'the barrier line');
 
@@ -1967,8 +1790,6 @@ export default async function run() {
     results.check('and neither does a worker asking for work there is none of',
       leasePolls() === 0, `${leasePolls()} lease lines recorded`);
 
-    // Download URLs authenticate by query string. Whatever is in one, writing
-    // it down would put a credential in a file an admin can fetch over HTTP.
     await status(`${logServer.base}/download/files/render_1/frame_0001.png?token=${logToken}`);
     results.check('a download token never reaches the log',
       !logged().includes(logToken), 'the session token was written to the log');

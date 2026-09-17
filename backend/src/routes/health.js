@@ -6,8 +6,6 @@ import { freeBytes } from '../utils/file-utils.js';
 import { optionalAuth } from '../auth.js';
 import { DATA_DIR, MIN_FREE_BYTES } from '../paths.js';
 
-// Three widths of the same answer: anyone may ask whether the farm works, a
-// session sees the counts, and a job is only named to its owner or an admin.
 export function healthRouter(blenderPath) {
   const router = express.Router();
 
@@ -30,7 +28,6 @@ export function healthRouter(blenderPath) {
       problems.push(`Job ${job.id} needs ${job.renderEngine} and no worker here offers it`);
     }
 
-    // Deduplicated: every renderer on a machine says the same thing about it.
     const misconfigured = new Set(devicesNotOffered().map(machine =>
       `${machine.name} is set to render with ${machine.wanted}, `
       + `which its Blender does not offer, so it is using ${machine.device}`));
@@ -58,8 +55,6 @@ export function healthRouter(blenderPath) {
       });
     }
 
-    // 200 while degraded: a status code a monitor reads as unreachable would hide
-    // the reason.
     res.json(body);
   });
 

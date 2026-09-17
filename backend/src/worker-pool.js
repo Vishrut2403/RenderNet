@@ -15,19 +15,14 @@ const children = new Map();
 let stopping = false;
 let lost = () => {};
 
-// Told when a renderer goes, since the queue cannot see into another process.
 export function whenWorkerLost(handler) {
   lost = handler;
 }
 
-// The name a worker claims under: one credential covers the machine, and each
-// process on it names the slot it is.
 function claimedAs(index) {
   return `${machineFor(localMachineToken()).id}:worker-${index}`;
 }
 
-// Through console rather than inherited stdio: the file logger patches console,
-// and an inherited pipe would be held open after the server has gone.
 function forward(stream, index, write) {
   let buffered = '';
 
@@ -39,7 +34,6 @@ function forward(stream, index, write) {
     const lines = buffered.split('\n');
     buffered = lines.pop();
 
-    // A child writing without newlines must not grow this without limit.
     if (buffered.length > 8192) {
       lines.push(buffered);
       buffered = '';
@@ -56,9 +50,6 @@ function launchWorker(index) {
 
   const child = spawn(process.execPath, [WORKER_MAIN], {
     env: { ...process.env, WORKER_ID: `worker-${index}`, WORKER_TOKEN: localMachineToken() },
-    // Carries no messages. It closes when the server goes, which a server killed
-    // outright cannot announce, and an orphan would claim frames from whatever
-    // starts on that port next.
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   });
 
@@ -80,8 +71,6 @@ function launchWorker(index) {
   child.on('error', error => console.error(`Worker ${index} could not start: ${error.message}`));
 }
 
-// Called when there is work rather than at import, so a process that only reads
-// the queue never starts a renderer.
 export function ensureWorkers() {
   stopping = false;
 

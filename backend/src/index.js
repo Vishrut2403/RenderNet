@@ -1,6 +1,4 @@
 import './env.js';
-// Before the rest: it patches console on import, so what they log while loading
-// lands in the file too.
 import { requestLogger } from './logger.js';
 import express from 'express';
 import { securityHeaders, crossOrigin } from './security.js';
@@ -35,8 +33,6 @@ import {
   UPLOADS_DIR, PARTIALS_DIR, RENDERS_DIR, SCRATCH_DIR, DATA_DIR, FRONTEND_DIST, RETENTION_DAYS
 } from './paths.js';
 
-// A farm still on the shared secret keeps working; it appears in the machine
-// list, where it can be revoked once every worker has a credential of its own.
 if (importSharedSecret()) {
   console.warn('WORKER_SECRET is set: it now works as one shared machine credential.');
   console.warn('Issue each machine its own under Admin and revoke the shared one.');
@@ -45,9 +41,6 @@ if (importSharedSecret()) {
 const app = express();
 const PORT = process.env.PORT || 5500;
 
-// Off unless a proxy really is in front: behind one, every request looks like
-// it came from the proxy and a lockout keyed on the caller locks everybody;
-// without one, anybody could set the header and claim to be any address.
 if (process.env.TRUST_PROXY) {
   const hops = Number(process.env.TRUST_PROXY);
 
@@ -78,13 +71,11 @@ app.use('/api/auth', authRouter);
 app.use('/api/upload', requireAuth, uploadRouter);
 app.use('/api/jobs', requireAuth, jobsRouter);
 app.use('/api/events', requireAuth, eventsRouter);
-// Both authenticate inside their own routers.
 app.use('/api/download', downloadRouter);
 app.use('/api/worker', workerRouter);
 
 app.use('/api/health', healthRouter(blenderPath));
 
-// The upload form must offer exactly what the upload route will accept.
 app.get('/api/engines', requireAuth, (req, res) => {
   res.json({
     engines: ENGINES,
@@ -107,12 +98,10 @@ app.post('/api/cleanup', requireAuth, requireAdmin, (req, res) => {
   res.json({ message: 'Cleanup triggered' });
 });
 
-// So a client needs nothing but a browser.
 if (fs.existsSync(FRONTEND_DIST)) {
   app.use(express.static(FRONTEND_DIST));
 
   app.get('*', (req, res, next) => {
-    // An unknown API route is a 404, not the app shell.
     if (req.path.startsWith('/api/')) return next();
     res.sendFile(path.join(FRONTEND_DIST, 'index.html'));
   });
@@ -130,7 +119,6 @@ const CLEANUP_INTERVAL = 24 * 60 * 60 * 1000;
 setInterval(cleanupOldFiles, CLEANUP_INTERVAL);
 console.log(`Auto-cleanup scheduled (runs every 24 hours, deletes files older than ${RETENTION_DAYS} days)`);
 
-// Turns a throw the async route wrapper caught into a 500 rather than a hang.
 app.use((error, req, res, next) => {
   console.error(`Unhandled error on ${req.method} ${req.path}:`, error);
 
@@ -141,7 +129,6 @@ app.use((error, req, res, next) => {
 
 let stopAnnouncing = () => {};
 
-// Workers are separate processes and outlive this one unless asked to stop.
 for (const signal of ['SIGTERM', 'SIGINT']) {
   process.on(signal, () => {
     stopAnnouncing();
@@ -150,8 +137,6 @@ for (const signal of ['SIGTERM', 'SIGINT']) {
   });
 }
 
-// Losing an unattended render to a stray rejection is worse than logging it and
-// carrying on; jobs resume from their last frame anyway.
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled promise rejection:', reason);
 });
@@ -168,8 +153,6 @@ try {
 const scheme = tls ? 'https' : 'http';
 const server = tls ? https.createServer(tls, app) : app;
 
-// Made before the first request rather than asked of whoever installed this:
-// the farm tells its admin what the code is, and they pass it on.
 const signup = ensureSignupCode();
 
 server.listen(PORT, () => {

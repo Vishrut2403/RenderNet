@@ -1,7 +1,3 @@
-// A still that would take one machine all night, cut into regions the farm can
-// render at the same time. Each region is an ordinary unit of work - claimed,
-// retried and counted like a frame - and the pieces are put back together once
-// they have all arrived.
 import path from 'path';
 import { primaryOf, extensionOf } from './formats.js';
 
@@ -20,17 +16,10 @@ export function isTiled(job) {
   return Number.isInteger(job?.tiles) && job.tiles > 1;
 }
 
-// What the finished picture is called: the one frame of the scene it is, in the
-// format the job asked for, beside the regions it was made from.
 export function compositeName(job) {
   return `frame_${String(job.frameStart).padStart(4, '0')}${extensionOf(primaryOf(job.formats))}`;
 }
 
-// The same arithmetic has to be used twice - once to tell Blender which region
-// to render, and once to put the pieces back - and only Blender knows the
-// frame's size in pixels, so it is written here in Python for both to import.
-// Regions meet on whole pixels: fractions alone would leave a seam wherever
-// Blender's own rounding disagreed with ours.
 export const GRID_PYTHON = `
 def grid_for(count):
     columns = round(count ** 0.5)
@@ -61,9 +50,6 @@ def frame_size(scene):
             round(scene.render.resolution_y * percent))
 `;
 
-// Read raw and written raw: the tiles already carry whatever view transform
-// the render applied, so putting them through colour management again would
-// shift every pixel.
 export const COMPOSITE_SCRIPT = `import bpy, os, json
 import numpy
 ${GRID_PYTHON}

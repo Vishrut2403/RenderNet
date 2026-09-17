@@ -18,8 +18,6 @@ export function heldForDisk() {
   return held;
 }
 
-// Asked once a frame while a job renders, so the answer is kept for a moment:
-// the number does not move fast enough to be worth a syscall per upload.
 function freeNow(fresh = false) {
   if (!fresh && Date.now() - freeSpace.at < FREE_TTL_MS) return freeSpace.bytes;
 
@@ -28,18 +26,12 @@ function freeNow(fresh = false) {
   return freeSpace.bytes;
 }
 
-// The same reserve the queue is held at, asked of a job already rendering:
-// nothing else looked at free space between the moment a job started and the
-// moment it ended, so a long render walked straight through it.
 export function tooFullToCarryOn() {
   const free = freeNow();
 
   return free !== null && free < MIN_FREE_BYTES;
 }
 
-// Held rather than failed: deleting one finished job is all it takes to free
-// the space, and a job that failed for want of disk would have to be uploaded
-// again to get it back.
 export function diskIsTooFull(onRecheck) {
   const free = freeNow(true);
 
@@ -60,8 +52,6 @@ export function diskIsTooFull(onRecheck) {
   return true;
 }
 
-// One file on disk may be the scene of several jobs, so it only goes when the
-// last job that could still render it does. A cancelled job never can.
 function stillWanted(filePath, exceptJobId = null) {
   for (const job of jobs.values()) {
     if (job.id === exceptJobId || job.status === 'cancelled') continue;
@@ -71,8 +61,6 @@ function stillWanted(filePath, exceptJobId = null) {
   return false;
 }
 
-// For an upload that has arrived but whose job was then refused: nothing names
-// it yet, so it goes unless it is a scene somebody else already had.
 export function dropUnusedBlend(filePath) {
   if (!filePath || stillWanted(filePath)) return;
 
@@ -113,15 +101,11 @@ function sizeOf(target) {
       total += sizeOf(path.join(target, entry));
     }
   } catch {
-    // Gone between listing and measuring, which is only ever an overcount.
   }
 
   return total;
 }
 
-// Measured from disk rather than tracked in a counter: a counter drifts the
-// moment anything is removed outside the app, and there are few enough jobs
-// here that walking them costs nothing.
 const usageCache = new Map();
 
 export function usageFor(username, { fresh = false } = {}) {
@@ -132,7 +116,6 @@ export function usageFor(username, { fresh = false } = {}) {
   }
 
   let bytes = 0;
-  // Counted once however many of their jobs render it: it is one file on disk.
   const scenes = new Set();
 
   for (const job of jobs.values()) {
@@ -157,8 +140,6 @@ export function usageFor(username, { fresh = false } = {}) {
   return value;
 }
 
-// Deleting, cancelling or uploading is exactly when somebody is watching the
-// number, so those clear the cache rather than making them wait it out.
 export function forgetUsage(username) {
   usageCache.delete(username);
 }
@@ -168,16 +149,12 @@ export function usageByOwner() {
   return Object.fromEntries(Array.from(owners, owner => [owner, usageFor(owner)]));
 }
 
-// Cleanup deletes by age alone, which would otherwise take the .blend out from
-// under a job that has been sitting in the queue for longer than the cutoff.
 export function getActiveJobPaths() {
   const inUse = new Set();
 
   for (const job of jobs.values()) {
     if (job.status !== 'pending' && job.status !== 'rendering') continue;
 
-    // The directory as well as the file: the sweep walks uploads/ an entry at a
-    // time, and a content-addressed scene is a directory there.
     if (job.filePath) {
       inUse.add(dataPath(job.filePath));
 

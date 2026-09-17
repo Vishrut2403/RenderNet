@@ -3,8 +3,6 @@ import path from 'path';
 
 const SHELL_SCRIPTS = new Set(['.cmd', '.bat']);
 
-// A backslash only escapes when it sits immediately before a quote or at the
-// end of the argument; anywhere else it is a path separator and stays as is.
 function quoteArgument(value) {
   const escaped = String(value)
     .replace(/(\\*)"/g, '$1$1\\"')
@@ -13,9 +11,6 @@ function quoteArgument(value) {
   return `"${escaped}"`;
 }
 
-// Node has refused to spawn .cmd and .bat directly since 20.12, so those go
-// through the interpreter. cmd /s strips the outer quotes and takes what is
-// left verbatim, which is what carries a path with spaces through intact.
 export function spawnPlan(executable, args, platform = process.platform) {
   if (platform !== 'win32' || !SHELL_SCRIPTS.has(path.extname(executable).toLowerCase())) {
     return { command: executable, args, options: {} };
@@ -36,9 +31,6 @@ export function launch(executable, args, options = {}) {
   return spawn(plan.command, plan.args, { ...options, ...plan.options });
 }
 
-// Windows has no signals: kill() terminates the process outright and leaves
-// anything it started behind, so an interpreter would die while the render it
-// launched carried on. Answers whether a SIGKILL escalation is still to come.
 export function terminate(child, platform = process.platform) {
   if (platform !== 'win32') {
     child.kill('SIGTERM');

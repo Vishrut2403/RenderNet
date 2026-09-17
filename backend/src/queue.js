@@ -38,11 +38,7 @@ const MAX_INTERRUPTIONS = 2;
 const renderQueue = [];
 const active = new Set();
 
-// The worker renews this while a frame is still rendering.
-// Long enough that a worker misses six renewals before losing the frame, short
-// enough that a machine switched off mid-frame does not strand it for minutes.
 const LEASE_TTL_MS = Number(process.env.LEASE_TTL_MS) || 30 * 1000;
-// How much work one claim may hold, and the most frames it may hold it in.
 const SPAN_MS = Number(process.env.FRAME_SPAN_MS) || 60 * 1000;
 const MAX_SPAN = Number(process.env.MAX_FRAME_SPAN) || 16;
 
@@ -52,8 +48,6 @@ const DRAIN_POLL_MS = 500;
 
 let lastFailure = null;
 
-// The database can outlive the frames: cleanup removes them, or someone empties
-// renders/ by hand.
 function reconcileFrames(job) {
   if (getFrames(job.id).length === 0 && Number.isInteger(job.frameStart)) {
     if (isTiled(job)) createFrames(job.id, 1, job.tiles);
@@ -61,8 +55,6 @@ function reconcileFrames(job) {
   }
 
   let done = 0;
-  // A tiled still keeps its regions in a folder of their own, so looking for
-  // them beside the finished picture would find none and render them all again.
   const folder = isTiled(job) ? tilesPath(job.outputFolder) : job.outputFolder;
 
   for (const frame of getFrames(job.id)) {
@@ -79,21 +71,16 @@ function reconcileFrames(job) {
   return done;
 }
 
-// The workstation is shut down nightly, so interruption is routine: only a job
-// interrupted repeatedly without ever advancing is abandoned.
 export function resumeInterruptedJobs() {
   let resumed = 0;
   let abandoned = 0;
 
   for (const job of jobs.values()) {
     if (job.status !== 'rendering' && job.status !== 'pending') continue;
-    // Nothing to resume: it is waiting for a person, not for a worker.
     if (job.approval === 'waiting') continue;
 
     const done = reconcileFrames(job);
 
-    // A frame whose file has been swept goes back to pending, taking its
-    // measured time with it.
     forgetTiming(job.id);
     forgetJob(job.id);
 
@@ -124,7 +111,6 @@ export function resumeInterruptedJobs() {
     enqueue(job.id);
     resumed++;
 
-    // Killed partway through its own asset check, so it never got an answer.
     if (job.assetCheck === 'checking') startSceneCheck(job);
   }
 
@@ -135,8 +121,6 @@ export function resumeInterruptedJobs() {
   if (resumed) processQueue();
 }
 
-// How many frames a range actually renders, which a step makes fewer than the
-// range is wide.
 function framesIn({ frameStart, frameEnd, frameStep }) {
   return Math.floor((frameEnd - frameStart) / Math.max(1, frameStep ?? 1)) + 1;
 }
@@ -185,13 +169,9 @@ export function addToQueue(jobData) {
     needsThisMachine: 0
   };
 
-  // Queued straight away so it has a position and an estimate like any other,
-  // but held back from being claimed until the scene has been looked at.
   if (!jobData.skipAssetCheck) job.assetCheck = 'checking';
 
   jobs.set(jobId, job);
-  // A tiled still is claimed a region at a time, so its units of work are the
-  // tiles rather than the one frame they all belong to.
   if (isTiled(job)) createFrames(jobId, 1, job.tiles);
   else createFrames(jobId, job.frameStart, job.frameEnd, job.frameStep);
   if (job.testFrame != null) holdFramesExcept(jobId, job.testFrame);
@@ -212,22 +192,13 @@ export function addToQueue(jobData) {
   return jobId;
 }
 
-// A scene that reaches for textures it did not bring renders untextured rather
-// than failing, and nobody wants to find that out at frame 500.
 function startSceneCheck(job) {
-  // Opened as the render will see it: a file already handed over is not
-  // missing, and a linked .blend only says what it needs once it has been
-  // opened, which is why supplying one can turn up more.
   checkScene(dataPath(job.filePath), writeManifest(job, jobAssets(job.id)), lastFrameOf(job))
     .then(({ checked, missing, unpacked, unbaked, unbakeable, fluids, scriptedDrivers }) => {
     const current = jobs.get(job.id);
 
-    // Deleted or cancelled while Blender was reading it.
     if (!current || current.status !== 'pending') return;
 
-    // Not a failure: the scene is already here and is one texture short, and
-    // re-uploading it to supply one file is the whole cost being avoided. The
-    // job keeps its place in the queue and waits for what it is missing.
     if (checked && missing.length > 0) {
       current.assetCheck = 'waiting';
       current.missingAssets = JSON.stringify(missing);
@@ -236,16 +207,6 @@ function startSceneCheck(job) {
       return;
     }
 
-    // Rendered out of order across machines, an unbaked cache gives a different
-    // picture from the one the artist has locally - and says nothing about it.
-    // The farm bakes it first rather than refusing the job: this is the machine
-    // with the hours to spend on it.
-    // Simulations the farm cannot bake without delivering a picture the artist
-    // would not get themselves. Sent back with what to change rather than baked
-    // into something that only looks right.
-    // A driver Blender cannot work out for itself needs the Python this file
-    // brought, and without it the driver reads zero and the frame is quietly
-    // wrong. Refused rather than rendered, the way an unbakeable cache is.
     if (checked && scriptedDrivers.length > 0 && !current.allowScripts) {
       const queued = renderQueue.indexOf(current.id);
       if (queued > -1) renderQueue.splice(queued, 1);
@@ -274,15 +235,11 @@ function startSceneCheck(job) {
       console.log(`Job ${current.id} has ${unbaked.length} simulation(s) to bake first`);
     }
 
-    // A fluid's frames stay in a folder the scene points at rather than inside
-    // it, so the job renders where that folder is and nowhere else.
     if (checked && fluids.length > 0) {
       current.needsThisMachine = 1;
       console.log(`Job ${current.id} keeps ${fluids.length} fluid cache(s) on this machine`);
     }
 
-    // Not packed, but here. Fine on this machine and nowhere else, because a
-    // machine somewhere else is sent the .blend and nothing beside it.
     if (!current.needsThisMachine) {
       current.needsThisMachine = checked && unpacked.length > 0 ? 1 : 0;
     }
@@ -295,14 +252,8 @@ function startSceneCheck(job) {
 
     if (!preemptFor(current)) processQueue();
 
-    // Checked, so claimable at last. Whoever is holding on for work is the one
-    // that starts it: processQueue leaves a second job alone while a first is
-    // still going, and it is a worker asking that promotes it.
     announce(WORK);
   }).catch(error => {
-    // A check that could not run found nothing, and lets the job through like
-    // one that could not read the scene - rather than leaving it marked as still
-    // being checked, which the queue never starts.
     console.error(`Job ${job.id}: the scene check failed (${error.message}); rendering anyway`);
 
     const current = jobs.get(job.id);
@@ -317,7 +268,6 @@ function startSceneCheck(job) {
   });
 }
 
-// What a job is still waiting for, as the artist sees it.
 export function assetsWanted(job) {
   if (job.assetCheck !== 'waiting') return [];
 
@@ -328,10 +278,6 @@ export function assetsWanted(job) {
   }
 }
 
-// A file handed over for something the scene reaches for and did not bring. The
-// .blend is left exactly as uploaded - the render points the datablock at this
-// copy instead - so the scene keeps its hash and stays shared with every other
-// job that renders it.
 export function supplyAsset(jobId, storedPath, { filename, bytes }) {
   const job = jobs.get(jobId);
 
@@ -351,8 +297,6 @@ export function supplyAsset(jobId, storedPath, { filename, bytes }) {
 
   job.missingAssets = JSON.stringify(left);
 
-  // Looked at again rather than queued: a linked .blend that has only just
-  // arrived brings its own references with it, and those are missing too.
   if (left.length === 0) job.assetCheck = 'checking';
 
   saveJob(job);
@@ -365,11 +309,6 @@ export function supplyAsset(jobId, storedPath, { filename, bytes }) {
   return { wanted: left };
 }
 
-// The scene a render opens: the bake's own copy where there was one to do, and
-// the uploaded file otherwise. The version goes with it because a machine
-// somewhere else keeps what it fetches: the store names a scene by the hash of
-// its contents, but a baked copy keeps one name however many times it is made,
-// and a job baked again would otherwise render from the copy that machine kept.
 function sceneOf(job) {
   const at = dataPath(job.bakedPath || job.filePath);
 
@@ -380,14 +319,10 @@ function sceneOf(job) {
   return { blendPath: at, blendVersion: String(made) };
 }
 
-// What the bake has to reach: a simulation is only right at a frame if every
-// frame before it was stepped, so the cache has to cover the last one rendered.
 function lastFrameOf(job) {
   return isTiled(job) ? job.frameStart : job.frameEnd;
 }
 
-// One sentence per reason, naming what to change in Blender: both are a setting
-// away from being ordinary jobs the farm bakes itself.
 function needsItsScripts(drivers) {
   const shown = drivers.slice(0, 3).join(', ');
   const rest = drivers.length > 3 ? `, and ${drivers.length - 3} more` : '';
@@ -430,6 +365,7 @@ export function bakingSimulations(job) {
 }
 
 function preemptFor(job) {
+  // Never pause a running job for one that cannot start.
   if (!readyToStart(job)) return false;
 
   const displaceable = activeJobs().filter(running => displaces(job, running));
@@ -450,7 +386,6 @@ function pushBack(running, by) {
   running.startedAt = null;
   running.currentFrame = null;
   running.pausedBy = by;
-  // Being pushed aside must not count toward the abandonment rule.
   running.framesAtResume = countFramesByStatus(running.id).done;
   saveJob(running);
 
@@ -468,8 +403,6 @@ export function approveJob(jobId) {
     return { success: false, error: `Job ${jobId} is not waiting on a test frame` };
   }
 
-  // Cancelling leaves the approval as it was, and approving that would put a job
-  // whose files are gone back into the queue.
   if (job.status !== 'pending') {
     return { success: false, error: `Job ${jobId} is ${job.status}` };
   }
@@ -479,8 +412,6 @@ export function approveJob(jobId) {
 
   job.approval = 'approved';
   job.error = null;
-  // The test frame already counts as progress, so the restart rule starts from
-  // where this leaves off rather than treating it as a job that has done nothing.
   job.framesAtResume = countFramesByStatus(jobId).done;
   saveJob(job);
 
@@ -501,31 +432,21 @@ export function rerunJob(jobId) {
     return { success: false, error: `Cannot rerun a ${job.status} job` };
   }
 
-  // A scene nobody can put right by trying again: the stored .blend is the one
-  // that was looked at, so it can only fail the same way. 'missing' and
-  // 'unbaked' are only reachable on rows from before the farm started asking
-  // for the files it is missing and baking the simulations itself.
   if (['missing', 'unbaked', 'refused'].includes(job.assetCheck)) {
     return { success: false, error: job.error };
   }
 
-  // A bake is worth another go: the likeliest reason it stopped is the machine
-  // being switched off for the night part way through one.
   if (job.bake === 'failed') job.bake = 'waiting';
 
   if (!job.filePath || !fs.existsSync(dataPath(job.filePath))) {
     return { success: false, error: 'The uploaded .blend is no longer on the workstation' };
   }
 
-  // The frames render from the baked copy, so one that has been swept has to be
-  // made again rather than rendered without.
   if (job.bakedPath && !fs.existsSync(dataPath(job.bakedPath))) {
     job.bakedPath = null;
     job.bake = 'waiting';
   }
 
-  // Before resetting: a frame counted as done whose file has been swept has to
-  // go back with the ones that failed.
   const delivered = reconcileFrames(job);
 
   resetFailedFrames(jobId);
@@ -533,8 +454,6 @@ export function rerunJob(jobId) {
   forgetJob(jobId);
   const retried = countFramesByStatus(jobId).pending;
 
-  // A tiled still whose regions all arrived but could not be put together needs
-  // the last step attempted again, not every region rendered a second time.
   const compositeOnly = retried === 0 && isTiled(job) && job.composite === 'failed';
 
   if (retried === 0 && !compositeOnly) {
@@ -562,8 +481,6 @@ export function rerunJob(jobId) {
   enqueue(jobId);
   console.log(`Job ${jobId} queued again for ${retried} frame(s)`);
 
-  // Refused by a build that left the check marked as running: nothing starts
-  // it again otherwise, and the queue never promotes a job still being checked.
   if (job.assetCheck === 'checking') startSceneCheck(job);
 
   processQueue();
@@ -587,9 +504,6 @@ export function setJobPriority(jobId, priority) {
   return { success: true, priority: job.priority };
 }
 
-// Rendering, or waiting in the queue. A job held back for its owner to approve
-// its test frame is neither, and putting one of those in front of the farm would
-// start a render nobody has agreed to yet.
 function inTheRunning(job) {
   if (job.status === 'rendering') return true;
 
@@ -600,9 +514,6 @@ function describe(job) {
   return job.approval === 'waiting' ? 'job waiting on its owner' : `${job.status} job`;
 }
 
-// One answer for both starting a job and pausing another to make room for it: a
-// job that cannot run yet is no reason to stop one that can, and one still
-// winding down from a pause must not be started over the top of itself.
 function readyToStart(job) {
   return job?.status === 'pending'
     && renderQueue.includes(job.id)
@@ -613,8 +524,6 @@ function readyToStart(job) {
     && engineIsOffered(job.renderEngine);
 }
 
-// An admin taking the machine back. A held job keeps its place and its finished
-// frames; it simply is not started again until the same person lets it go.
 export function holdJob(jobId, by) {
   const job = jobs.get(jobId);
 
@@ -656,9 +565,6 @@ export function releaseJob(jobId) {
   return { success: true, jobId };
 }
 
-// Ahead of the whole farm, fairness and urgency included, and it stops whatever
-// is rendering to get there. Pinning a held job lets it go: asking for it next
-// and holding it back at once cannot both be meant.
 export function pinJob(jobId, pinned) {
   const job = jobs.get(jobId);
 
@@ -696,9 +602,6 @@ function enqueue(jobId) {
   announce(WORK);
 }
 
-// A pin an admin placed, then urgency, then whose turn it is, then the order
-// they were submitted in. Fairness sits below urgency deliberately: it decides
-// who goes next, not whether somebody's night render is worth interrupting.
 function byRank(a, b) {
   const pins = (a?.pinnedAt ?? '') === (b?.pinnedAt ?? '')
     ? 0
@@ -714,8 +617,6 @@ function sortQueue() {
   renderQueue.sort((a, b) => byRank(jobs.get(a), jobs.get(b)));
 }
 
-// The same order among the jobs already running, so a lease comes from the one
-// with the strongest claim on the farm rather than whichever started first.
 function activeJobs() {
   return [...active]
     .map(jobId => jobs.get(jobId))
@@ -723,7 +624,6 @@ function activeJobs() {
     .sort(byRank);
 }
 
-// Only a pin or a higher priority is worth stopping work in flight for.
 function displaces(job, running) {
   if (job.pinnedAt || running.pinnedAt) {
     if (!running.pinnedAt) return true;
@@ -739,9 +639,6 @@ function promoteNext() {
 
   sortQueue();
 
-  // A job still being looked at, or one this farm has nobody to render, keeps
-  // its place in the queue rather than being started: a job marked rendering
-  // that no worker will ever claim is a progress bar that never moves.
   const next = renderQueue.findIndex(id => readyToStart(jobs.get(id)));
 
   if (next === -1) return null;
@@ -754,8 +651,6 @@ function promoteNext() {
     return promoteNext();
   }
 
-  // A claim left from a stint that has already ended would make the job
-  // unfinishable.
   clearJobLeases(jobId);
   clearJobComposite(jobId);
   clearJobBake(jobId);
@@ -788,16 +683,12 @@ function processQueue() {
 
 const drainTimers = new Map();
 
-// A frame being rendered, or the tiles being put together: both are a machine
-// holding on to the job.
 function stillClaimed(jobId) {
   return liveLeases().some(lease => lease.jobId === jobId)
     || liveComposites().some(claim => claim.jobId === jobId)
     || liveBakes().some(claim => claim.jobId === jobId);
 }
 
-// A worker in another process cannot be reached from here, so a stopped job is
-// only finished with once every claim on it has gone.
 function whenWorkersLetGo(jobId) {
   if (drainTimers.has(jobId)) return;
 
@@ -816,8 +707,6 @@ function whenWorkersLetGo(jobId) {
   check();
 }
 
-// Read from the job's state now rather than when it was stopped: a paused job
-// can be cancelled outright while its Blender is still winding down.
 function finishStoppedJob(jobId) {
   const job = jobs.get(jobId);
 
@@ -855,32 +744,19 @@ function recordFailure(job) {
   lastFailure = { id: job.id, at: job.completedAt, error: job.error };
 }
 
-// How many frames one claim covers, sized so the cost of starting Blender is
-// spread over several of them without a lost machine costing much.
 function spanFor(job, workerId) {
-  // Every tile crops the scene differently, so each is its own Blender anyway.
   if (isTiled(job)) return 1;
 
-  // What this scene costs this machine. A slow one given the same span as a
-  // fast one sits on work the fast one could have finished.
   const perFrame = machineFrameMs(job.id, workerId);
 
-  // Nothing measured for this machine on this job. One frame, which is what
-  // measures it - the rule the job's own first frame already follows, applied
-  // to each machine that joins.
   if (!perFrame) return 1;
 
   const left = Math.max(1, (job.totalFrames ?? 1) - (job.completedFrames ?? 0));
-  // Leaves the other machines something to claim.
   const share = Math.ceil(left / Math.max(workerCount(), 1));
 
   return Math.max(1, Math.min(Math.floor(SPAN_MS / perFrame), share, MAX_SPAN));
 }
 
-// Offered before anything else this job has: the frames are not claimable until
-// it is done. Any machine may take it, whatever it can render, because a bake
-// renders nothing - but a scene whose files only this machine can see has to be
-// baked here, for the same reason it has to be rendered here.
 function bakeFromActive(workerId, local) {
   for (const job of activeJobs()) {
     if (job.bake !== 'waiting') continue;
@@ -908,8 +784,6 @@ function bakeFromActive(workerId, local) {
   return null;
 }
 
-// Offered before frames: it is the last thing a tiled still needs, and until it
-// is done the job holds a slot.
 function compositeFromActive(workerId) {
   for (const job of activeJobs()) {
     if (!isTiled(job) || job.composite !== 'waiting') continue;
@@ -940,16 +814,10 @@ function compositeFromActive(workerId) {
 
 function leaseFromActive(workerId, local) {
   for (const job of activeJobs()) {
-    // A worker that cannot render the engine would fail every frame it took,
-    // and three failures in a row is enough to stop the job for everyone.
     if (!workerCanRender(workerId, job.renderEngine)) continue;
 
-    // Nothing of this job renders until its simulations are baked: a frame
-    // rendered before that is the wrong picture rather than a failed one.
     if (job.bake === 'waiting') continue;
 
-    // Its textures are on this machine's disk and nowhere else, so a machine
-    // somewhere else would render it untextured and say nothing was wrong.
     if (job.needsThisMachine && !local) continue;
 
     const lease = leaseFrames(job.id, workerId, LEASE_TTL_MS, spanFor(job, workerId));
@@ -959,8 +827,6 @@ function leaseFromActive(workerId, local) {
         ...lease,
         ttlMs: LEASE_TTL_MS,
         ...sceneOf(job),
-        // Files the artist handed over, named by the path the scene stores, so
-        // the render can point each datablock at the copy it was given.
         assets: jobAssets(job.id).map(asset => ({
           stored: asset.storedPath,
           filename: asset.filename,
@@ -975,8 +841,6 @@ function leaseFromActive(workerId, local) {
         exrCodec: job.exrCodec,
         exrDepth: job.exrDepth,
         jpegQuality: job.jpegQuality,
-        // A tile is a region of one frame, so the scene frame it renders is not
-        // the number it is claimed and uploaded under.
         sceneFrame: isTiled(job) ? job.frameStart : null,
         tile: isTiled(job) ? { index: lease.frames[0], of: job.tiles } : null
       };
@@ -986,10 +850,6 @@ function leaseFromActive(workerId, local) {
   return null;
 }
 
-// A job promoted before any worker had said what it can do, on a farm where
-// none of them can render it. Put back rather than left showing progress it
-// will never make; it keeps the frames it has and starts again when a machine
-// that offers the engine turns up.
 function parkUnrenderable() {
   for (const jobId of [...active]) {
     const job = jobs.get(jobId);
@@ -1010,11 +870,7 @@ function parkUnrenderable() {
   }
 }
 
-// A worker with nothing to claim starts the next queued job rather than waiting,
-// so the tail of one job does not leave the farm idle.
 export function leaseNextFrame(workerId, local = false) {
-  // The asking worker has just said what it offers, so this is the freshest
-  // the registry ever is.
   parkUnrenderable();
 
   for (;;) {
@@ -1026,17 +882,11 @@ export function leaseNextFrame(workerId, local = false) {
     if (!promoteNext()) break;
   }
 
-  // Nothing claimable can mean a job is finished, which its own last upload
-  // cannot tell while that claim is still open - or that its last tile has
-  // landed and it is ready to be put together, which is work this worker can
-  // take now rather than on its next round.
   for (const jobId of [...active]) settleJob(jobId);
 
   return compositeFromActive(workerId);
 }
 
-// Refused once the job is no longer rendering, which is how a worker learns it
-// was cancelled or preempted.
 export function renewFrameLease(leaseId) {
   const lease = getLease(leaseId) ?? getCompositeLease(leaseId) ?? getBakeLease(leaseId);
 
@@ -1055,9 +905,6 @@ export function renewFrameLease(leaseId) {
   return expiresAt ? { ok: true, expiresAt } : { ok: false, reason: 'expired' };
 }
 
-// A worker on this machine has gone. Its claims go with it rather than waiting
-// out a lease nobody is renewing: with a claim covering a span, that is up to a
-// minute of the farm sitting on work it will never receive.
 export function forgetWorker(workerId) {
   const touched = new Set([
     ...releaseLeasesOf(workerId), ...releaseCompositesOf(workerId), ...releaseBakesOf(workerId)
@@ -1069,7 +916,6 @@ export function forgetWorker(workerId) {
 
   for (const jobId of touched) settleJob(jobId);
 
-  // What it held can be claimed again, by a worker already waiting for work.
   announce(WORK);
 
   return touched.size;
@@ -1091,8 +937,6 @@ export function releaseFrameLease(leaseId) {
   return true;
 }
 
-// Only the frames on disk are downloadable, so the server decides this rather
-// than taking a worker's word for it.
 function settleJob(jobId) {
   const job = jobs.get(jobId);
 
@@ -1111,8 +955,6 @@ function settleJob(jobId) {
 
   if (isTiled(job)) return settleTiles(job, counts);
 
-  // A test frame that rendered is not a finished job: the rest of the range is
-  // still held, waiting for whoever asked for it to look at the frame.
   if (job.approval === 'testing' && counts.done > 0) {
     job.status = 'pending';
     job.approval = 'waiting';
@@ -1128,11 +970,6 @@ function settleJob(jobId) {
   completeJob(jobId, { successfulFrames: counts.done, failedFrames: counts.failed });
 }
 
-// Every region has to arrive: a still with one tile missing is not a picture,
-// so a tile that runs out of attempts fails the job rather than leaving a hole.
-// Putting them together is then a unit of work like any other, waiting for a
-// machine to claim it rather than being done here - the server may not be one
-// of the machines that renders.
 function settleTiles(job, counts) {
   if (counts.failed > 0) {
     failJob(job.id, `${counts.failed} of ${job.tiles} tiles failed to render`);
@@ -1147,9 +984,6 @@ function settleTiles(job, counts) {
   console.log(`Job ${job.id}: all ${job.tiles} tiles in, waiting to be put together`);
 }
 
-// The baked scene has arrived, or a machine has said it could not bake one.
-// Until this lands the job holds a slot with nothing claimable in it, which is
-// the point: every frame of it would otherwise be the wrong picture.
 export function recordBake(jobId, error) {
   const job = jobs.get(jobId);
 
@@ -1176,7 +1010,6 @@ export function recordBake(jobId, error) {
   return job;
 }
 
-// The finished picture has arrived, or a machine has said it could not make one.
 export function recordComposite(jobId, error) {
   const job = jobs.get(jobId);
 
@@ -1205,8 +1038,6 @@ function jobFilesExist(job) {
     || !!(job.outputFolder && fs.existsSync(dataPath(job.outputFolder)));
 }
 
-// The record is the only thing tying rendered bytes to an owner, so it must not
-// outlive the files or the space stops counting against anybody's quota.
 export function pruneOldJobs(cutoffMs) {
   let pruned = 0;
 
@@ -1226,8 +1057,6 @@ export function pruneOldJobs(cutoffMs) {
   return pruned;
 }
 
-// The order the queue will actually run in, which is what an estimate is
-// measured against.
 export function queueWaits() {
   sortQueue();
 
@@ -1238,16 +1067,12 @@ export function queueWaits() {
 export function jobsNoWorkerCanRender() {
   const waiting = renderQueue.map(id => jobs.get(id)).filter(Boolean);
 
-  // Queued ones are the ordinary case; a running one was promoted while a
-  // machine that could take it was still here.
   return [...activeJobs(), ...waiting]
     .filter(job => !engineIsOffered(job.renderEngine))
     .map(job => ({ id: job.id, renderEngine: job.renderEngine }));
 }
 
 export function getQueueStatus() {
-  // The queue is only ordered when read from, so an unsorted read would hand
-  // back an order it will not run in.
   sortQueue();
 
   return {
@@ -1272,8 +1097,6 @@ export function getQueuePosition(jobId) {
   return index === -1 ? null : index + 1;
 }
 
-// From frames delivered rather than how far the range has got, so a resumed job
-// keeps the progress it had.
 function syncFrameCounts(job) {
   const counts = countFramesByStatus(job.id);
 
@@ -1286,8 +1109,6 @@ function syncFrameCounts(job) {
   return counts;
 }
 
-// A callback for a job that is no longer rendering would write its output folder
-// back after cancellation deleted it.
 function renderingJob(jobId) {
   const job = jobs.get(jobId);
   return job && job.status === 'rendering' ? job : null;
@@ -1315,15 +1136,11 @@ export function recordFrameUpload(jobId, frameNumber, filename) {
   syncFrameCounts(job);
   saveJob(job);
 
-  // Frames are the only thing that fills the disk once a job is under way.
   if (tooFullToCarryOn()) holdForDisk(job);
 
   return job;
 }
 
-// Back to the queue keeping every frame it delivered, rather than failing the
-// rest three attempts at a time against a disk with no room for them. No owner
-// to attribute it to, and promoteNext will not start it again until there is.
 function holdForDisk(job) {
   console.warn(`Job ${job.id} put back: the disk is down to its reserve`);
 
@@ -1331,8 +1148,6 @@ function holdForDisk(job) {
   diskIsTooFull(processQueue);
 }
 
-// Returns the frame's own record too: whether it has attempts left is what
-// tells the worker to try again, so the server stays the one keeping count.
 export function recordFrameFailure(jobId, frameNumber, error) {
   const job = renderingJob(jobId);
   if (!job) return null;
@@ -1343,8 +1158,6 @@ export function recordFrameFailure(jobId, frameNumber, error) {
 
   settleJob(jobId);
 
-  // A frame with attempts left went back to pending without passing through the
-  // queue, so nothing else says it can be claimed again.
   if (frame?.status === 'pending') announce(WORK);
 
   return { job, frame };
@@ -1354,15 +1167,11 @@ function completeJob(jobId, { successfulFrames, failedFrames }) {
   const job = jobs.get(jobId);
   if (!job) return null;
 
-  // A late callback must not resurrect a job cancelled mid-render.
   if (job.status === 'cancelled') {
     console.log(`Ignoring completion for cancelled job ${jobId}`);
     return job;
   }
 
-  // What actually arrived is authoritative. The worker's tally can disagree
-  // with it - an upload whose response was lost counts as failed there and as
-  // delivered here - and only the frames on disk are downloadable.
   const counts = syncFrameCounts(job);
   const delivered = counts.done;
   const failed = counts.failed;
@@ -1415,9 +1224,6 @@ export function cancelJob(jobId) {
     job.cancelledAt = new Date().toISOString();
     saveJob(job);
 
-    // A job paused for a higher-priority one is pending while its Blender is
-    // still winding down. Deleting its files now would pull the scratch dir out
-    // from under a live process, so it waits for the workers to let go.
     if (active.has(jobId)) {
       console.log(`Job ${jobId} cancelled while it was pausing`);
       whenWorkersLetGo(jobId);
@@ -1439,9 +1245,6 @@ export function cancelJob(jobId) {
     if (active.has(jobId)) {
       console.log(`Job ${jobId} cancelled, waiting for its workers to stop`);
 
-      // The files and the slot are released once the workers have let go.
-      // Deleting now would let a frame still in flight recreate the output
-      // folder after it was removed.
       whenWorkersLetGo(jobId);
 
       return { success: true, message: 'Job cancelled successfully' };
@@ -1459,8 +1262,6 @@ export function cancelJob(jobId) {
   return { success: false, error: 'Job cannot be cancelled' };
 }
 
-// Removing a job is the way space is reclaimed, so it takes the files with it.
-// A rendering job has to be cancelled first: its worker is still writing.
 export function deleteJobAndFiles(jobId) {
   const job = jobs.get(jobId);
   if (!job) return { success: false, error: 'Job not found' };
@@ -1481,7 +1282,5 @@ export function deleteJobAndFiles(jobId) {
   return { success: true, message: 'Job deleted' };
 }
 
-// Cleanup deletes by age alone, which would otherwise take the .blend out from
-// under a job that has been sitting in the queue for longer than the cutoff.
 export { stopWorkers };
 

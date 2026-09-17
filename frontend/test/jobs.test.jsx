@@ -1,5 +1,3 @@
-// The job list once it stopped being the whole list: which page is polled, what
-// "show older" adds, and where the counts on the tabs come from.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -35,7 +33,6 @@ function page(jobs, { counts, nextBefore = null } = {}) {
 }
 
 beforeEach(() => {
-  // Nothing here is about download links, and each card would mint one.
   vi.spyOn(api, 'downloadToken').mockResolvedValue({ token: 'x' });
 });
 
@@ -96,7 +93,6 @@ describe('reading further back', () => {
   it('shows a job once even when it lands on both pages', async () => {
     vi.spyOn(api, 'jobs').mockImplementation(async ({ before }) => (
       before
-        // The newest page already holds 3; the server hands it back again.
         ? page([job(3), job(2)], { counts: { all: 3, completed: 3 }, nextBefore: null })
         : page([job(4), job(3)], { counts: { all: 3, completed: 3 }, nextBefore: 3 })
     ));
@@ -131,7 +127,6 @@ describe('reading further back', () => {
     await userEvent.click(screen.getByRole('button', { name: /^failed/ }));
     await screen.findByText('scene-9.blend');
 
-    // The older page belonged to the previous filter.
     expect(screen.queryByText('scene-1.blend')).not.toBeInTheDocument();
   });
 });

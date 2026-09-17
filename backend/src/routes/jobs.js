@@ -15,8 +15,6 @@ import { requireAdmin } from '../auth.js';
 
 const router = express.Router();
 
-// A texture the scene asked for. Landed among the part-uploads first, because
-// where it belongs depends on which dependency it answers for.
 const supplied = multer({
   storage: multer.diskStorage({
     destination: PARTIALS_DIR,
@@ -53,7 +51,7 @@ function pageRequest(query) {
   return { status, limit, before };
 }
 
-// Declared before /:id, which would otherwise take "summary" for a job id.
+// Before /:id, which would otherwise take 'summary' as a job id.
 router.get('/summary', (req, res) => {
   res.json({
     ...jobsSummary(req.user),
@@ -160,9 +158,6 @@ router.post('/:id/approve', (req, res) => {
   res.json(result);
 });
 
-// One file for one thing the scene reaches for. The .blend already on disk is
-// left alone: the render points that datablock at this copy instead, which is
-// what saves re-uploading a two gigabyte scene to supply a texture.
 router.post('/:id/assets', supplied.single('asset'), (req, res) => {
   const jobId = Number(req.params.id);
   const job = getJob(jobId);
@@ -250,8 +245,6 @@ router.post('/:id/priority', (req, res) => {
   res.status(result.success ? 200 : 400).json(result);
 });
 
-// The three an admin has over everybody's jobs, fairness included: hold one out
-// of the running, let it go again, and put one in front of the whole farm.
 router.post('/:id/hold', requireAdmin, (req, res) => {
   const job = getJob(Number(req.params.id));
 
@@ -286,8 +279,6 @@ router.post('/:id/pin', requireAdmin, (req, res) => {
   res.status(result.success ? 200 : 400).json(result);
 });
 
-// Made on request rather than for every job: encoding wants the same processor
-// the renders do, and most jobs are downloaded as frames.
 router.post('/:id/video', (req, res) => {
   const job = getJob(Number(req.params.id));
 

@@ -1,7 +1,3 @@
-// Who may fetch a finished render, with what, and whether any of it survives the
-// machine being restarted. None of it needs a real Blender - only frames on
-// disk - so it runs on every platform the farm is tested on rather than on the
-// one that happens to have Blender installed.
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, adminSession,
   signUp, login, auth, status, submitJob, waitForJob, waitForCondition, getJob,
@@ -69,9 +65,6 @@ export default async function run() {
     results.check('and somebody else cannot mint one',
       (await mint(base, jobId, onlooker)).status === 403);
 
-    // The page renews its token before this runs out, so it has to be told
-    // when that is: a link drawn from a token nobody renewed is a 401 at the
-    // moment somebody finally clicks it.
     const minted = (await mint(base, jobId, admin)).body;
 
     results.check('a minted token says when it stops working',
@@ -95,8 +88,6 @@ export default async function run() {
 
     console.log('\n  What a link in the address bar may carry');
 
-    // A URL is copied, bookmarked and kept in history, so the one thing it must
-    // never carry is the session itself.
     results.check('never the session token',
       await status(`${frameUrl}?token=${admin}`) === 401);
 
@@ -107,8 +98,6 @@ export default async function run() {
     results.check('and a token with a character changed opens nothing',
       await status(`${frameUrl}?token=${scoped.slice(0, -2)}xy`) === 401);
 
-    // The same number of characters but not the same number of bytes, which is
-    // what a comparison of the raw signatures refuses to answer at all.
     const parts = scoped.split('.');
     const wideSignature = [...parts.slice(0, 3), `é${parts[3].slice(1)}`].join('.');
 
@@ -117,8 +106,6 @@ export default async function run() {
 
     console.log('\n  Reaching past the job folder');
 
-    // Separators are written in the URL rather than as path segments, so the
-    // server sees the traversal rather than the client's own resolution of it.
     for (const attempt of ['..%2f..%2fusers.json', '..%2f..%2ftest.db',
       '..%5c..%5cusers.json', '%2e%2e%2f%2e%2e%2fusers.json']) {
       results.check(`${attempt} is refused`,
@@ -137,8 +124,6 @@ export default async function run() {
       listing.files.some(file =>
         file.filename.endsWith('.mp4') && file.previewable === false),
       JSON.stringify(listing.files.map(file => file.filename)));
-    // The browser composes the fetchable URL; baking in an origin and a token
-    // here breaks any deployment where the API is not same-origin.
     results.check('paths are API-relative and carry no token',
       listing.files.every(file =>
         file.path === `/download/files/render_${jobId}/${file.filename}`)

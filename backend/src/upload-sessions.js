@@ -12,13 +12,10 @@ import {
 } from './paths.js';
 
 const MAX_OPEN_PER_USER = 3;
-// Long enough for any name somebody types, short enough that the id, the
-// timestamp and this together stay inside Windows' path limit.
 const MAX_FILENAME = 100;
 
 const sessions = new Map();
 
-// Named after the file as well as the id, so partials/ can be read at a glance.
 function partialPath(id, filename) {
   return path.join(PARTIALS_DIR, `${id}-${filename}.part`);
 }
@@ -27,8 +24,6 @@ function openFor(owner) {
   return [...sessions.values()].filter(session => session.owner === owner);
 }
 
-// Counted against the quota while it is still arriving, so three sessions each
-// just under the limit cannot be used to walk past it.
 function claimed(owner) {
   return openFor(owner).reduce((sum, session) => sum + session.size, 0);
 }
@@ -133,8 +128,6 @@ class Limiter extends Transform {
   }
 }
 
-// A chunk that dies halfway leaves the file longer than the count says, so it
-// is cut back to the last byte both sides agree on.
 export async function appendChunk(session, offset, stream) {
   if (session.busy) {
     return { status: 409, error: 'Another chunk of this upload is still arriving' };
@@ -184,7 +177,6 @@ function truncate(session) {
   }
 }
 
-// Every byte is there by now; the route checks that before it gets here.
 export async function finishSession(session) {
   const stored = await storeBlend(session.path, session.filename);
 
@@ -198,8 +190,6 @@ export function abortSession(session) {
   fs.rmSync(session.path, { force: true });
 }
 
-// Files with no session behind them are what a restart leaves: the sessions
-// live in memory, the bytes do not.
 export function sweepPartials(now = Date.now()) {
   let removed = 0;
 
@@ -224,7 +214,6 @@ export function sweepPartials(now = Date.now()) {
       fs.rmSync(file, { force: true });
       removed++;
     } catch {
-      // Gone already, or being written by a session that started mid-sweep.
     }
   }
 

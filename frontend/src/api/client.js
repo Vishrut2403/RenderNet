@@ -1,6 +1,5 @@
 const BASE = import.meta.env.VITE_API_URL || '/api';
 
-// Above this a file is sent in pieces and can be resumed.
 const CHUNKED_ABOVE = 32 * 1024 * 1024;
 const CHUNK_ATTEMPTS = 3;
 const RESUME_KEY = 'rendernet.upload';
@@ -20,9 +19,7 @@ export function getToken() {
   return localStorage.getItem('rendernet.token');
 }
 
-// Read as a stream rather than through EventSource, which cannot carry a
-// header: the session token belongs in one and never in a URL. Calls back on
-// every message until the signal is aborted or the connection ends.
+// fetch, not EventSource: the session token belongs in a header, never a URL.
 export async function streamEvents(signal, onMessage) {
   const token = getToken();
 
@@ -47,13 +44,10 @@ export async function streamEvents(signal, onMessage) {
 
     buffered += value;
 
-    // Messages are separated by a blank line, and one read can carry a
-    // fragment of the next.
     const parts = buffered.split('\n\n');
 
     buffered = parts.pop();
 
-    // Heartbeats are comments, which carry no data line and mean nothing here.
     for (const part of parts) {
       if (part.split('\n').some(line => line.startsWith('data:'))) onMessage();
     }
@@ -116,26 +110,21 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true, 
 
   const response = await fetch(`${BASE}${path}`, config);
 
-  // Drops the user back to the login screen rather than leaving stale errors.
   if (response.status === 401 && auth) {
     clearSession();
     onUnauthorized();
     throw new ApiError('Session expired', 401);
   }
 
-  // Log tails come back as plain text; everything else is JSON.
   const payload = expect === 'text'
     ? { text: await response.text().catch(() => '') }
     : await response.json().catch(() => ({}));
 
-  // Reachable from any call, so the app switches to that screen wherever it came
-  // from.
   if (response.status === 403 && payload.mustChangePassword) {
     onPasswordChangeRequired();
   }
 
   if (!response.ok) {
-    // A failed text request still answers with the usual JSON error body.
     const detail = expect === 'text' ? parseOrEmpty(payload.text) : payload;
     throw new ApiError(detail.error || `Request failed (${response.status})`, response.status);
   }
@@ -143,8 +132,6 @@ async function request(path, { method = 'GET', body, headers = {}, auth = true, 
   return expect === 'text' ? payload.text : payload;
 }
 
-// Strings whichever way the file goes up: the server reads a multipart form and
-// a JSON body the same way.
 function uploadSettings({
   frameStart, frameEnd, frameStep, renderEngine, priority, resolutionPercent, samples, formats,
   exrCodec, exrDepth, jpegQuality, skipAssetCheck, allowScripts, testFrame, tiles
@@ -176,7 +163,6 @@ function uploadSettings({
 }
 
 function send(xhr, payload, onLoaded) {
-  // XHR rather than fetch: upload progress events have no fetch equivalent.
   return new Promise((resolve, reject) => {
     xhr.setRequestHeader('Authorization', `Bearer ${getToken()}`);
 
@@ -232,7 +218,6 @@ function remember(file, uploadId) {
       uploadId, name: file.name, size: file.size, lastModified: file.lastModified
     }));
   } catch {
-    // Resuming after a reload is a convenience; private windows do without it.
   }
 }
 
@@ -240,7 +225,6 @@ function forget() {
   try {
     localStorage.removeItem(RESUME_KEY);
   } catch {
-    // As above.
   }
 }
 
@@ -257,9 +241,6 @@ function remembered(file) {
   }
 }
 
-// The same file picked again after a reload or a dropped connection carries on
-// from the byte the server last acknowledged. A session the server no longer
-// has - it was swept, or the server restarted - simply starts again.
 async function openUpload(file) {
   const previous = remembered(file);
 
@@ -299,7 +280,6 @@ async function sendChunks(file, session, onProgress) {
       offset = written.received;
       attempt = 0;
     } catch (error) {
-      // Not a failure to retry: the server is saying where this should start.
       if (error.status === 409 && Number.isInteger(error.received)) {
         offset = error.received;
         continue;
@@ -322,8 +302,6 @@ async function upload(file, options, onProgress) {
   return queuePrepared(session.uploadId, options);
 }
 
-// Sends the file the moment it is chosen, whatever its size, leaving it on the
-// workstation to be read and then queued.
 async function prepareUpload(file, onProgress) {
   const session = await openUpload(file);
 
@@ -428,19 +406,14 @@ export const api = {
 
   engines: () => request('/engines'),
 
-  // Read-only, one job, minutes long: what a link or an <img> can carry when it
-  // cannot carry the session.
   downloadToken: id => request(`/download/${id}/token`, { method: 'POST' }),
 
   jobFiles: id => request(`/download/${id}/files`),
 
-  // Built when the link is drawn rather than when the listing arrived: a token
-  // renewed since then has to reach the frames already on screen.
   fileUrl: (path, token) => downloadUrl(path, token),
 
   zipUrl: (id, token) => downloadUrl(`/download/${id}/zip`, token),
 
-  // Versioned by frame count so a new frame is not served from cache.
   previewUrl: (id, delivered, token) =>
     `${downloadUrl(`/download/${id}/preview`, token)}&v=${delivered}`,
 
@@ -451,9 +424,6 @@ export const api = {
   inspectUpload: uploadId =>
     request(`/upload/session/${uploadId}/inspect`, { method: 'POST' }),
 
-  // Nobody is waiting on the answer: a session left behind is swept anyway.
-  // Forgotten as well as dropped, or the next pick would try to carry on from
-  // bytes that are no longer there.
   abortUpload: uploadId => {
     forget();
 

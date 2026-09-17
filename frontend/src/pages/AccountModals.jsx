@@ -54,8 +54,6 @@ export function ChangePasswordModal({ onClose, notify, forced = false, onChanged
   );
 }
 
-// The one thing somebody joining the farm has to be told. Shown here because a
-// terminal scrolls away and nobody should have to restart the server to read it.
 function SignupCode({ notify }) {
   const [held, setHeld] = useState(null);
   const [error, setError] = useState('');
@@ -270,8 +268,6 @@ export function AdminModal({ onClose, notify }) {
 }
 
 
-// The workstation is started by Task Scheduler, where its output goes nowhere
-// anyone can read. This is the only way to see it without standing at it.
 export function LogsModal({ onClose }) {
   const [files, setFiles] = useState(null);
   const [selected, setSelected] = useState('');

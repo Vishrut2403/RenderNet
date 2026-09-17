@@ -1,5 +1,3 @@
-// The health endpoint: what it reports, and how much of it each caller is
-// allowed to see. Runs without Blender.
 import path from 'path';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer,
@@ -49,8 +47,6 @@ export default async function run() {
 
     console.log('\n  A machine that cannot render says so');
 
-    // Pointed at a Blender that is not there, so the degraded answer is
-    // exercised whether or not the machine running the suite has one.
     blind = await startServer({
       port: BLIND_PORT,
       cwd: blindSandbox,
@@ -132,8 +128,6 @@ export default async function run() {
     results.check('somebody else can see that the farm is busy',
       watched.body.queue?.rendering === true && theirs?.id === slow.body.jobId,
       JSON.stringify(watched.body.active));
-    // Everything else about a job is behind the same access check, so the
-    // health endpoint is not the place that starts handing out filenames.
     results.check('but not whose job it is or what it is called',
       theirs?.filename === undefined && theirs?.owner === undefined,
       JSON.stringify(watched.body.active));

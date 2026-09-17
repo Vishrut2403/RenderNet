@@ -1,5 +1,3 @@
-// A large .blend sent in pieces: what the server acknowledges, what it refuses,
-// and what an interrupted transfer can pick up from. Runs without Blender.
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -99,9 +97,6 @@ export default async function run() {
     results.check('the first piece is acknowledged by how much is held',
       first.body.received === PIECE, JSON.stringify(first.body));
 
-    // Long enough to arrive in several pieces, so the server has written some
-    // of it by the time it sees the chunk runs past the size declared. What it
-    // wrote has to go, or everything sent afterwards lands behind it.
     const overrun = await put(base, token, uploadId, PIECE,
       crypto.randomBytes(SIZE - PIECE + 100 * 1024));
 
@@ -110,9 +105,6 @@ export default async function run() {
     results.check('and leaves the count where it was',
       (await ask(base, token, uploadId)).body.received === PIECE);
 
-    // A connection that dies mid-chunk is the ordinary case this exists for.
-    // Sent slowly on purpose: pieces that reach the disk before the line drops
-    // are exactly the ones that have to be taken back off it.
     const cut = new AbortController();
 
     await fetch(`${base}/upload/session/${uploadId}?offset=${PIECE}`, {
@@ -161,8 +153,6 @@ export default async function run() {
       offset = last.body.received;
     }
 
-    // What a client asks after a dropped connection: not which pieces landed,
-    // just how far it got.
     results.check('the rest of it completes the upload',
       last.body.received === SIZE, JSON.stringify(last.body));
     results.check('and the session agrees',
@@ -170,8 +160,6 @@ export default async function run() {
 
     console.log('\n  Finishing');
 
-    // The bytes are the expensive part, so a settings mistake has to be
-    // correctable without sending them a second time.
     const wrong = await finish(base, token, uploadId, { frameStart: 4, frameEnd: 1 });
 
     results.check('a settings error is refused', wrong.status === 400,
@@ -248,9 +236,6 @@ export default async function run() {
   return results;
 }
 
-// Whether the bytes of a dying chunk reach the disk before the connection goes
-// is a race no request can be made to lose reliably, so the append is driven
-// directly: write some, fail, and see what the file is left holding.
 async function rewinds(results) {
   console.log('\n  Taking back a chunk that died halfway');
 

@@ -9,7 +9,6 @@ import { CACHES_PYTHON } from './baking.js';
 const MARKER = 'RENDERNET_PREFLIGHT ';
 const TIMEOUT_MS = Number(process.env.PREFLIGHT_TIMEOUT_MS) || 120 * 1000;
 
-// Packed files are skipped because packing is the fix being asked for.
 const SCRIPT = `import bpy, os, json, re
 ${REFERENCED_PYTHON}
 ${SUPPLIED_PYTHON}
@@ -35,10 +34,6 @@ def described(scene):
     }
 
 
-# A simulation nobody has baked is stepped from the start of the range as it
-# renders, so a frame is only right if every frame before it was rendered first,
-# in the same Blender. A farm does neither. Mantaflow fluids are left out:
-# nothing readable here says whether one has been baked.
 def named(obj, label):
     return '%s (%s)' % (obj.name, label)
 
@@ -48,10 +43,6 @@ OPENED_ON = bpy.context.scene.frame_current
 
 
 def why_not_here(obj):
-    # A cache on a linked object belongs to the file it was linked from and is
-    # not written into the one linking it; Blender bakes nothing at all for an
-    # object switched off in the viewport. Baking either would look like it
-    # worked and deliver frames of a simulation nobody would see at home.
     if obj.library is not None:
         return 'linked'
 
@@ -94,15 +85,11 @@ def unbakeable():
             yield {'name': '%s (%s)' % (obj.name, settings.domain_type.lower()), 'why': why}
 
 
-# A fluid's frames stay in a folder beside the job rather than inside the scene,
-# so only the machine that filled it can render from it.
 def fluids_wanted():
     return [obj.name for obj, settings in fluid_domains()
             if not fluid_ready(settings, LAST_FRAME, OPENED_ON) and why_not_here(obj) is None]
 
 
-# Before anything is judged: a file already handed over is not missing, and a
-# library only shows what it needs once it has been opened.
 apply_supplied(os.environ.get('RENDERNET_ASSETS', ''))
 
 missing = []
@@ -120,18 +107,12 @@ for block in referenced():
     resolved = os.path.normpath(
         bpy.path.native_pathsep(bpy.path.abspath(stored, library=block.library)))
 
-    # Here is not the same as packed: a machine somewhere else is sent the
-    # .blend and nothing beside it.
     if os.path.exists(resolved):
         unpacked.append(resolved)
     else:
-        # Both: the path as the file stores it is what names the datablock to
-        # repoint later, and the resolved one is what says where it looked.
         missing.append({'stored': stored, 'resolved': resolved})
 
 def scripted_drivers():
-    # Blender decides this, not us: a driver it can work out on its own is
-    # simple, and anything else wants Python that this file brought with it.
     wanted = set()
 
     def look(holder, name):
@@ -143,9 +124,6 @@ def scripted_drivers():
             if driver.type == 'SCRIPTED' and not driver.is_simple_expression:
                 wanted.add('%s: %s' % (name, driver.expression))
 
-    # Every kind of datablock rather than a list of the likely ones: a driver can
-    # sit on a light, a camera, a mesh, a particle system - anything with
-    # animation data - and one missed renders wrong without a word.
     for attribute in dir(bpy.data):
         try:
             collection = getattr(bpy.data, attribute)
@@ -161,8 +139,6 @@ def scripted_drivers():
 
             look(block, block.name)
 
-            # A material's, world's or light's own nodes are not a node group,
-            # so the drivers on their inputs live on a tree only they can reach.
             look(getattr(block, 'node_tree', None), block.name)
 
     return wanted
@@ -195,9 +171,6 @@ function parse(output) {
 
 let queued = Promise.resolve();
 
-// One Blender at a time, whoever is asking: a burst of uploads would otherwise
-// put a Blender per job on a machine that is meant to be spending itself on
-// renders.
 function readBlend(blendPath, supplied, lastFrame) {
   const next = queued.then(() => openScene(blendPath, supplied, lastFrame));
 
@@ -206,11 +179,6 @@ function readBlend(blendPath, supplied, lastFrame) {
   return next;
 }
 
-// What would make this scene render wrongly rather than not at all: files it
-// reaches for and did not bring, files only this machine can see, and
-// simulations nobody has baked. Anything that goes wrong with the check itself
-// lets the job through: a broken preflight must not be able to stop the farm.
-// Reports from before this named a missing file by its resolved path alone.
 function asDependency(entry) {
   return typeof entry === 'string'
     ? { stored: entry, resolved: entry, name: basename(entry) }
@@ -233,7 +201,6 @@ export function checkScene(blendPath, supplied = null, lastFrame = 0) {
   }));
 }
 
-// What the scene already says about itself.
 export function readScene(blendPath) {
   return readBlend(blendPath).then(report => (report === null
     ? { read: false, active: null, scenes: [], unbaked: [], scriptedDrivers: [] }
@@ -254,8 +221,6 @@ function openScene(blendPath, supplied = null, lastFrame = 0) {
 
     const scriptPath = path.join(os.tmpdir(), `rendernet-preflight-${process.pid}.py`);
 
-    // Nowhere to put the script is a check that cannot run, not a scene that is
-    // wrong: answered the way an unreadable scene is, which lets the job through.
     try {
       fs.writeFileSync(scriptPath, SCRIPT);
     } catch {

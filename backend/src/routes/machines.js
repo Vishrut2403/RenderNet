@@ -7,7 +7,6 @@ router.get('/', (req, res) => {
   res.json({ machines: listMachines() });
 });
 
-// The token is returned here and nowhere else: only its digest is kept.
 router.post('/', (req, res) => {
   const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
 

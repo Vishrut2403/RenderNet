@@ -1,6 +1,3 @@
-// Being told there is work rather than asking every couple of seconds: the
-// lease request that waits, and the bus that ends the wait. Runs with and
-// without Redis, since a farm on one machine is expected to have neither.
 import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -25,10 +22,6 @@ function lease(base, wait) {
   }).then(async response => ({ status: response.status, ms: Date.now() - started }));
 }
 
-// Two processes, one Redis: what an EventEmitter cannot do and the reason this
-// is worth a dependency at all. Nothing is published until the other side says
-// it is listening, because a subscription that is not up yet misses the message
-// entirely - pub/sub keeps nothing for a subscriber who was not there.
 function busProcess(script, { input = false } = {}) {
   const child = spawn(process.execPath, ['--input-type=module', '-e', script], {
     env: { ...process.env, REDIS_URL },
@@ -57,8 +50,6 @@ function busProcess(script, { input = false } = {}) {
 
   ended.catch(() => sayReady());
 
-  // Waits on what the process says rather than on it exiting, so a child slow
-  // to close its connections cannot pass for one that never heard anything.
   const said = pattern => new Promise(resolve => {
     const look = () => {
       if (!pattern.test(out)) return;
@@ -74,16 +65,12 @@ function busProcess(script, { input = false } = {}) {
   return { ready, ended, child, said, output: () => out.trim() };
 }
 
-// Every wait in here has a limit, so something stuck fails the check by name
-// rather than hanging a CI job until its own timeout.
 function within(promise, ms, what) {
   return Promise.race([promise, new Promise((resolve, reject) => {
     setTimeout(() => reject(new Error(`${what} took longer than ${ms / 1000}s`)), ms).unref?.();
   })]);
 }
 
-// Bounded twice over: a client left to itself retries the first connection for
-// ever, and one caught mid-restart can stall even with that turned off.
 async function redisIsThere() {
   let client;
 
@@ -104,7 +91,6 @@ async function redisIsThere() {
     try {
       client?.destroy();
     } catch {
-      // Never opened, which is the same outcome.
     }
 
     return false;
@@ -140,8 +126,6 @@ export default async function run() {
 
     console.log('\n  Being told the moment there is some');
 
-    // Asked for first and submitted after, so the answer can only come from the
-    // announcement: at the moment of asking there was nothing to hand out.
     const waiting = lease(base, 20);
     await new Promise(resolve => setTimeout(resolve, 200));
 
@@ -157,7 +141,6 @@ export default async function run() {
 
     console.log('\n  Telling a browser to look again');
 
-    // Read as a stream: the point is what arrives while the request is open.
     const stream = await fetch(`${base}/events`, { headers: auth(token) });
 
     results.check('the stream needs a session',
@@ -207,8 +190,6 @@ export default async function run() {
     results.check('and told again when a job moves',
       messages.length > seenSoFar, `${messages.length} messages`);
 
-    // Who may see which job is decided by the request the page makes next, so
-    // nothing about one belongs in a stream every signed-in viewer shares.
     const everything = messages.join('');
 
     results.check('the stream carries no job data',
@@ -244,7 +225,6 @@ export default async function run() {
       env: {
         BLENDER_PATH: createFakeBlender(brokenSandbox),
         WORKER_SECRET: 'test-worker-secret',
-        // Nothing listens here; the farm is expected to say so and carry on.
         REDIS_URL: 'redis://127.0.0.1:6399'
       }
     });
@@ -260,9 +240,6 @@ export default async function run() {
 
     results.check('the farm starts and renders anyway', true);
 
-    // Asserted rather than assumed: the farm surviving proves only that nothing
-    // waits on the bus at startup. This line is what proves the attempt was
-    // given up on, which a client left retrying for ever never would.
     const said = fs.readdirSync(path.join(brokenSandbox, 'logs'))
       .map(name => fs.readFileSync(path.join(brokenSandbox, 'logs', name), 'utf8'))
       .join('');
@@ -276,8 +253,6 @@ export default async function run() {
     removeSandbox(brokenSandbox);
   }
 
-  // Recorded as skips rather than passed over, so a run promised a Redis
-  // (REQUIRE_TOOLS=redis) fails when it cannot reach one instead of passing.
   if (!await redisIsThere()) {
     for (const name of [
       'an announcement in one process reaches a wait in another',
@@ -294,7 +269,6 @@ export default async function run() {
   console.log('\n  Across two processes, over Redis');
 
   try {
-    // One process waits, another announces, and they share nothing but Redis.
     const listener = busProcess(`
       import { startBus, waitFor, WORK, stopBus } from ${JSON.stringify(pathToFileURL(path.join(SRC, 'bus.js')).href)};
       await startBus();
@@ -351,13 +325,9 @@ export default async function run() {
     results.check('a farm on Redis answers a held request the same way',
       answered.status === 200 && answered.ms < 1500, `${answered.status} after ${answered.ms}ms`);
 
-    // The whole case for Redis, from the browser's side: the page is connected
-    // here, the thing that changed happened somewhere else entirely.
     const watching = await fetch(`${onRedis.base}/events`, { headers: auth(redisToken) });
     const reader = watching.body.pipeThrough(new TextDecoderStream()).getReader();
 
-    // The greeting every connection gets, read first so what follows can only
-    // be the announcement from the other process.
     await reader.read();
 
     const elsewhere = busProcess(`
@@ -397,8 +367,6 @@ export default async function run() {
 
   const bus = JSON.stringify(pathToFileURL(path.join(SRC, 'bus.js')).href);
 
-  // Both connected before the outage and told to carry on only after it, so
-  // what is tested is two clients that lived through a restart.
   const listener = busProcess(`
     import { startBus, waitFor, WORK, stopBus } from ${bus};
     await startBus();
@@ -428,7 +396,6 @@ export default async function run() {
     await within(Promise.all([listener.ready, teller.ready]), 20000, 'starting both bus processes');
 
     spawnSync('docker', ['stop', container]);
-    // Longer than a client used to wait before giving up for good.
     await new Promise(resolve => setTimeout(resolve, 5000));
     spawnSync('docker', ['start', container]);
 

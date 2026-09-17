@@ -1,6 +1,3 @@
-// The form fills itself in from the scene the artist just chose. What matters
-// is that it never overwrites a decision they have already made, and that the
-// file goes up once rather than twice.
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -122,7 +119,6 @@ describe('a decision the artist has already made', () => {
 
     answer(reading());
 
-    // The fields it did not touch still fill in.
     await waitFor(() => expect(field('Start frame')).toHaveValue(7));
     expect(field('End frame')).toHaveValue(12);
   });

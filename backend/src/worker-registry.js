@@ -1,6 +1,3 @@
-// Who is out there and what they can render. A worker says so every time it
-// asks for frames, so the list needs no registration step and no cleanup: a
-// machine that stops asking simply stops being current.
 const CURRENT_MS = 5 * 60 * 1000;
 
 const workers = new Map();
@@ -11,8 +8,6 @@ export function announceWorker({ workerId, name, engines, device, deviceWanted }
   workers.set(workerId, {
     id: workerId,
     name: name || workerId,
-    // A worker that says nothing about its engines is trusted with any of them:
-    // refusing it work it may well be able to do would leave the farm idle.
     engines: Array.isArray(engines) && engines.length > 0 ? engines : null,
     device: device || null,
     deviceWanted: deviceWanted || null,
@@ -20,9 +15,6 @@ export function announceWorker({ workerId, name, engines, device, deviceWanted }
   });
 }
 
-// A machine part way through a span asks for nothing while it renders, so its
-// renewals are what say it is still here. Only refreshes a machine already
-// known: one that has been forgotten says what it offers when it next asks.
 export function touchWorker(workerId) {
   const worker = workers.get(workerId);
 
@@ -51,9 +43,6 @@ export function workerCanRender(workerId, engine) {
   return worker.engines.includes(engine);
 }
 
-// Nobody has to be able to render it right now - a machine may be switched off
-// - but if none of the workers that are here can, the job is waiting for one
-// that may never arrive, and saying so beats a progress bar that never moves.
 export function engineIsOffered(engine) {
   const known = knownWorkers();
 
@@ -62,9 +51,6 @@ export function engineIsOffered(engine) {
   return known.some(worker => worker.engines === null || worker.engines.includes(engine));
 }
 
-// A machine set to render with something its Blender does not offer. It is
-// rendering anyway, on whatever it does have, so this is worth saying rather
-// than worth stopping for.
 export function devicesNotOffered() {
   return knownWorkers()
     .filter(worker => worker.deviceWanted)
@@ -75,8 +61,6 @@ export function devicesNotOffered() {
     }));
 }
 
-// One row per machine rather than per claim: what it is, what it can render,
-// and the frame it happens to be holding.
 export function machines(claims = []) {
   return knownWorkers().map(worker => {
     const claim = claims.find(held => held.id === worker.id);

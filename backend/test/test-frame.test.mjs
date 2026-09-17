@@ -1,5 +1,3 @@
-// One frame rendered on its own so its owner can look at it before the other
-// four hundred are committed to.
 import fs from 'fs';
 import path from 'path';
 import {
@@ -60,8 +58,6 @@ export default async function run() {
     results.check('it is not counted as finished',
       waiting.status === 'pending' && !waiting.completedAt, waiting.status);
 
-    // The rest of the range must stay unclaimable rather than merely unqueued:
-    // a worker asking for work would otherwise be handed frame 2.
     await sleep(3000);
     const later = await getJob(base, admin, jobId);
 

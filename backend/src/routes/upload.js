@@ -20,13 +20,9 @@ import {
 
 const router = express.Router();
 
-// Landed among the part-uploads: where it belongs in uploads/ is not known
-// until the bytes have been read and hashed. A stray left by a request that
-// died is swept from there like any other partial.
 const storage = multer.diskStorage({
   destination: PARTIALS_DIR,
   filename: (req, file, cb) => {
-    // basename strips any path separators a crafted filename might carry.
     cb(null, `${Date.now()}-${path.basename(file.originalname)}`);
   }
 });
@@ -48,7 +44,6 @@ const upload = multer({
 const MAX_FRAMES = 2000;
 const MAX_SAMPLES = 16384;
 
-// Absent means "whatever the scene says", which is not the same as a value.
 function optionalInteger(raw, { min, max }) {
   if (raw === undefined || raw === '') return { ok: true, value: null };
 
@@ -65,8 +60,6 @@ function gigabytes(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-// Both checked before multer so somebody who cannot be served is told now
-// rather than after waiting out a 500MB upload.
 function withinQuota(req, res, next) {
   const { bytes } = usageFor(req.user.username, { fresh: true });
 
@@ -105,8 +98,6 @@ function withSession(req, res, next) {
   next();
 }
 
-// Read before the scene is stored, so a refusal costs the artist nothing: an
-// upload consumed by a settings error would have to be sent all over again.
 function checkSettings(body, owner, size) {
   const refuse = (status, error) => ({ status, error });
 
@@ -138,8 +129,6 @@ function checkSettings(body, owner, size) {
     : Number(body.testFrame);
 
   if (testFrame !== null) {
-    // One of the frames this job will actually render: holding back everything
-    // else to wait for a frame that is never rendered would stop the job dead.
     if (!Number.isInteger(testFrame) || testFrame < start || testFrame > end
       || (testFrame - start) % step !== 0) {
       return refuse(400, `testFrame must be one of the frames from ${start} to ${end}`
@@ -188,9 +177,6 @@ function checkSettings(body, owner, size) {
     return refuse(400, `samples must be a whole number from 1 to ${MAX_SAMPLES}`);
   }
 
-  // Sent as one comma-separated field: a repeated field arrives as a string
-  // when one box is ticked and an array when several are, and that is a
-  // needless difference to handle.
   const chosen = (body.formats ?? 'PNG').split(',').map(id => id.trim()).filter(Boolean);
   const formats = normaliseFormats(chosen);
 
@@ -249,8 +235,6 @@ function queueUpload(file, settings) {
     success: true,
     message: 'Job added to render queue',
     jobId,
-    // Null when it started straight away, or when nothing has been rendered
-    // yet to work an estimate from.
     startsIn: getJob(jobId)?.startsIn ?? null
   };
 }
@@ -292,8 +276,6 @@ router.post('/session', roomOnDisk, withinQuota, (req, res) => {
   res.status(201).json(describeSession(opened.session));
 });
 
-// The client asks how much arrived before sending anything, so an upload
-// interrupted an hour ago carries on from where it stopped.
 router.get('/session/:id', withSession, (req, res) => {
   res.json(describeSession(req.session));
 });
@@ -314,8 +296,6 @@ router.put('/session/:id', withSession, async (req, res) => {
   res.json(written);
 });
 
-// The scene's settings in the vocabulary this route accepts: an engine or a
-// format the farm does not offer is left out.
 function offeredSettings(scene) {
   const engine = ENGINE_IDS.includes(scene.engine) ? scene.engine : null;
   const percent = scene.resolutionPercent;
@@ -334,7 +314,6 @@ function offeredSettings(scene) {
   };
 }
 
-// What the form cannot carry across from the scene.
 function warningsFor(scene, settings, scenes, unbaked, scriptedDrivers) {
   const notes = [];
 
@@ -343,8 +322,6 @@ function warningsFor(scene, settings, scenes, unbaked, scriptedDrivers) {
       + 'need this file\'s own scripts');
   }
 
-  // Said before the file has been described rather than after: the farm bakes
-  // it, which is time the job spends before its first frame.
   if (unbaked.length > 0) {
     notes.push(`${unbaked.length} simulation${unbaked.length === 1 ? '' : 's'} `
       + 'to bake before rendering');
@@ -378,9 +355,6 @@ function readingOf(report) {
   };
 }
 
-// Blender is given the partial file where it lies: it goes by what is inside a
-// file rather than by its extension, and every byte is there once the last
-// chunk has landed.
 router.post('/session/:id/inspect', withSession, async (req, res) => {
   const { session } = req;
 
@@ -390,8 +364,6 @@ router.post('/session/:id/inspect', withSession, async (req, res) => {
     });
   }
 
-  // Once per upload: every reading costs a Blender, and the file cannot change
-  // underneath one.
   if (!session.reading) {
     session.reading = readScene(session.path)
       .then(readingOf)
@@ -441,9 +413,6 @@ router.delete('/session/:id', withSession, (req, res) => {
   res.json({ success: true });
 });
 
-// Multer rejects (wrong type, too large) surface here, not in the handler
-// above. The fourth parameter is unused but required: Express decides this is
-// error-handling middleware by counting them.
 router.use((error, req, res, _next) => {
   deleteFile(req.file?.path);
 

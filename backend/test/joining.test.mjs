@@ -1,6 +1,3 @@
-// join.sh, run the way somebody adding a machine to the farm would run it:
-// against a real server, from a copy of the project standing in for the other
-// machine. It is a bash script, so it has nothing to say on Windows.
 import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
@@ -23,8 +20,6 @@ const NAMES = [
   'and a working one takes its place'
 ];
 
-// The other machine, sharing only the installed modules with this one so the
-// test is about join.sh rather than about npm.
 function standIn(box) {
   const at = path.join(box, 'joiner');
 
@@ -62,7 +57,6 @@ async function exitOf(run, timeoutMs = 60000) {
   return code;
 }
 
-// Ctrl+C, the way a person stops it, which join.sh passes on to its workers.
 async function stop(run) {
   run.child.kill('SIGINT');
 
@@ -98,7 +92,6 @@ export default async function run() {
 
     console.log('\n  Before it gets as far as the farm');
 
-    // A node that answers -v with a version too old and does nothing else.
     const shim = path.join(box, 'old-node');
     fs.mkdirSync(shim);
     fs.writeFileSync(path.join(shim, 'node'), '#!/bin/sh\necho v18.20.0\n');
@@ -111,7 +104,6 @@ export default async function run() {
       oldExit !== 0 && /node on PATH is v18\./.test(old.output()) && !/v1818/.test(old.output()),
       old.output());
 
-    // No workers of its own: a frame can only land if the joined machine renders it.
     server = await startServer({
       port: PORT,
       cwd: box,
@@ -157,7 +149,6 @@ export default async function run() {
 
     const issued = credential();
 
-    // Nothing typed this time: one saved and still accepted is used as it is.
     const again = join(joiner, [farm], { env: { BLENDER_PATH: blender } });
 
     await rendering(again);

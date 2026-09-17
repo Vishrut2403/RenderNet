@@ -27,8 +27,6 @@ function sizeOf(file) {
   }
 }
 
-// Resumes the day's file where a previous run left it, so a workstation
-// restarted mid-evening does not start a fresh one each time.
 function openFor(stamp) {
   for (let index = 0; ; index++) {
     const file = fileFor(stamp, index);
@@ -59,7 +57,6 @@ function record(level, text) {
     ensureOpen();
     written += fs.writeSync(handle, `${new Date().toISOString()} ${level} ${text}\n`);
   } catch {
-    // A log that cannot be written must not take the render down with it.
   }
 }
 
@@ -75,7 +72,6 @@ export function pruneOldLogs(now = Date.now()) {
       fs.rmSync(file);
       removed++;
     } catch {
-      // Gone already, or held open on Windows; the next sweep gets it.
     }
   }
 
@@ -90,12 +86,6 @@ export function listLogs() {
   }
 }
 
-// Two kinds of line that say nothing. Polls: asked for again every couple of
-// seconds by every browser watching the farm and every worker waiting for work.
-// Bookkeeping: a worker reporting a frame it has already announced itself, in a
-// request that authenticates by machine token and so is recorded against nobody.
-// Between them they were half of what a render printed. Anything else is
-// logged, so a new route is recorded until someone decides otherwise.
 const ROUTINE = [
   ['GET', /^\/api\/health$/],
   ['GET', /^\/api\/jobs$/],
@@ -117,21 +107,12 @@ function worthRecording(method, requestPath, status) {
   return !ROUTINE.some(([verb, pattern]) => verb === method && pattern.test(requestPath));
 }
 
-// One machine is shared, and people can cancel and reprioritise each other's
-// work. Who did what is the record that makes that workable.
 export function requestLogger(req, res, next) {
   const started = Date.now();
   const { method } = req;
 
-  // Read now, not when the response finishes: routers rewrite req.url as they
-  // dispatch, so by then req.path has been stripped to whatever was left after
-  // the mount point. Taken from req.path rather than req.originalUrl because a
-  // download authenticates by query string and that token must not be written
-  // down.
+  // Read now: routers rewrite req.url, and originalUrl would log download tokens.
   const requestPath = req.path;
-  // Read now for a second reason: a request whose connection dies mid-body -
-  // an upload chunk cut off - has no socket left to take an address from once
-  // the response finishes, and reading it there brings the server down.
   const from = req.ip ?? '?';
 
   res.on('finish', () => {
@@ -144,9 +125,6 @@ export function requestLogger(req, res, next) {
   next();
 }
 
-// Console rather than a logging call of its own: the server already says what
-// it is doing in eighty-odd places, and on the workstation those go to a
-// Task Scheduler window nobody sees.
 function startFileLogging() {
   if (patched) return;
   patched = true;
@@ -164,7 +142,4 @@ function startFileLogging() {
   }
 }
 
-// On import rather than from index.js: imports are evaluated before any
-// statement in the importing module, so a call there would miss whatever the
-// other modules log as they load.
 startFileLogging();

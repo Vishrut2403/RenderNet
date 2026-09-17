@@ -1,6 +1,3 @@
-// A still cut into regions the farm renders separately and puts back together.
-// The plumbing runs against the stand-in Blender; whether the pieces land in
-// the right places is checked further down, where a real one is installed.
 import fs from 'fs';
 import path from 'path';
 import { spawn, spawnSync } from 'child_process';
@@ -14,8 +11,6 @@ const PORT = 5602;
 const REAL_PORT = 5603;
 const COORDINATOR_PORT = 5616;
 
-// IHDR is fixed at the front of every PNG: width and height as big-endian
-// 32-bit integers, which is all that is needed to see how a frame was divided.
 function pngSize(file) {
   if (!fs.existsSync(file)) return null;
 
@@ -104,8 +99,6 @@ export default async function run() {
       preview.status === 200 && preview.headers.get('x-frame-number') === '3',
       `${preview.status} ${preview.headers.get('x-frame-number')}`);
 
-    // A ZIP names every entry in plain bytes, so what it holds can be read off
-    // the archive itself without unpacking it.
     const zip = Buffer.from(await (await fetch(
       `${base}/download/${tiled.body.jobId}/zip?token=${token.token}`)).arrayBuffer());
 
@@ -113,8 +106,6 @@ export default async function run() {
       zip.includes('frame_0003.png') && !zip.includes('tiles/'),
       zip.includes('tiles/') ? 'the tiles folder is in the archive' : 'no picture in the archive');
 
-    // Its frames are regions of one still, and they are not even beside the
-    // picture; a video made of them would be four corners in sequence.
     const video = await fetch(`${base}/jobs/${tiled.body.jobId}/video`, {
       method: 'POST',
       headers: { ...auth(admin), 'Content-Type': 'application/json' },
@@ -151,8 +142,6 @@ export default async function run() {
       fs.readdirSync(path.join(sandbox, stuck.outputFolder, 'tiles'))
         .filter(name => name.endsWith('.png')).length === 4);
 
-    // The regions are all there, so asking again is asking for the last step
-    // rather than for the whole still to be rendered a second time.
     const tiledAt = fs.statSync(
       path.join(sandbox, stuck.outputFolder, 'tiles', 'tile_0001.png')).mtimeMs;
 
@@ -204,8 +193,6 @@ export default async function run() {
   return results;
 }
 
-// Whether a region lands where it belongs cannot be told from a stand-in that
-// writes the same pixel whatever it is asked for.
 async function againstRealBlender(results) {
   await awayFromTheServer(results);
 
@@ -230,8 +217,6 @@ async function againstRealBlender(results) {
     const { base } = server;
     const admin = await adminSession(base);
 
-    // Off-centre in both directions: a region put back upside down or mirrored
-    // would otherwise land somewhere that looks much the same.
     const blend = createFixtureBlend(sandbox, {
       extra: "bpy.data.objects['Cube'].location = (1.4, 0.3, 0.9)\n"
         + 's.render.resolution_x = 80\ns.render.resolution_y = 48\n'
@@ -265,16 +250,11 @@ async function againstRealBlender(results) {
       `${cutJob.status}: ${JSON.stringify(pngSize(composite))} `
       + `vs ${JSON.stringify(pngSize(reference))}`);
 
-    // A tile put back mirrored or upside down moves whole features across the
-    // frame; what is allowed here is the rounding of writing 8 bits twice.
     const difference = pngSize(composite) === null ? 1 : largestDifference(reference, composite);
 
     results.check('and it matches that render pixel for pixel',
       difference <= 2 / 255, `largest difference ${difference}`);
 
-    // The pieces are rendered at the percentage the job asked for while the
-    // scene was saved at another, so nothing but telling the composite which
-    // one applies keeps the canvas the size of the pieces meant to fill it.
     const smaller = await submitJob(base, admin, blend,
       { frameStart: 1, frameEnd: 1, tiles: 4, resolutionPercent: 50 });
     const smallerJob = await waitForJob(base, admin, smaller.body.jobId, 180000);
@@ -290,9 +270,6 @@ async function againstRealBlender(results) {
   }
 }
 
-// A farm whose rendering all happens elsewhere: the server coordinates and has
-// no Blender of its own. Putting the tiles together used to be the one thing it
-// did itself, so every region rendered and the still failed at the last step.
 async function awayFromTheServer(results) {
   const sandbox = makeSandbox('tiles-coordinator');
   const elsewhere = makeSandbox('tiles-elsewhere');
@@ -335,8 +312,6 @@ async function awayFromTheServer(results) {
       fs.existsSync(path.join(sandbox, job.outputFolder, 'frame_0002.png')),
       fs.readdirSync(path.join(sandbox, job.outputFolder)).join(','));
 
-    // The machine that put it together was told it is somewhere else, so it
-    // fetched every region over HTTP rather than reading the server's disk.
     const composed = fs.readFileSync(path.join(elsewhere, 'last-composite.txt'), 'utf8');
 
     results.check('the pieces were fetched rather than read off the server',
@@ -350,8 +325,6 @@ async function awayFromTheServer(results) {
   }
 }
 
-// Blender is the thing that read and wrote both files, so it is also what says
-// whether they hold the same pixels.
 function largestDifference(reference, composite) {
   const script = `
 import bpy, numpy, sys

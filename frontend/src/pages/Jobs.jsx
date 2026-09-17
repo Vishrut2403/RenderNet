@@ -33,8 +33,6 @@ export function Jobs({ notify }) {
 
   useJobFinished(data?.jobs);
 
-  // Only the newest page is polled; the pages behind it hold jobs that have
-  // long since stopped changing.
   const jobs = useMemo(() => {
     const page = data?.jobs ?? [];
     const shown = new Set(page.map(job => job.id));

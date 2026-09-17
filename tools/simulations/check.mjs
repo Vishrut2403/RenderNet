@@ -1,17 +1,4 @@
 #!/usr/bin/env node
-// Every kind of simulation Blender can run, rendered twice: the way the artist
-// would render it - the whole range in one Blender - and the way the farm does,
-// which is to bake or fill the scene first and then render one frame of it on
-// its own. The two have to come out the same, and a difference here is the farm
-// delivering a picture nobody would get at home.
-//
-// It builds its own scenes, drives the checking and baking the farm really uses,
-// and needs Blender itself, so it is not part of the test suite: it takes
-// minutes and it is what to run after the workstation's Blender is upgraded,
-// since most of what it covers is behaviour Blender never promised.
-//
-//   node tools/simulations/check.mjs            every scene
-//   node tools/simulations/check.mjs hair gas   only those
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -36,8 +23,6 @@ if (!BLENDER) {
 const WORK = process.env.SIMULATION_CHECK_DIR
   || path.join(os.tmpdir(), 'rendernet-simulations');
 
-// The last frame is the one compared: a simulation is furthest from its
-// starting state there, so it is where getting it wrong shows most.
 const SCENES = {
   cloth: 24,
   softbody: 24,
@@ -232,7 +217,6 @@ elif kind == 'cloth':
 
 elif kind == 'mixed':
     scene = stage(8)
-    # Cloth over a sphere, smoke beside it, and a simulation zone stepping past.
     bpy.ops.mesh.primitive_uv_sphere_add(radius=0.8, location=(-3, 0, 1))
     bpy.context.object.modifiers.new('Collision', 'COLLISION')
     bpy.ops.mesh.primitive_grid_add(size=3, x_subdivisions=20, y_subdivisions=20,
@@ -335,8 +319,6 @@ function compare(a, b) {
   return { most: Number(most), share: Number(share) };
 }
 
-// Only the .blend is uploaded, so anything a simulation left beside it stays on
-// the machine that made it.
 function hideCaches(kind) {
   for (const stray of fs.readdirSync(WORK)) {
     if (stray.startsWith(`${kind}_cache`) || stray.startsWith('blendcache_')) {
@@ -357,9 +339,6 @@ function uploaded(kind) {
   return { folder, at };
 }
 
-// What the worker does with a bake claim, in the same order and with the same
-// scripts: a scene carrying a fluid is written out pointing at the job's folder
-// and opened a second time to be filled.
 function bake(kind, farm, last) {
   const out = path.join(farm.folder, 'baked.blend');
   const caches = path.join(farm.folder, 'fluid');
@@ -404,9 +383,6 @@ for (const kind of kinds) {
     continue;
   }
 
-  // Building the scene writes the frame it was saved on into the cache, and a
-  // render that reads that frame back rather than simulating it comes out
-  // slightly different. Both sides of this comparison start from nothing.
   hideCaches(kind);
 
   const truth = path.join(WORK, `truth_${kind}_`);
@@ -435,8 +411,6 @@ for (const kind of kinds) {
 
   const frame = String(last).padStart(4, '0');
   const { most, share } = compare(`${truth}${frame}.png`, path.join(WORK, `farm_${kind}_${frame}.png`));
-  // A frame is the same picture when no pixel differs by more than sampling
-  // noise; Cycles lands a single 8-bit step either way from run to run.
   const ok = share === 0;
 
   rows.push({ kind, asked, most, share, ok });

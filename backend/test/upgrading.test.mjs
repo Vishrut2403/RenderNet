@@ -1,10 +1,3 @@
-// What happens to a database that already has jobs in it when a release that
-// changes the schema is installed over the top. Every other suite starts from
-// an empty database, so this is the only place the migrations run against rows
-// somebody already had. The database is made by the app itself and then taken
-// back to the previous release's shape, rather than written out by hand here,
-// which would only ever test a schema this file remembered. Runs without
-// Blender.
 import fs from 'fs';
 import path from 'path';
 import Database from 'better-sqlite3';
@@ -27,8 +20,6 @@ function framesOf(sandbox, jobId) {
   }
 }
 
-// A table as the last release left it. SQLite drops a column without disturbing
-// the primary key, so what is left is the real previous shape.
 function undoTheMigration(sandbox, table, columns) {
   const db = new Database(path.join(sandbox, 'test.db'));
 
@@ -41,7 +32,6 @@ function undoTheMigration(sandbox, table, columns) {
   }
 }
 
-// The order the stand-in was asked for frames in, across every claim.
 function claimOrder(sandbox, scene) {
   const log = path.join(sandbox, 'uploads', 'spans.txt');
 
@@ -67,8 +57,6 @@ export default async function run() {
   try {
     console.log('\n  A job left queued by the release before this one');
 
-    // Nothing renders yet: the job has to still be there to render after the
-    // upgrade, which is the point.
     server = await startServer({ ...settings, env: { ...settings.env, WORKER_SLOTS: '0' } });
 
     const token = await adminSession(server.base);
@@ -99,17 +87,12 @@ export default async function run() {
 
     results.check('the server starts on a database it has to migrate',
       carriedJob.id === jobId);
-    // Null rather than 'waiting': a job that was queued before the farm baked
-    // anything is not suddenly a job with a bake outstanding.
     results.check('and a job from before has nothing to bake',
       !carriedJob.bake, String(carriedJob.bake));
     results.check('every frame that was already there has an ordinal',
       rows.length === FRAMES && rows.every(row => Number.isInteger(row.ordinal)),
       `${rows.length} rows, ${rows.filter(row => row.ordinal === null).length} without one`);
 
-    // Its frame number, so a job somebody is already waiting on is rendered in
-    // the order it was going to be rendered in rather than resequenced under
-    // them by an upgrade.
     results.check('and it is the frame number, not a new order',
       rows.every(row => row.ordinal === row.frame),
       rows.map(row => `${row.frame}:${row.ordinal}`).join(' '));

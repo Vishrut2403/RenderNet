@@ -1,7 +1,3 @@
-// What the queue does at its edges: a job paused and let go again before its
-// workers have stopped, one cancelled while held or while waiting on its owner,
-// one raised to urgent that cannot start, one put back part-way, one whose scene
-// check could not run. Each used to leave a job stuck, or wake one that was gone.
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -37,8 +33,6 @@ function statusOf(base, token, jobId) {
   return getJob(base, token, jobId).then(job => job.status);
 }
 
-// In a process of its own, against a database of its own: the suites share one
-// process, and another has already loaded the queue there against its sandbox.
 function fairShares(box) {
   const script = `
     import { stampJob, shareOf, levelUp } from ${JSON.stringify(pathToFileURL(path.join(SRC, 'fairness.js')).href)};
@@ -84,8 +78,6 @@ export default async function run() {
 
     console.log('\n  Paying for a job once');
 
-    // Both owners asked for the same eleven frames of farm time, so their next
-    // jobs should be level - however many times Amy's first was put back.
     const shares = fairShares(box);
 
     results.check('a job put back part-way is not charged for twice',
@@ -93,7 +85,6 @@ export default async function run() {
 
     console.log('\n  Releasing and approving jobs that are gone');
 
-    // No renderer here, so nothing starts and the queue can be read as it is.
     const quiet = await start({
       port: QUIET_PORT,
       cwd: path.join(box, 'quiet'),
@@ -166,8 +157,6 @@ export default async function run() {
 
     console.log('\n  Letting a paused job go before its workers have stopped');
 
-    // Claims expire soon, so a frame handed to the passer-by below and never
-    // rendered cannot hold the job up past the wait.
     const drain = await start({
       port: DRAIN_PORT,
       cwd: path.join(box, 'drain'),
@@ -186,8 +175,6 @@ export default async function run() {
     await post(drain.base, drainToken, `${paused}/hold`);
     await post(drain.base, drainToken, `${paused}/release`);
 
-    // Another machine asking for work at this moment is what used to start the
-    // job again over the workers still stopping it.
     await fetch(`${drain.base}/worker/lease`, {
       method: 'POST',
       headers: { 'x-worker-token': 'test-worker-secret', 'Content-Type': 'application/json' },
@@ -210,7 +197,6 @@ export default async function run() {
       env: { BLENDER_PATH: blender }
     });
 
-    // A directory where the check writes its script, so writing it fails.
     const blocker = path.join(os.tmpdir(), `rendernet-preflight-${checking.proc.pid}.py`);
     fs.mkdirSync(blocker, { recursive: true });
 

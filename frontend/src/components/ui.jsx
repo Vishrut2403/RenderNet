@@ -92,7 +92,6 @@ export function Toast({ toast, onDismiss }) {
   );
 }
 
-// Ticks once a second while active so elapsed times count up between polls.
 export function useNow(active) {
   const [now, setNow] = useState(() => Date.now());
 

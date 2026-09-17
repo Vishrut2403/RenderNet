@@ -1,5 +1,3 @@
-// What the browser is told to enforce, who may call the API from another
-// origin, and how many guesses the signup code is worth. Runs without Blender.
 import fs from 'fs';
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, signUp, SIGNUP_CODE,
@@ -51,8 +49,6 @@ export default async function run() {
 
     console.log('\n  Who may call the API from another origin');
 
-    // The UI this server ships is same-origin, so by default a page on another
-    // site gets no permission to read anything it asks for.
     const uninvited = await headersOf(`${base}/health`, {
       headers: { Origin: 'http://somewhere-else.example' }
     });
@@ -93,8 +89,6 @@ export default async function run() {
     results.check('and told when to come back',
       Number(locked.headers.get('retry-after')) > 0, locked.headers.get('retry-after'));
 
-    // The lock is on the caller, not the code: knowing it does not undo a
-    // spree of guesses from the same place.
     results.check('the right code is refused too while the lock holds',
       await signUp(base, 'latecomer', 'a-real-password', SIGNUP_CODE) === 429);
 
@@ -116,9 +110,6 @@ export default async function run() {
   return results;
 }
 
-// Every request through a reverse proxy arrives from the proxy, so without
-// being told to read the forwarded address the lock is on the proxy and one
-// spree of guesses shuts signups for everybody.
 async function behindAProxy(results) {
   const box = makeSandbox('security-proxy');
   let server;
@@ -150,9 +141,6 @@ async function behindAProxy(results) {
   await theCodeItMakesForItself(results);
 }
 
-// Nobody should have to edit a file before their team can join, and nobody
-// should have to think of a shared secret either. Told none, the farm makes one
-// and shows it to whoever runs it.
 async function theCodeItMakesForItself(results) {
   const box = makeSandbox('signup-code');
   let server;
@@ -160,8 +148,6 @@ async function theCodeItMakesForItself(results) {
   try {
     console.log('\n  The signup code a farm nobody configured makes for itself');
 
-    // Empty rather than absent: the helper always sets one, and an empty value
-    // is what a machine with nothing in .env has.
     server = await startServer({ port: CODE_PORT, cwd: box, env: { SIGNUP_CODE: '' } });
 
     const token = await adminSession(server.base);
@@ -190,8 +176,6 @@ async function theCodeItMakesForItself(results) {
 
     await stopServer(server);
 
-    // The farm the README describes, configured by hand: what it was told wins,
-    // and making a new one here would be a lie the next signup would expose.
     server = await startServer({ port: CODE_PORT, cwd: box });
 
     const fixedToken = await adminSession(server.base);
@@ -211,9 +195,6 @@ async function theCodeItMakesForItself(results) {
   }
 }
 
-// Everything the farm carries - passwords, session tokens, whole scenes -
-// crosses the network, so the server can hold the certificate itself rather
-// than needing something in front of it.
 async function overTls(results) {
   const box = makeSandbox('tls');
   const certificate = createCertificate(box);
@@ -243,8 +224,6 @@ async function overTls(results) {
 
     const answered = await httpsGet(`${server.base}/health`, ca);
 
-    // Whether the farm itself is healthy is another test's business: a runner
-    // without Blender answers 'degraded' over a perfectly good connection.
     results.check('the server answers over HTTPS',
       answered.status === 200 && typeof JSON.parse(answered.body).status === 'string',
       answered.body);
@@ -252,8 +231,6 @@ async function overTls(results) {
       answered.headers['strict-transport-security'] === 'max-age=31536000',
       answered.headers['strict-transport-security']);
 
-    // Serving plain HTTP after being told to use TLS would be a downgrade
-    // nobody would notice.
     const halfConfigured = makeSandbox('tls-half');
     let refused = false;
 

@@ -1,6 +1,3 @@
-// What an uploaded scene says about itself before anybody has typed a frame
-// range: the settings the form is offered, the ones it is not, and what
-// happens when the file cannot be read at all. Nothing renders here.
 import fs from 'fs';
 import path from 'path';
 import {
@@ -40,7 +37,6 @@ async function inspect(base, token, uploadId) {
   return { status: res.status, body: await res.json() };
 }
 
-// Opened, sent in full, and left waiting for its settings.
 async function arrive(base, token, filename) {
   const started = await open(base, token, filename);
   await send(base, token, started.body.uploadId, Buffer.alloc(SIZE, 7));
@@ -48,8 +44,6 @@ async function arrive(base, token, filename) {
   return started.body.uploadId;
 }
 
-// Closed again afterwards: only three uploads may be open at once, and these
-// are read rather than submitted.
 async function read(base, token, filename) {
   const uploadId = await arrive(base, token, filename);
   const report = await inspect(base, token, uploadId);
@@ -204,10 +198,6 @@ export default async function run() {
   return results;
 }
 
-// Everything above answers a stand-in that makes the report up. The report is
-// really produced by a Python script inside Blender, and nothing else here ever
-// runs it - so a change to that script could go in inert and the suite would
-// stay green.
 async function whatBlenderActuallySays(results) {
   const names = ['a texture the scene did not bring is missing',
     'one it did bring but did not pack is named apart',
@@ -237,8 +227,6 @@ async function whatBlenderActuallySays(results) {
     const onDisk = path.join(box, 'floor.png');
     fs.writeFileSync(onDisk, Buffer.alloc(64, 7));
 
-    // Textures need a user or Blender drops them when the file is saved, so
-    // each one goes on a material of its own.
     const blend = createFixtureBlend(box, {
       name: 'checked.blend',
       extra: `
@@ -264,8 +252,6 @@ textured('Wall', r'${path.join(box, 'nowhere', 'gone.png')}', 3)
 
     const { checkScene } = await import('../src/preflight.js');
     const report = await checkScene(blend);
-    // A missing file is reported as what the scene stores and where that led,
-    // so it can be replaced; one that is merely unpacked is still just a path.
     const named = list =>
       list.map(entry => (typeof entry === 'string' ? path.basename(entry) : entry.name));
 
@@ -276,9 +262,6 @@ textured('Wall', r'${path.join(box, 'nowhere', 'gone.png')}', 3)
     results.check(names[2], report.unbaked.some(what => what.includes('cloth')),
       JSON.stringify(report.unbaked));
 
-    // Baked to disk, which puts the frames in a folder beside the .blend rather
-    // than inside it. Blender says the cache is baked either way, so the only
-    // thing that tells them apart is how much it says it is holding.
     const beside = path.join(box, 'cached', 'diskcached.blend');
 
     fs.mkdirSync(path.dirname(beside), { recursive: true });
@@ -306,8 +289,6 @@ with bpy.context.temp_override(object=grid, point_cache=cache):
 
     results.check(names[3], here.unbaked.length === 0, JSON.stringify(here.unbaked));
 
-    // Only the .blend travels: the folder of frames stays on the machine that
-    // baked it, which is what an upload of one file amounts to.
     const alone = path.join(box, 'uploaded.blend');
 
     fs.copyFileSync(cached, alone);
@@ -317,10 +298,6 @@ with bpy.context.temp_override(object=grid, point_cache=cache):
     results.check(names[4], orphaned.unbaked.some(what => what.includes('cloth')),
       JSON.stringify(orphaned.unbaked));
 
-    // Baked to frame 4 of a longer scene. Blender holds a baked cache at its
-    // last frame rather than stepping past it, and holds it in every launch on
-    // every machine, so the farm renders those frames exactly as the artist's
-    // own Blender does. Baking it further would render something they never saw.
     const short = createFixtureBlend(box, {
       name: 'shortbake.blend',
       extra: `
@@ -340,9 +317,6 @@ with bpy.context.temp_override(object=grid, point_cache=cache):
 
     results.check(names[5], partly.unbaked.length === 0, JSON.stringify(partly.unbaked));
 
-    // Blender bakes the caches of one scene, and the one that renders is the
-    // one the form was filled in from. A sim in another scene of the same file
-    // would otherwise be asked for and never delivered.
     const aside = createFixtureBlend(box, {
       name: 'twoscenes.blend',
       extra: `
@@ -361,9 +335,6 @@ bpy.context.window.scene = rendered
 
     results.check(names[6], other.unbaked.length === 0, JSON.stringify(other.unbaked));
 
-    // A cache belongs to the file its object came from. Bake a linked one here
-    // and the frames in memory are never written into the scene that links it,
-    // so it reads as unbaked again the moment that scene is reopened.
     const library = createFixtureBlend(box, {
       name: 'library.blend',
       extra: `
@@ -388,9 +359,6 @@ bpy.ops.wm.link(filepath=r'${library}' + '/Object/Borrowed',
         && linked.unbaked.length === 0,
       `${JSON.stringify(linked.unbakeable)} / ${JSON.stringify(linked.unbaked)}`);
 
-    // Switched off in the viewport and rendered anyway, which is how a heavy
-    // simulation is worked with. Blender bakes nothing for it, and stepping it
-    // as the frames render gives a picture of its own, so it is sent back.
     const tucked = createFixtureBlend(box, {
       name: 'tucked.blend',
       extra: `
@@ -409,8 +377,6 @@ grid.hide_viewport = True
         && offscreen.unbaked.length === 0,
       `${JSON.stringify(offscreen.unbakeable)} / ${JSON.stringify(offscreen.unbaked)}`);
 
-    // Inside a collection the scene only instances: it renders, so it counts,
-    // even though the scene's own object list names the empty and not the cloth.
     const instanced = createFixtureBlend(box, {
       name: 'instanced.blend',
       extra: `
@@ -434,10 +400,6 @@ bpy.ops.object.collection_instance_add(collection='Flags', location=(0, 0, 0))
     results.check(names[9], brought.unbaked.some(what => what.includes('Instanced')),
       JSON.stringify(brought.unbaked));
 
-    // Smoke keeps its frames in a folder the scene names, and that name is the
-    // artist's own machine - Blender's default is a directory under /tmp. So
-    // what counts is files on this disk for the frames being rendered, not the
-    // domain's own idea of whether it has been baked.
     const fluidCache = path.join(box, 'smokecache');
 
     const smoke = createFixtureBlend(box, {
@@ -460,8 +422,6 @@ fluid.domain_settings.cache_directory = r'${fluidCache}'
       wanted.fluids.includes('Domain') && wanted.unbaked.some(what => what.includes('Domain')),
       `${JSON.stringify(wanted.fluids)} / ${JSON.stringify(wanted.unbaked)}`);
 
-    // The frames themselves, without the minutes of simulation that would write
-    // them: what the check reads is the folder.
     const frames = path.join(fluidCache, 'data');
 
     fs.mkdirSync(frames, { recursive: true });
@@ -474,9 +434,6 @@ fluid.domain_settings.cache_directory = r'${fluidCache}'
 
     results.check(names[11], held.fluids.length === 0, JSON.stringify(held.fluids));
 
-    // A domain writes a folder per kind of frame it makes, and the render needs
-    // every one it was set up to use. Noise is a second pass over the base
-    // simulation, and a scene missing it renders the smoke without it.
     const noisy = createFixtureBlend(box, {
       name: 'noisy.blend',
       extra: `
@@ -497,9 +454,6 @@ fluid.domain_settings.cache_directory = r'${fluidCache}'
     results.check(names[12], withoutNoise.fluids.includes('Domain'),
       JSON.stringify(withoutNoise.fluids));
 
-    // Nothing a simulation zone exposes says whether it holds baked frames -
-    // the bake items read the same either way - so one is always baked, and a
-    // scene with one always reports it.
     const stepping = createFixtureBlend(box, {
       name: 'stepping.blend',
       extra: `

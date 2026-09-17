@@ -15,8 +15,6 @@ export function JobCard({ job, onChanged, onError }) {
   const active = job.status === 'rendering';
   const done = job.status === 'completed';
   const partial = job.status === 'failed' && job.completedFrames > 0;
-  // Queued or rendering. A job held back for its owner to approve its test frame
-  // is neither, which is why the overrides below do not offer to reorder it.
   const inTheRunning = (job.status === 'pending' || active) && job.approval !== 'waiting';
   const isAdmin = getStoredUser()?.role === 'admin';
 
@@ -175,8 +173,6 @@ export function JobCard({ job, onChanged, onError }) {
     }
   }
 
-  // The href is left in place for a right-click, but a click goes through a
-  // token minted now rather than whenever this was drawn.
   function download(urlFor) {
     return async event => {
       event.preventDefault();
@@ -203,10 +199,8 @@ export function JobCard({ job, onChanged, onError }) {
     }
   }
 
-  // currentFrame is the last frame finished, so the one in flight is the next.
   const inFlight = Math.min(job.frameEnd, (job.currentFrame ?? job.frameStart - 1) + 1);
 
-  // A tiled still counts regions of one frame, not frames.
   const tiled = job.tiles > 1;
 
   const label = tiled
@@ -217,15 +211,11 @@ export function JobCard({ job, onChanged, onError }) {
       ? `Rendering frame ${inFlight} of ${job.frameEnd}`
       : `${job.completedFrames} of ${job.totalFrames} frames`;
 
-  // Zero once the job is next up, where "starts in 0 seconds" reads worse than
-  // nothing.
   const waitsFor = job.status === 'pending' && job.startsIn > 0;
   const waitingOnMe = job.approval === 'waiting';
 
-  // Only the frames that failed are retried, so there has to be one.
   const retryable = (done || job.status === 'failed') && job.frameErrors?.length > 0;
 
-  // Hidden once the full grid is open, which shows the same frames and more.
   const showPreview = downloadToken && !frames && previewFailedAt !== job.completedFrames;
   const previewSrc = downloadToken
     && api.previewUrl(job.id, job.completedFrames, downloadToken);
@@ -260,9 +250,6 @@ export function JobCard({ job, onChanged, onError }) {
             <img
               src={previewSrc}
               alt={`Most recent frame rendered for job ${job.id}`}
-              // A picture that will not load is usually a token that ran out
-              // while the tab was in the background. Worth one go with a new
-              // one; a second failure on the same token is something else.
               onError={() => {
                 if (askedAgainFor.current === downloadToken) {
                   return setPreviewFailedAt(job.completedFrames);
@@ -365,7 +352,6 @@ export function JobCard({ job, onChanged, onError }) {
               rel="noreferrer"
               title={file.filename}
             >
-              {/* An EXR has nothing a browser can draw, so it is offered by name. */}
               {file.previewable
                 ? <img src={api.fileUrl(file.path, downloadToken)} alt={file.filename} loading="lazy" />
                 : <span className="frame-file">{file.filename.split('.').pop().toUpperCase()}</span>}

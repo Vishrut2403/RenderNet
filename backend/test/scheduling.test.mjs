@@ -1,7 +1,3 @@
-// Whose job runs next when several people are waiting for one machine, and the
-// two overrides an admin has over that answer. The ordering half runs with no
-// renderer at all, so the queue holds still and can be read; the override half
-// needs work actually in flight and uses the stand-in Blender for it.
 import {
   createResults, makeSandbox, removeSandbox, startServer, stopServer, adminSession,
   signUp, login, auth, submitJob, waitForJob, waitForCondition, getJob,
@@ -12,9 +8,6 @@ const ORDER_PORT = 5612;
 const OVERRIDE_PORT = 5613;
 const SECRET = 'test-worker-secret';
 
-// Nothing here may start rendering, or the order under test would change while
-// it is being read. The farm's own renderers are switched off and its one
-// machine offers an engine none of these jobs use.
 async function offerAnotherEngine(base) {
   await fetch(`${base}/worker/lease`, {
     method: 'POST',
@@ -62,9 +55,6 @@ async function ordering(results) {
     const { base } = server;
     const admin = await adminSession(base);
 
-    // A fresh pair of names per scenario: an owner's turn is measured against
-    // what that owner has already asked for, so reusing one would carry the
-    // previous scenario's arithmetic into the next.
     for (const name of ['painter', 'sculptor', 'writer', 'editor', 'runner']) {
       await signUp(base, name, `${name}-password`);
     }
@@ -174,8 +164,6 @@ async function overrides(results) {
     await signUp(base, 'painter', 'painter-password');
     const painter = await login(base, 'painter', 'painter-password');
 
-    // 'slow' takes two seconds a frame, which is what makes a job catchable
-    // while it is still going.
     const slow = createFakeScene(sandbox, 'slow-scene.blend');
 
     console.log('\n  Taking the machine back');
@@ -204,7 +192,6 @@ async function overrides(results) {
     results.check('and says who is holding it',
       stopped.heldBy === 'admin', String(stopped.heldBy));
 
-    // Long enough that the queue would have promoted it again several times.
     await sleep(4000);
 
     results.check('a held job is not started again on its own',
@@ -277,8 +264,6 @@ async function overrides(results) {
 
     console.log('\n  What is not an admin\'s to reorder');
 
-    // Pending, but waiting on a person rather than on the farm: putting it in
-    // front would start a render nobody has agreed to yet.
     const unapproved = await submit(base, painter, slow, 12, { testFrame: 1 });
 
     await waitForCondition(

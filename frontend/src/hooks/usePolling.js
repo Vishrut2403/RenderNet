@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
-// Polls while the tab is visible, at whatever interval the caller derives from
-// the data.
 export function usePolling(fetcher, intervalFor, deps = []) {
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -20,8 +18,6 @@ export function usePolling(fetcher, intervalFor, deps = []) {
   dataRef.current = data;
 
   const tick = useCallback(async () => {
-    // Clearing the timer cannot cancel a request already in flight, and without
-    // this both ticks schedule a successor and the loop forks in two.
     const run = ++runId.current;
     const stale = () => cancelled.current || run !== runId.current;
 
@@ -29,8 +25,6 @@ export function usePolling(fetcher, intervalFor, deps = []) {
       const result = await fetcherRef.current();
       if (stale()) return;
 
-      // Set here as well as on the state: the interval below is chosen from
-      // what was just fetched, and a render has not happened yet to record it.
       dataRef.current = result;
       setData(result);
       setError(null);
@@ -82,9 +76,6 @@ export function usePolling(fetcher, intervalFor, deps = []) {
   return { data, error, loading, refresh, setData };
 }
 
-// A job actively rendering is worth watching closely; anything else is not.
-// Being told when something moves makes all of it a backstop rather than the
-// way the page finds out, so it drops to a slow check for anything missed.
 export function jobsInterval(jobs, live) {
   if (live) return 30000;
 

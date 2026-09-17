@@ -1,9 +1,6 @@
 import os from 'os';
 import makeResponder from 'multicast-dns';
 
-// A name of its own on the network, so nobody has to be told an address that
-// changes whenever the router feels like it. The client types this; the
-// workstation's own hostname is left alone.
 const NAME = `${(process.env.FARM_NAME || 'rendernet').toLowerCase()}.local`;
 const TTL_SECONDS = 120;
 
@@ -14,9 +11,6 @@ function sameNetwork(here, there) {
   return ours.every((byte, at) => (byte & mask[at]) === (theirs[at] & mask[at]));
 }
 
-// The machine has several addresses - a wired one, a wireless one, whatever
-// Docker and a VPN have added - and only the one on the asker's own network is
-// any use to them.
 function addressesFor(asker) {
   const here = Object.values(os.networkInterfaces()).flat()
     .filter(entry => entry && entry.family === 'IPv4' && !entry.internal);
@@ -36,7 +30,6 @@ export function announceOnNetwork(port) {
     return () => {};
   }
 
-  // Never worth stopping the farm for: the address still works.
   responder.on('error', error => console.warn(`${NAME} announcement: ${error.message}`));
 
   responder.on('query', (query, asker) => {
