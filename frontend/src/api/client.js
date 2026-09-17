@@ -221,9 +221,11 @@ function remember(file, uploadId) {
   }
 }
 
-function forget() {
+// Only this upload's entry: another file picked since may have saved its own.
+function forget(uploadId) {
   try {
-    localStorage.removeItem(RESUME_KEY);
+    const stored = JSON.parse(localStorage.getItem(RESUME_KEY) || 'null');
+    if (stored?.uploadId === uploadId) localStorage.removeItem(RESUME_KEY);
   } catch {
   }
 }
@@ -248,7 +250,7 @@ async function openUpload(file) {
     try {
       return await request(`/upload/session/${previous}`);
     } catch {
-      forget();
+      forget(previous);
     }
   }
 
@@ -285,7 +287,11 @@ async function sendChunks(file, session, onProgress) {
         continue;
       }
 
-      if (error.status >= 400 || ++attempt >= CHUNK_ATTEMPTS) throw error;
+      // A 409 with no offset is the server still holding a chunk whose
+      // connection just dropped: worth waiting out, like a network error.
+      const transient = error.status === 409 || !(error.status >= 400);
+
+      if (!transient || ++attempt >= CHUNK_ATTEMPTS) throw error;
 
       await pause(attempt * 1000);
     }
@@ -316,7 +322,7 @@ async function queuePrepared(uploadId, options) {
     body: uploadSettings(options)
   });
 
-  forget();
+  forget(uploadId);
 
   return queued;
 }
@@ -425,7 +431,7 @@ export const api = {
     request(`/upload/session/${uploadId}/inspect`, { method: 'POST' }),
 
   abortUpload: uploadId => {
-    forget();
+    forget(uploadId);
 
     return request(`/upload/session/${uploadId}`, { method: 'DELETE' }).catch(() => {});
   }

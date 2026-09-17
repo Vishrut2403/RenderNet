@@ -28,6 +28,16 @@ function claimed(owner) {
   return openFor(owner).reduce((sum, session) => sum + session.size, 0);
 }
 
+export function outstandingBytes() {
+  let sum = 0;
+  for (const session of sessions.values()) sum += session.size - session.received;
+  return sum;
+}
+
+function idle(session) {
+  return !session.busy && !session.finishing;
+}
+
 export function openSession({ owner, filename, size }) {
   if (typeof filename !== 'string' || !filename.toLowerCase().endsWith('.blend')) {
     return { status: 400, error: 'Only .blend files are allowed' };
@@ -46,6 +56,15 @@ export function openSession({ owner, filename, size }) {
     };
   }
 
+  // A page left mid-pick holds a session nobody will finish; the stalest one
+  // makes room rather than blocking every later upload for hours.
+  const open = openFor(owner);
+
+  if (open.length >= MAX_OPEN_PER_USER) {
+    const stalest = open.filter(idle).sort((a, b) => a.updatedAt - b.updatedAt)[0];
+    if (stalest) abortSession(stalest);
+  }
+
   if (openFor(owner).length >= MAX_OPEN_PER_USER) {
     return {
       status: 409,
@@ -56,7 +75,7 @@ export function openSession({ owner, filename, size }) {
 
   const free = freeBytes(DATA_DIR);
 
-  if (free !== null && free - size < MIN_FREE_BYTES) {
+  if (free !== null && free - outstandingBytes() - size < MIN_FREE_BYTES) {
     return { status: 507, error: 'Not enough disk left on the workstation for that file' };
   }
 
@@ -129,7 +148,7 @@ class Limiter extends Transform {
 }
 
 export async function appendChunk(session, offset, stream) {
-  if (session.busy) {
+  if (session.busy || session.finishing) {
     return { status: 409, error: 'Another chunk of this upload is still arriving' };
   }
 
@@ -178,23 +197,33 @@ function truncate(session) {
 }
 
 export async function finishSession(session) {
-  const stored = await storeBlend(session.path, session.filename);
+  session.finishing = true;
 
-  sessions.delete(session.id);
+  try {
+    const stored = await storeBlend(session.path, session.filename);
 
-  return { file: { ...stored, size: session.size, originalname: session.filename } };
+    sessions.delete(session.id);
+
+    return { file: { ...stored, size: session.size, originalname: session.filename } };
+  } finally {
+    session.finishing = false;
+  }
 }
 
 export function abortSession(session) {
+  if (session.finishing) return false;
+
   sessions.delete(session.id);
   fs.rmSync(session.path, { force: true });
+
+  return true;
 }
 
 export function sweepPartials(now = Date.now()) {
   let removed = 0;
 
   for (const session of sessions.values()) {
-    if (session.busy || now - session.updatedAt <= PARTIAL_TTL_MS) continue;
+    if (!idle(session) || now - session.updatedAt <= PARTIAL_TTL_MS) continue;
 
     abortSession(session);
     removed++;

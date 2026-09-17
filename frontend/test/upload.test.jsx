@@ -233,6 +233,27 @@ describe('when a piece does not land', () => {
     vi.useRealTimers();
   });
 
+  it('a piece the server is still holding is waited out', async () => {
+    vi.useFakeTimers();
+
+    mockFetch((url, options) => options.method === 'POST' && url.endsWith('/upload/session')
+      ? { uploadId: 'abc', received: 0, chunkSize: 40 * MB }
+      : { jobId: 1 });
+
+    respond = (record, index) => index === 0
+      ? { status: 409, body: { error: 'Another chunk of this upload is still arriving' } }
+      : { status: 200, body: { received: 40 * MB } };
+
+    const uploading = api.upload(fakeFile({ size: 40 * MB }), { frameStart: 1, frameEnd: 1 });
+
+    await vi.advanceTimersByTimeAsync(2000);
+    await uploading;
+
+    expect(sent).toHaveLength(2);
+
+    vi.useRealTimers();
+  });
+
   it('and a refusal is not retried at all', async () => {
     mockFetch((url, options) => options.method === 'POST' && url.endsWith('/upload/session')
       ? { uploadId: 'abc', received: 0, chunkSize: 40 * MB }
@@ -286,6 +307,18 @@ describe('picking the same file again', () => {
 
     expect(opened).toHaveLength(1);
     expect(sent.map(offsetOf)).toEqual([0]);
+  });
+
+  it('abandoning one upload leaves another file\'s place alone', async () => {
+    mockFetch(() => ({}));
+
+    localStorage.setItem('rendernet.upload', JSON.stringify({
+      uploadId: 'second', name: 'other.blend', size: 40 * MB, lastModified: 1000
+    }));
+
+    await api.abortUpload('first');
+
+    expect(JSON.parse(localStorage.getItem('rendernet.upload')).uploadId).toBe('second');
   });
 
   it('and a finished upload is not offered for resuming', async () => {

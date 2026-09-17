@@ -22,6 +22,7 @@ import untrustedScenes from './untrusted-scenes.test.mjs';
 import joining from './joining.test.mjs';
 import queueEdges from './queue-edges.test.mjs';
 import accounts from './accounts.test.mjs';
+import transfers from './transfers.test.mjs';
 
 const suites = [
   ['Process control', processControl],
@@ -47,7 +48,8 @@ const suites = [
   ['Scenes from somebody else', untrustedScenes],
   ['Adding a machine that renders', joining],
   ['The queue at its edges', queueEdges],
-  ['Accounts at their edges', accounts]
+  ['Accounts at their edges', accounts],
+  ['Uploads and downloads at their edges', transfers]
 ];
 
 const totals = { pass: 0, fail: 0, skip: 0 };

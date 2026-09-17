@@ -7,7 +7,7 @@ import { addToQueue } from '../queue.js';
 import { readScene } from '../preflight.js';
 import { getJob } from '../job-views.js';
 import { DATA_DIR, PARTIALS_DIR, USER_QUOTA_BYTES, MIN_FREE_BYTES } from '../paths.js';
-import {
+import { outstandingBytes,
   openSession, sessionFor, describeSession, appendChunk, finishSession, abortSession
 } from '../upload-sessions.js';
 import { usageFor, dropUnusedBlend } from '../storage.js';
@@ -60,10 +60,14 @@ function gigabytes(bytes) {
   return `${(bytes / 1024 / 1024 / 1024).toFixed(2)} GB`;
 }
 
-function withinQuota(req, res, next) {
+function incoming(req) {
+  return Number(req.headers['content-length']) || 0;
+}
+
+export function withinQuota(req, res, next) {
   const { bytes } = usageFor(req.user.username, { fresh: true });
 
-  if (bytes >= USER_QUOTA_BYTES) {
+  if (bytes + incoming(req) > USER_QUOTA_BYTES) {
     return res.status(413).json({
       error: `You are using ${gigabytes(bytes)} of your ${gigabytes(USER_QUOTA_BYTES)}. `
         + 'Delete a finished job before uploading another.'
@@ -73,10 +77,10 @@ function withinQuota(req, res, next) {
   next();
 }
 
-function roomOnDisk(req, res, next) {
+export function roomOnDisk(req, res, next) {
   const free = freeBytes(DATA_DIR);
 
-  if (free !== null && free < MIN_FREE_BYTES) {
+  if (free !== null && free - outstandingBytes() - incoming(req) < MIN_FREE_BYTES) {
     return res.status(507).json({
       error: `The workstation has only ${gigabytes(free)} of disk left, below the `
         + `${gigabytes(MIN_FREE_BYTES)} it keeps spare. Nothing can be uploaded or `
@@ -380,7 +384,7 @@ router.post('/session/:id/finish', async (req, res) => {
     return res.status(404).json({ error: 'No such upload' });
   }
 
-  if (session.busy) {
+  if (session.busy || session.finishing) {
     return res.status(409).json({ error: 'A chunk of this upload is still arriving' });
   }
 
@@ -397,19 +401,23 @@ router.post('/session/:id/finish', async (req, res) => {
     return res.status(checked.status).json({ error: checked.error });
   }
 
-  const assembled = await finishSession(session);
+  let assembled;
 
   try {
+    assembled = await finishSession(session);
     res.json(queueUpload(assembled.file, checked.settings));
   } catch (error) {
     console.error('Upload error:', error);
-    dropUnusedBlend(assembled.file.filePath);
+    if (assembled) dropUnusedBlend(assembled.file.filePath);
     res.status(500).json({ error: error.message });
   }
 });
 
 router.delete('/session/:id', withSession, (req, res) => {
-  abortSession(req.session);
+  if (!abortSession(req.session)) {
+    return res.status(409).json({ error: 'That upload is being queued' });
+  }
+
   res.json({ success: true });
 });
 

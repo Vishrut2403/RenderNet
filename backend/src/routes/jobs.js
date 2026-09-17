@@ -12,6 +12,7 @@ import { getJob, listJobs, jobsSummary, DEFAULT_PAGE, MAX_PAGE } from '../job-vi
 import { usageFor, usageByOwner } from '../storage.js';
 import { startVideo } from '../video.js';
 import { requireAdmin } from '../auth.js';
+import { withinQuota, roomOnDisk } from './upload.js';
 
 const router = express.Router();
 
@@ -158,7 +159,17 @@ router.post('/:id/approve', (req, res) => {
   res.json(result);
 });
 
-router.post('/:id/assets', supplied.single('asset'), (req, res) => {
+// Checked before multer, which otherwise writes the whole file first.
+function mayGiveAsset(req, res, next) {
+  const job = getJob(Number(req.params.id));
+
+  if (!job) return res.status(404).json({ error: 'Job not found' });
+  if (!canAccess(job, req.user)) return res.status(403).json({ error: 'Access denied' });
+
+  next();
+}
+
+router.post('/:id/assets', mayGiveAsset, roomOnDisk, withinQuota, supplied.single('asset'), (req, res) => {
   const jobId = Number(req.params.id);
   const job = getJob(jobId);
   const arrived = req.file?.path;

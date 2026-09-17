@@ -28,6 +28,8 @@ export function Upload({ onSubmitted, notify }) {
   const [progress, setProgress] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [prepared, setPrepared] = useState(null);
+  const preparedRef = useRef(null);
+  preparedRef.current = prepared;
   const [reading, setReading] = useState(false);
   const [scene, setScene] = useState(null);
   const [error, setError] = useState('');
@@ -46,6 +48,10 @@ export function Upload({ onSubmitted, notify }) {
     && testAt >= Number(frameStart) && testAt <= Number(frameEnd)
     && (testAt - Number(frameStart)) % Math.max(1, Number(frameStep)) === 0;
   const busy = progress !== null || submitting;
+
+  useEffect(() => () => {
+    if (preparedRef.current) api.abortUpload(preparedRef.current);
+  }, []);
 
   useEffect(() => {
     let current = true;
@@ -141,6 +147,7 @@ export function Upload({ onSubmitted, notify }) {
     setFile(null);
     setPrepared(null);
     setScene(null);
+    setReading(false);
     edited.current.clear();
     if (inputRef.current) inputRef.current.value = '';
   }

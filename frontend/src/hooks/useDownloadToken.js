@@ -28,17 +28,20 @@ export function useDownloadToken(jobId, enabled) {
 
     let live = true;
     let timer = null;
+    let latest = 0;
 
     const renew = async () => {
+      const run = ++latest;
+      clearTimeout(timer);
+      let wait = 30000;
+
       try {
         await mint();
-
-        if (!live) return;
-
-        const left = (held.current?.expiresAt ?? 0) - Date.now() - RENEW_MARGIN_MS;
-        timer = setTimeout(renew, Math.max(left, 30000));
+        wait = Math.max((held.current?.expiresAt ?? 0) - Date.now() - RENEW_MARGIN_MS, wait);
       } catch {
       }
+
+      if (live && run === latest) timer = setTimeout(renew, wait);
     };
 
     const onReturn = () => {
